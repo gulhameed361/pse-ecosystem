@@ -1,0 +1,44 @@
+# Byte-compiled / cached
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# Build artefacts
+build/
+dist/
+*.egg
+*.egg-info/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Solver scratch files
+*.lp
+*.mps
+*.sol
+*.log
+
+# Local notebooks (keep examples/ for shared scripts)
+*.ipynb_checkpoints/

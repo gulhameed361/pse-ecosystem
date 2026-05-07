@@ -1,0 +1,672 @@
+# Developer Guide
+
+> Companion to [`ARCHITECTURE.md`](ARCHITECTURE.md) (the high-level
+> blueprint), [`THEORY_REFERENCE.md`](THEORY_REFERENCE.md) (the maths) and
+> [`USER_MANUAL.md`](USER_MANUAL.md) (the operator's view). This document
+> is the code-first manual for anyone extending the platform.
+
+---
+
+## 1. Repo Layout & Layer Map
+
+### 1.1 Folder-by-folder tour
+
+```
+pse_ecosystem/
+├── core/                       # Cross-layer contracts. Pure data.
+│   ├── contracts.py            #   PrimalGuess, LinearizedModel, UnitResponse,
+│   │                           #   SolveResult, SolveMode, SolverStatus
+│   └── registry.py             #   ThemeSpec / ApplicationSpec registry
+├── models/                     # ── LAYER 3 ── Knowledge / physics
+│   ├── base_unit.py            #   Abstract BaseUnit + finite-difference Jacobian
+│   ├── electrolysis/
+│   │   └── pem_toy.py          #   Linear toy PEM electrolyser (is_linear=True)
+│   └── gasification/
+│       └── gasifier_toy.py     #   Quadratic-yield toy gasifier (analytical Jacobian)
+├── flowsheets/                 # Topology containers (between L2 and L3)
+│   ├── base_flowsheet.py       #   BaseFlowsheet, Connection, extra_equalities
+│   └── hydrogen/
+│       └── electrolysis_grid.py#   Two factory functions for v0 demos
+├── solvers/                    # ── LAYER 2 ── Decision / optimisation
+│   ├── orchestrator.py         #   Mode 1 / Mode 2 dispatcher
+│   ├── slp.py                  #   SLPDriver + SLPConfig
+│   ├── lp_builder.py           #   build_lp(), select_lp_solver()
+│   └── milp_builder.py         #   build_milp(), TechnologyChoice, select_milp_solver()
+├── themes/                     # Theme metadata only
+│   └── hydrogen.py             #   Registers HYDROGEN_THEME on import
+└── ui/                         # ── LAYER 1 ── Application stub (v0)
+    └── entry.py                #   CLI: pse-ecosystem ...
+```
+
+### 1.2 Where new code belongs (and where it doesn't)
+
+| You are adding... | Lives in | Must not touch |
+|---|---|---|
+| A new electrolyser/reactor/separator | `models/<route>/<unit>.py` | `solvers/`, `core/` |
+| A new theme (ammonia, methanol, CCS) | `themes/<theme>.py` + `flowsheets/<theme>/` | `solvers/`, `core/` |
+| A new flowsheet topology under an existing theme | `flowsheets/<theme>/<topo>.py` | `solvers/`, `core/` |
+| A new solver strategy (e.g. multi-period) | `solvers/<driver>.py` | `models/<route>/*` |
+| A new contract field on the Handshake | `core/contracts.py` (and update both layers) | n/a — this is a breaking change |
+| UI work (Streamlit, FastAPI) | `ui/<frontend>/` | `models/`, `solvers/` directly — go via `Orchestrator` |
+
+### 1.3 The two unbreakable layer-boundary rules
+
+1. **`solvers/*.py` must never directly import a concrete unit module.**
+   Only `core/contracts.py` and the abstract `BaseFlowsheet` surface are
+   allowed. The test
+   `tests/test_slp_convergence.py::test_solvers_do_not_import_concrete_unit_modules`
+   greps `solvers/*.py` for forbidden imports and fails the suite if it
+   sees `pse_ecosystem.models.electrolysis` or `…gasification` in there.
+2. **`models/*.py` must never import from `solvers/`, `flowsheets/`, or
+   `themes/`.** Units only need `core/contracts.py` and `models/base_unit.py`.
+
+If you are tempted to break either rule, you are about to leak knowledge
+across layers — re-shape the work into a contract change in `core/` instead.
+
+---
+
+## 2. The Handshake Protocol — Layer 2 ↔ Layer 3
+
+The single pipe between Layer 2 and Layer 3. Three dataclasses in
+[`pse_ecosystem/core/contracts.py`](../pse_ecosystem/core/contracts.py).
+
+### 2.1 `PrimalGuess` — Layer 2 → Layer 3
+
+```python
+@dataclass(frozen=True)
+class PrimalGuess:
+    values: Dict[str, float]      # variable name → current value at iter k
+    iteration: int = 0            # SLP iteration counter
+    metadata: Dict[str, Any] = ...
+```
+
+Sent to every unit at the start of each SLP iteration. The variable names
+are the only handle Layer 2 has on the unit's state.
+
+### 2.2 `LinearizedModel` — Layer 3 → Layer 2
+
+```python
+@dataclass
+class LinearizedModel:
+    unit_id: str
+    variables: List[str]                  # column ordering for x0 and J
+    x0: np.ndarray                        # shape (n,) — linearisation point
+    f0: np.ndarray                        # shape (m,) — residual at x0
+    J:  np.ndarray                        # shape (m, n) — Jacobian ∂f/∂x at x0
+    bounds: Dict[str, Tuple[float, float]]
+    objective_terms: Dict[str, float]     # var → linear cost coefficient
+    is_exact: bool = False                # True ⇒ unit is genuinely linear
+    trust_region: Optional[float] = None  # unit-supplied step cap (variable units)
+    kpi_gradients: Dict[str, np.ndarray] = ...
+```
+
+Returned from `unit.linearize(guess)`. This tuple is **everything** the
+solver needs to construct LP rows for that unit.
+
+### 2.3 `UnitResponse` — Layer 3 → Layer 2 (true evaluation)
+
+```python
+@dataclass
+class UnitResponse:
+    unit_id: str
+    outputs: Dict[str, float]
+    kpis:    Dict[str, float]
+    residual: np.ndarray              # f(x) at the candidate point — the truth
+    feasible: bool
+    diagnostics: Dict[str, Any]
+```
+
+Returned from `unit.evaluate(x)`. Used **only** for residual checks at the
+end of an SLP iteration and for final KPI reporting; never required to
+solve an LP.
+
+### 2.4 How LP rows fall out of the handshake
+
+Layer 2 turns each `LinearizedModel` into LP rows by rearranging the
+Taylor expansion `f0 + J · (x − x0) = 0`:
+
+```
+J · x  =  J · x0 − f0
+```
+
+so each row of `J` produces one equality constraint in the Pyomo model.
+See [`solvers/lp_builder.py`](../pse_ecosystem/solvers/lp_builder.py)
+lines 96–116 for the actual loop.
+
+For the full mathematical derivation see
+[`THEORY_REFERENCE.md` §7](THEORY_REFERENCE.md#7-successive-linear-programming).
+
+### 2.5 Why this contract scales
+
+Same five lines describe a unit at every stage of the platform's life:
+
+| Phase | `residual()` implementation | `linearize()` implementation |
+|---|---|---|
+| Toy linear (today) | hand-coded equality | analytical, sets `is_exact=True` |
+| Toy non-linear (today) | hand-coded polynomial / equation | analytical Jacobian override |
+| ML surrogate trained from Aspen | calls `model(x).numpy()` | `jax.jacfwd(self.residual)(x)` |
+| Black-box surrogate | calls remote API | use BaseUnit's FD fallback (override `is_linear=False`) |
+
+Layer 2 sees no difference. Adding ML surrogates is a unit-by-unit task,
+not an architectural rewrite.
+
+---
+
+## 3. Layer 3 — Adding a Unit Model
+
+### 3.1 Subclassing `BaseUnit`
+
+[`pse_ecosystem/models/base_unit.py`](../pse_ecosystem/models/base_unit.py)
+defines:
+
+```python
+class BaseUnit(ABC):
+    unit_id: str = "unit"
+    is_linear: bool = False
+    trust_region: float | None = None
+```
+
+A new unit subclasses `BaseUnit`, sets a stable `unit_id`, optionally
+flips `is_linear` to `True` for genuinely linear models, and optionally
+sets a `trust_region` radius.
+
+### 3.2 Required methods
+
+| Method | Returns | Purpose |
+|---|---|---|
+| `variables(self)` | `List[str]` | Canonical ordering of variable names |
+| `bounds(self)` | `Dict[str, Tuple[float, float]]` | Per-variable `(lower, upper)` bounds |
+| `residual(self, x)` | `np.ndarray` shape `(m,)` | f(x); `m` may be 0 for "no constraints" |
+| `objective_contribution(self, x)` | `Dict[str, float]` | Linear cost coefficient per variable |
+
+### 3.3 Optional hooks
+
+| Method | Default | Override when |
+|---|---|---|
+| `kpis(self, x)` | empty dict | You want LCOH / emissions / annual quantities surfaced |
+| `kpi_gradients(self, x)` | empty dict | You can supply analytical KPI sensitivities |
+| `linearize(self, guess)` | central-difference fallback | You have analytical or AD Jacobians |
+| `evaluate(self, x)` | wraps `residual` + `kpis` | You need custom diagnostics in `UnitResponse` |
+
+### 3.4 The `unit_id.varname` naming convention
+
+Variable names should be globally unique across the flowsheet. The
+standard pattern is to expose a property per variable that prefixes the
+unit's id:
+
+```python
+@property
+def v_h2(self) -> str:
+    return f"{self.unit_id}.h2_kg_per_h"
+```
+
+Two PEM stacks instantiated as `PEMToy("pem_a")` and `PEMToy("pem_b")`
+therefore expose disjoint variable sets and the flowsheet decides whether
+they share a feed via an explicit `Connection`.
+
+### 3.5 The finite-difference fallback
+
+If you don't override `linearize()`, `BaseUnit.linearize` (in
+[`base_unit.py`](../pse_ecosystem/models/base_unit.py) lines 105–144)
+applies a central-difference scheme with a step size scaled to the
+variable magnitude (`max(1e-6 * |x|, 1e-9)`). This is enough to make a
+brand-new toy unit work end-to-end with the SLP driver before you ever
+write a Jacobian.
+
+When to override:
+
+- The unit is **genuinely linear** — write the analytical override and
+  set `is_exact=True` in the returned `LinearizedModel` so the SLP
+  driver short-circuits to a single LP solve.
+- The unit is **non-linear with cheap analytical derivatives** — write
+  the analytical override (see `gasifier_toy.py` for the canonical
+  example).
+- The unit has **AD-able** residuals (JAX/PyTorch) — return
+  `jax.jacfwd(self.residual)(x)` from a thin `linearize` wrapper.
+
+When to leave it alone:
+
+- The unit is a black-box ML surrogate with no gradient API. The FD
+  fallback works; you pay 2*n* extra residual evaluations per SLP
+  iteration.
+
+### 3.6 Walk-through: implementing a toy reactor end-to-end
+
+```python
+# pse_ecosystem/models/reaction/cstr_toy.py
+from dataclasses import dataclass
+import numpy as np
+from typing import Dict, List, Tuple
+from pse_ecosystem.models.base_unit import BaseUnit
+
+
+@dataclass
+class CSTRParams:
+    k: float = 0.5            # 1st-order rate constant (1/h)
+    feed_max_kg_per_h: float = 1000.0
+    feed_price_per_kg: float = 0.10
+
+
+class CSTRToy(BaseUnit):
+    """First-order conversion: product = (1 - exp(-k·tau)) · feed.
+
+    For toy purposes we approximate with a linearised conversion at the
+    nominal residence time."""
+
+    is_linear = False
+    trust_region = 100.0       # kg/h — keep linearisation local
+
+    def __init__(self, unit_id: str = "cstr", params: CSTRParams | None = None):
+        self.unit_id = unit_id
+        self.params = params or CSTRParams()
+
+    @property
+    def v_feed(self):    return f"{self.unit_id}.feed_kg_per_h"
+    @property
+    def v_product(self): return f"{self.unit_id}.product_kg_per_h"
+
+    def variables(self) -> List[str]:
+        return [self.v_feed, self.v_product]
+
+    def bounds(self) -> Dict[str, Tuple[float, float]]:
+        feed_max = self.params.feed_max_kg_per_h
+        return {self.v_feed: (0.0, feed_max), self.v_product: (0.0, feed_max)}
+
+    def residual(self, x: Dict[str, float]) -> np.ndarray:
+        # product = feed * (1 - exp(-k * tau)),  tau implicit in k
+        feed = x[self.v_feed]
+        prod = x[self.v_product]
+        conv = 1.0 - np.exp(-self.params.k)
+        return np.array([prod - conv * feed])
+
+    def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
+        return {self.v_feed: self.params.feed_price_per_kg * 8000.0}
+```
+
+That's a complete, working unit. The FD fallback in `BaseUnit` will
+produce a Jacobian; the SLP driver will iterate on it; the LP builder
+will translate it into Pyomo rows. No solver code is touched.
+
+### 3.7 Unit-test patterns
+
+Two patterns from
+[`tests/test_base_unit.py`](../tests/test_base_unit.py) you should reuse:
+
+**Pattern A — FD vs analytical Jacobian agreement.** Demonstrates that
+your analytical override matches the BaseUnit FD fallback to ~1e-5:
+
+```python
+def test_fd_fallback_matches_analytical(my_unit):
+    guess = PrimalGuess(values={...})
+    lin_a = my_unit.linearize(guess)
+    lin_fd = BaseUnit.linearize(my_unit, guess)
+    np.testing.assert_allclose(lin_a.J, lin_fd.J, atol=1e-5)
+```
+
+**Pattern B — Linearisation self-consistency.** `f0 + J·(x − x0)`
+evaluated at `x = x0` must equal `f0`. Catches off-by-one errors in `J`:
+
+```python
+def test_predicted_residual_at_x0_equals_f0(my_unit):
+    guess = PrimalGuess(values={...})
+    lin = my_unit.linearize(guess)
+    np.testing.assert_allclose(lin.predicted_residual(guess.values), lin.f0, atol=1e-12)
+```
+
+---
+
+## 4. Layer 3 — Adding a Theme & Application
+
+### 4.1 Folder structure for a new theme
+
+```
+pse_ecosystem/
+├── flowsheets/
+│   └── ammonia/
+│       ├── __init__.py
+│       └── haber_bosch.py        # Flowsheet factory function(s)
+├── models/
+│   └── ammonia/
+│       ├── __init__.py
+│       └── haber_bosch_toy.py    # Unit models specific to this route
+└── themes/
+    └── ammonia.py                # ThemeSpec registration
+```
+
+### 4.2 Building a flowsheet
+
+A flowsheet is just a `BaseFlowsheet` instance. Three things go in:
+units, inter-unit connections, and flowsheet-level extra equalities.
+
+```python
+from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet, Connection
+from pse_ecosystem.models.ammonia.haber_bosch_toy import HaberBoschToy
+
+def make_haber_bosch(nh3_demand_kg_per_h: float = 100.0) -> BaseFlowsheet:
+    rx = HaberBoschToy(unit_id="reactor")
+    fs = BaseFlowsheet(
+        name="ammonia.haber_bosch_basic",
+        units=[rx],
+        connections=[],                      # no inter-unit links yet
+        objective_kpi="annual_cost",
+    )
+    # Demand: reactor.nh3_kg_per_h == demand
+    fs.extra_equalities.append(({rx.v_nh3: 1.0}, nh3_demand_kg_per_h))
+    return fs
+```
+
+`Connection(var_a, var_b)` is for stream connectivity between two units;
+`extra_equalities` is for flowsheet-level relations the user injects
+(demand satisfaction, totals, etc.).
+
+### 4.3 Registering a `ThemeSpec`
+
+```python
+# pse_ecosystem/themes/ammonia.py
+from pse_ecosystem.core.registry import (
+    ApplicationSpec, ThemeSpec, register_theme,
+)
+from pse_ecosystem.flowsheets.ammonia.haber_bosch import make_haber_bosch
+
+AMMONIA_THEME = ThemeSpec(
+    name="ammonia",
+    description="Ammonia synthesis (Haber–Bosch and variants).",
+    applications={
+        "haber_bosch_basic": ApplicationSpec(
+            name="haber_bosch_basic",
+            description="Toy single-reactor Haber–Bosch.",
+            flowsheet_factory=make_haber_bosch,
+        ),
+    },
+)
+
+register_theme(AMMONIA_THEME)
+```
+
+### 4.4 Hooking into `ui/entry.py`
+
+[`ui/entry.py`](../pse_ecosystem/ui/entry.py) imports
+`pse_ecosystem.themes.hydrogen` for its registration side-effect. To
+expose the new theme through the CLI:
+
+```python
+import pse_ecosystem.themes.hydrogen   # noqa: F401
+import pse_ecosystem.themes.ammonia    # noqa: F401   ← add this line
+```
+
+The `--theme` choice list comes from `list_themes()` so it picks up the
+new entry automatically.
+
+---
+
+## 5. Layer 2 — Solver Internals
+
+### 5.1 Orchestrator dispatch
+
+[`solvers/orchestrator.py`](../pse_ecosystem/solvers/orchestrator.py)
+
+```
+Orchestrator.solve()
+  ├─ if mode == FIXED_LP:        → _solve_fixed()  → SLPDriver.run()
+  └─ if mode == FLEXIBLE_MILP:   → _solve_flexible()
+                                    ├─ build_milp at initial guess
+                                    ├─ extract (x*, y*)
+                                    ├─ if all selected units linear → return
+                                    └─ else clone flowsheet, force inactive
+                                       flow vars to 0, run SLPDriver from x*
+```
+
+The key invariant: the Orchestrator only ever calls `unit.linearize(...)`
+and `unit.residual(...)` indirectly — through `SLPDriver`, `build_lp`,
+and `build_milp`. It never imports a concrete unit module.
+
+### 5.2 SLPDriver loop
+
+[`solvers/slp.py`](../pse_ecosystem/solvers/slp.py) lines 99–233.
+
+```
+state: x_k = x0;  Δ = trust_region_init;  prev_kpi = +∞
+
+for k in 0..max_iter-1:
+    # ── Layer-3 round ──
+    lin_models ← [unit.linearize(PrimalGuess(x_k, k)) for unit in flowsheet]
+
+    if k == 0 and every model.is_exact:
+        return single LP solve              # "linear short-circuit"
+
+    # ── Layer-2 round ──
+    model ← build_lp(lin_models, flowsheet, x_anchor=x_k, tr_multiplier=Δ if TR on)
+    try:
+        x_{k+1}, lp_obj ← solve(model)
+    except RuntimeError:
+        treat as INFEASIBLE ⇒ shrink Δ ⇒ retry (or give up at Δ_min)
+
+    # ── Validate against TRUE physics ──
+    true_residual ← concat(unit.residual(x_{k+1}) for each unit)
+    true_kpi      ← Σ objective_terms · x_{k+1}
+
+    # ── Convergence test (all three must hold) ──
+    if step < eps_x and ‖true_residual‖∞ < eps_f and Δkpi < eps_kpi:
+        return CONVERGED
+
+    # ── Trust-region update ──
+    ρ = (prev_kpi − true_kpi) / (last_lp_obj − lp_obj)
+    if ρ < ρ_shrink:  Δ ← max(Δ/2, Δ_min)
+    if ρ > ρ_grow:    Δ ← min(Δ·2, Δ_max)
+
+    x_k = x_{k+1}; prev_kpi = true_kpi; last_lp_obj = lp_obj
+
+return MAX_ITER
+```
+
+### 5.3 Convergence criteria — what each catches
+
+| Criterion | Default | Catches |
+|---|---|---|
+| `eps_x` (relative step norm) | 1e-4 | LP no longer moving |
+| `eps_f` (true-residual norm) | 1e-4 | linearisation has converged to actual physics |
+| `eps_kpi` (relative KPI delta) | 1e-3 | objective no longer improving |
+
+All three must hold simultaneously. Step alone isn't enough — you can
+sit on a stationary point of the linearisation that doesn't satisfy the
+true non-linear physics. Residual alone isn't enough — the LP could
+oscillate between feasible-but-suboptimal points.
+
+### 5.4 Trust region — per-unit hint × driver multiplier
+
+The trust region is **unit-driven**:
+
+- A unit may set `LinearizedModel.trust_region` to a radius in variable
+  units (e.g. the toy gasifier supplies 5000 kg/h).
+- The SLP driver carries a scalar multiplier `Δ` ∈ `[trust_region_min,
+  trust_region_max]`, adapted via the ρ ratio of actual-vs-predicted
+  decrease.
+- The LP builder applies `|x_v − x_anchor_v| ≤ trust_region · Δ` for
+  every variable owned by a unit that supplied a hint.
+
+Setting `SLPConfig.use_trust_region = False` (the v0 default) disables
+the box constraints entirely — sufficient for toy flowsheets. Turn it on
+when units have meaningful TR hints and the physics is sharply
+non-linear.
+
+### 5.5 LP builder internals
+
+[`solvers/lp_builder.py`](../pse_ecosystem/solvers/lp_builder.py)
+builds a `pyo.ConcreteModel` from:
+
+1. The union of all variables across all units, plus connection vars and
+   extra-equality vars (`flowsheet.all_variables()`).
+2. Per-unit linearised equalities `J · x = J · x0 − f0`.
+3. Connection equalities `var_a == var_b`.
+4. Flowsheet `extra_equalities` (e.g. demand = Σ producers).
+5. Optional per-unit trust-region box constraints.
+6. Linear objective: `Σ_units Σ_vars objective_terms[var] · x[var]`.
+
+Bounds are intersected across unit, flowsheet, and `LinearizedModel`
+sources before being applied to `pyo.Var`.
+
+### 5.6 MILP builder internals
+
+[`solvers/milp_builder.py`](../pse_ecosystem/solvers/milp_builder.py)
+extends the LP with binary technology variables:
+
+1. **Binaries.** One `y_i ∈ {0, 1}` per `TechnologyChoice`.
+2. **Flow gating.** For every `flow_variable v` of tech `i`:
+   `−M·y_i ≤ x_v ≤ M·y_i`. When `y_i = 0`, `x_v = 0`.
+3. **Residual gating** (the v0 fix): for every linearised row of a unit
+   gated by tech `i`:
+   `|J·x − rhs| ≤ M_row · (1 − y_i)`. When `y_i = 0` the row is fully
+   slack — without this an unselected unit's residual would force
+   infeasibility because `J·0 − rhs ≠ 0` in general.
+4. **At-least-one.** `Σ y_i ≥ 1` so the solver can't pick "do nothing".
+5. **Fixed costs.** `Σ tech.fixed_cost · y_i` is added to the objective
+   (e.g. annualised CAPEX per technology).
+
+`row_M` for residual gating is sized as
+`max(big_M, |rhs| + ‖row‖₁ · big_M, 1)` so it always covers the worst
+residual the linearisation can produce inside the bound box.
+
+### 5.7 Sequential MILP→SLP decomposition
+
+For Mode 2 with non-linear units, the v0 strategy is:
+
+1. Build the MILP using linearisations at the initial guess.
+2. Solve → `(x*, y*)`. The technology mix is now fixed.
+3. Identify "active" units (any unit whose tech binary is 1, plus
+   ungated units).
+4. Clone the flowsheet, adding `extra_bounds[v] = (0, 0)` for every flow
+   variable of an inactive tech.
+5. Run `SLPDriver.run(x0=x*)` on the cloned flowsheet to refine
+   operations against the true physics.
+
+This is intentionally simple — Outer Approximation, Benders, or
+branch-and-bound on the relaxed NLP are all viable upgrades. The
+contract doesn't change.
+
+### 5.8 Solver back-end selection
+
+[`select_lp_solver()`](../pse_ecosystem/solvers/lp_builder.py) probes
+candidates in this order: `glpk → cbc → appsi_highs → highs`.
+[`select_milp_solver()`](../pse_ecosystem/solvers/milp_builder.py) does
+`cbc → glpk → appsi_highs → highs`. Pass `preferred="cbc"` (etc.) to
+override.
+
+The v0 dependency manifest installs `highspy`; CBC and GLPK are
+available via the system package manager when needed.
+
+### 5.9 Infeasibility recovery and HiGHS quirks
+
+Newer Pyomo+HiGHS (`highspy ≥ 1.7`) raises `RuntimeError("A feasible
+solution was not found…")` instead of returning a status object when the
+LP has no feasible solution. The SLP driver wraps `solver.solve(...)` in
+`try/except RuntimeError → SolverStatus.INFEASIBLE` so the loop's
+shrink-and-retry path still fires.
+
+Older Pyomo returns `TerminationCondition.infeasible`; both paths land
+on the same `SolverStatus.INFEASIBLE` enum value, so the rest of the
+driver doesn't care.
+
+---
+
+## 6. Adding a New Layer-2 Strategy
+
+### 6.1 When SLP isn't enough
+
+- **Multi-period / temporal optimisation.** Variable namespace expands
+  from `unit.var` to `unit.var[t]`. Build a builder that indexes over
+  time; units optionally provide hour-of-year sensitivities.
+- **MINLP.** When binaries and non-linearities co-exist and sequential
+  MILP→SLP is too crude, swap in Outer Approximation or
+  generalised-Benders.
+- **Decomposition.** Scenario-based stochastic optimisation, Lagrangian
+  relaxation, etc.
+
+### 6.2 How to add a driver without touching Layer 3
+
+A new driver only needs to:
+
+1. Live in `pse_ecosystem/solvers/<your_driver>.py`.
+2. Consume `LinearizedModel`s by calling `unit.linearize(guess)` on each
+   unit in a flowsheet. Never import a unit class directly.
+3. Return a `SolveResult`.
+
+Use `SLPDriver` as the canonical reference implementation.
+
+### 6.3 Hooking through the Orchestrator
+
+Add a new `SolveMode` enum value in `core/contracts.py`, then a
+corresponding branch in `Orchestrator.solve()`. All three of the public
+API surface (`SolveMode`, `Orchestrator`, `SolveResult`) stay
+backwards-compatible because the enum is open-ended.
+
+---
+
+## 7. Testing & Quality Gates
+
+### 7.1 Test layout
+
+```
+tests/
+├── test_base_unit.py            # FD vs analytical, predicted_residual, bounds
+└── test_slp_convergence.py      # Mode 1 / Mode 2 end-to-end, layer-boundary canary
+```
+
+Every new unit should ship at least the two patterns from §3.7. Every
+new theme should ship at least one end-to-end test that runs the
+Orchestrator and asserts convergence.
+
+### 7.2 The layer-boundary canary
+
+```python
+_FORBIDDEN_IMPORTS = (
+    "pse_ecosystem.models.electrolysis",
+    "pse_ecosystem.models.gasification",
+)
+
+def test_solvers_do_not_import_concrete_unit_modules():
+    solvers_dir = Path(solvers_pkg.__file__).parent
+    for py_file in solvers_dir.glob("*.py"):
+        text = py_file.read_text(encoding="utf-8")
+        for forbidden in _FORBIDDEN_IMPORTS:
+            assert forbidden not in text
+```
+
+When you add a new unit subpackage (e.g. `models/ccs/`), append it to
+`_FORBIDDEN_IMPORTS`. This is the fastest line in the repo to break
+when someone accidentally crosses the layer boundary, and the cheapest
+to fix.
+
+### 7.3 Running tests inside the venv
+
+```powershell
+& "C:\Users\gh00616\.venvs\pse_ecosystem\Scripts\Activate.ps1"
+pytest -v
+```
+
+or, without activating:
+
+```powershell
+& "C:\Users\gh00616\.venvs\pse_ecosystem\Scripts\python.exe" -m pytest -v
+```
+
+---
+
+## 8. Future Roadmap
+
+The following are deliberately deferred past v0. Adding any of them
+should not require contract changes in `core/`.
+
+- **JAX / PyTorch surrogate units.** Implement `residual()` in JAX,
+  override `linearize()` with `jax.jacfwd(self.residual)(x)`. No solver
+  changes.
+- **Black-box ML units.** Use the FD fallback. Pay the cost in extra
+  evaluations.
+- **Outer Approximation / Benders for Mode 2.** Replace the sequential
+  MILP→SLP in `Orchestrator._solve_flexible` with proper cuts.
+- **Multi-period / hourly resolution.** Variable namespace expands to
+  include time index; builders gain a time set.
+- **Distributed / parallel SLP across scenarios.** Run multiple
+  `SLPDriver` instances against scenario-cloned flowsheets in parallel,
+  aggregate results.
+- **Stochastic / robust optimisation.** Scenario tree at the
+  Orchestrator level, scenario probability weights in objective terms.

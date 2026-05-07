@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pse_ecosystem"
+version = "0.0.1"
+description = "Application-centric Knowledge Ecosystem for Process Systems Engineering (v0)."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "PSE Ecosystem Team" },
+]
+license = { text = "Proprietary" }
+keywords = ["process-systems-engineering", "hydrogen", "optimisation", "pyomo", "slp"]
+
+dependencies = [
+    "numpy>=1.24",
+    "pyomo>=6.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+solvers = [
+    # Optional pip-installable LP/MILP backends.
+    # GLPK / CBC are typically installed via the system package manager;
+    # listing pip names that wrap them where available.
+    "highspy>=1.7",
+]
+
+[project.scripts]
+pse-ecosystem = "pse_ecosystem.ui.entry:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pse_ecosystem*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
