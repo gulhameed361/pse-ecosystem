@@ -13,8 +13,11 @@ flowsheet decides whether they share a feed via an explicit connection.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
 
 from pse_ecosystem.models.base_unit import BaseUnit
 
@@ -43,6 +46,11 @@ class BaseFlowsheet:
     extra_equalities: List[Tuple[Dict[str, float], float]] = field(default_factory=list)
     """Linear equality constraints ``Σ a_i x_i == b`` that don't belong to any
     single unit (e.g. a hydrogen-demand balance summed across producers)."""
+
+    recycle_streams: List[str] = field(default_factory=list)
+    """Variable names that participate in recycle loops.  Metadata only —
+    the solver never reads this field.  Declare recycle tear streams in
+    :class:`~pse_ecosystem.solvers.slp.TearStreamConfig` instead."""
 
     # ── Topology helpers ────────────────────────────────────────────────────
 
@@ -97,3 +105,105 @@ class BaseFlowsheet:
         for v in self.all_variables():
             guess.setdefault(v, 0.0)
         return guess
+
+
+# ── CompositeUnit ─────────────────────────────────────────────────────────────
+
+
+class CompositeUnit(BaseUnit):
+    """Wrap a :class:`BaseFlowsheet` as a single :class:`BaseUnit`.
+
+    This enables hierarchical flowsheet composition: a sub-process (e.g.
+    a heat-exchange network or a gas-cleaning train) can be exposed to a
+    parent flowsheet as if it were an atomic unit.  The parent sees only
+    ``exposed_inputs`` and ``exposed_outputs``; the internal structure is
+    hidden.
+
+    Circular-import note
+    --------------------
+    ``CompositeUnit`` lives in ``flowsheets/`` (Layer 3) but needs to call
+    ``SLPDriver`` from ``solvers/`` (Layer 2).  The import is deferred to
+    inside :meth:`residual` so that it only executes at call time, after
+    both modules are fully loaded.  This intentional cross-layer call is
+    the *only* sanctioned exception to the "Layer 2 must not import Layer 3"
+    rule — here the direction is reversed (Layer 3 calling Layer 2 to solve
+    an inner sub-problem), which is architecturally sound for hierarchical
+    decomposition.
+
+    Parameters
+    ----------
+    unit_id:
+        Name prefix for the composite unit's exposed variables.
+    inner_flowsheet:
+        The sub-process ``BaseFlowsheet`` to solve internally.
+    exposed_inputs:
+        Variable names (from ``inner_flowsheet``) that the parent flowsheet
+        will drive.  These become *inputs* to the composite unit.
+    exposed_outputs:
+        Variable names (from ``inner_flowsheet``) whose values the composite
+        unit reports to the parent.  Each generates one residual equation:
+        ``outer_var - inner_solution[v] = 0``.
+    slp_config:
+        Optional :class:`~pse_ecosystem.solvers.slp.SLPConfig` for the inner
+        SLP solve.  Defaults to ``SLPConfig(max_iter=30, verbose=False)``.
+    """
+
+    is_linear = False
+
+    def __init__(
+        self,
+        unit_id: str,
+        inner_flowsheet: "BaseFlowsheet",
+        exposed_inputs: List[str],
+        exposed_outputs: List[str],
+        slp_config=None,
+    ):
+        self.unit_id = unit_id
+        self.inner_flowsheet = inner_flowsheet
+        self.exposed_inputs = list(exposed_inputs)
+        self.exposed_outputs = list(exposed_outputs)
+        self._slp_config = slp_config
+
+    def variables(self) -> List[str]:
+        return self.exposed_inputs + self.exposed_outputs
+
+    def bounds(self) -> Dict[str, Tuple[float, float]]:
+        all_bounds = self.inner_flowsheet.aggregated_bounds()
+        return {v: all_bounds[v] for v in self.variables() if v in all_bounds}
+
+    def residual(self, x: Dict[str, float]) -> np.ndarray:
+        # Deferred import to break the flowsheets ↔ solvers circular dependency.
+        from pse_ecosystem.solvers.slp import SLPConfig, SLPDriver  # noqa: PLC0415
+
+        # Build a clone of the inner flowsheet with the exposed inputs pinned.
+        clone = copy.copy(self.inner_flowsheet)
+        clone.extra_bounds = dict(self.inner_flowsheet.extra_bounds)
+        for v in self.exposed_inputs:
+            val = float(x.get(v, 0.0))
+            clone.extra_bounds[v] = (val, val)
+
+        cfg = self._slp_config or SLPConfig(max_iter=30, verbose=False)
+        driver = SLPDriver(clone, cfg)
+
+        x0 = clone.initial_guess()
+        # Seed the initial guess from the outer solution for exposed vars.
+        for v in self.exposed_inputs + self.exposed_outputs:
+            if v in x:
+                x0[v] = float(x[v])
+
+        result = driver.run(x0=x0)
+        if not result.converged:
+            # Return a large residual so the outer SLP sees infeasibility.
+            return np.full(len(self.exposed_outputs), 1e6, dtype=float)
+
+        return np.array(
+            [float(x.get(v, 0.0)) - float(result.x.get(v, 0.0))
+             for v in self.exposed_outputs],
+            dtype=float,
+        )
+
+    def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
+        return {}
+
+    def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
+        return {}

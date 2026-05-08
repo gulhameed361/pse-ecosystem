@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pse_ecosystem"
-version = "0.0.1"
-description = "Application-centric Knowledge Ecosystem for Process Systems Engineering (v0)."
+version = "0.1.0"
+description = "Application-centric Knowledge Ecosystem for Process Systems Engineering (v0.1)."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
@@ -29,6 +29,20 @@ solvers = [
     # GLPK / CBC are typically installed via the system package manager;
     # listing pip names that wrap them where available.
     "highspy>=1.7",
+]
+weather = [
+    "pvlib>=0.10",
+    "pandas>=1.5",
+]
+gui = [
+    "streamlit>=1.28",
+]
+blackbox = [
+    # Required by the HDA black-box unit wrappers (ODE + VLE solvers).
+    "scipy>=1.10",
+]
+all = [
+    "pse_ecosystem[solvers,weather,gui,blackbox]",
 ]
 
 [project.scripts]

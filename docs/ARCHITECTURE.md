@@ -303,3 +303,63 @@ python examples/electrolysis_v0.py --mode 2   # Mode-2 MILP→SLP demo
 The boundary test (`test_solvers_do_not_import_concrete_unit_modules`)
 fails the moment a developer accidentally imports a unit module from
 inside `solvers/`. That is the canary for architectural regressions.
+
+---
+
+## v0.1.0 Extensions
+
+### Data Layer (`pse_ecosystem/data/`)
+
+A new, optional fourth layer sits **above** Layer 1 and is never called by
+the solver stack. It provides time-series weather and demand profiles that
+flowsheet factories consume when building time-indexed optimisation problems.
+
+```
+pse_ecosystem/data/weather.py
+  SiteData           — GPS + timezone descriptor
+  fetch_solar_profile()     — pvlib Ineichen clearsky GHI [W/m²]
+  fetch_wind_profile()      — synthetic Weibull wind speed [m/s]
+  generate_demand_profile() — flat or seasonal H2 demand
+  electricity_price_from_solar() — price proxy from GHI
+  WeatherDrivenFlowsheet    — container linking flowsheet to time-series
+```
+
+The data layer has no Handshake objects (no PrimalGuess / LinearizedModel).
+Its outputs are plain numpy arrays consumed by factory functions.
+
+### CompositeUnit (hierarchical composition)
+
+`CompositeUnit(BaseUnit)` lives in `flowsheets/base_flowsheet.py` and wraps
+a `BaseFlowsheet` as a single `BaseUnit`. This allows nested process
+structures — a sub-flowsheet (e.g. a gas-cleaning train) can be a unit in a
+parent flowsheet.
+
+**Circular-import resolution:** `CompositeUnit.residual()` must call
+`SLPDriver` from `solvers/slp.py`, but `slp.py` already imports
+`BaseFlowsheet`. The import is deferred to inside the method body so it
+executes only at call time, after both modules are loaded. This is the *only*
+sanctioned exception to "Layer 2 must not import Layer 3" — here the
+direction is reversed (Layer 3 calls Layer 2 to solve an inner sub-problem).
+
+### Recycle Loop Support (Wegstein)
+
+`TearStreamConfig` in `SLPConfig.tear_streams` enables Wegstein acceleration
+for recycle loops. Declare one entry per recycle tear stream variable. The
+SLP driver applies the Wegstein update after each LP solve. When `q=0`
+(default) it reduces to direct substitution. The `Connection` objects in
+`BaseFlowsheet` still enforce recycle equalities in the LP; Wegstein only
+accelerates the outer iteration.
+
+`BaseFlowsheet.recycle_streams: List[str]` is a metadata field for
+documentation — the solver never reads it.
+
+### Standalone App Structure
+
+```
+python -m pse_ecosystem [CLI args]       # via ui/__main__.py
+streamlit run pse_ecosystem/ui/app_streamlit.py  # GUI stub
+```
+
+The Streamlit app defers all imports inside `main()` so the module is
+importable without Streamlit installed. The CLI auto-discovers themes via
+the registry, so new themes appear without changing `entry.py`.

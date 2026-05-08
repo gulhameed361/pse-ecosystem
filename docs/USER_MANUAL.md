@@ -492,6 +492,91 @@ fallback gives you a working Jacobian for free. Full walk-through in
 
 ## 9. Future Roadmap (Placeholders)
 
+**v0.1.0 additions (now implemented):**
+
+---
+
+## v0.1.0 New Features
+
+### Expanded Unit Library
+
+| Unit | Key equation | Jacobian |
+|---|---|---|
+| `IdealMixer(n_inlets, components)` | F_out_c = Σ F_in_j_c (linear) | Analytical |
+| `BoilerToy` | Q = η·LHV·F_fuel = F_steam·h_steam | Analytical |
+| `HeatExchangerToy` | Q = m·Cp·ΔT = U·A·LMTD (non-linear) | FD |
+| `CSTRToy(k, F_total_nom)` | F_A_in - F_A_out = k·V·(F_A_out/F_nom) | Analytical |
+| `FlashToy(K_A_ref)` | K-value + Rachford-Rice (constant K) | FD |
+| `HDAPFRUnit` | HDA adiabatic PFR (ODE) | FD |
+| `HDAFlashUnit` | HDA VLE flash (Wilson K + RR) | FD |
+| `HDADistillationUnit` | HDA FUG shortcut columns | FD |
+
+**Important:** For units with FD Jacobians or when `extra_equalities` pin
+variables far from bounds midpoints, always supply an explicit `x0` to
+`SLPDriver.run(x0=...)`. The default midpoint guess will cause an infeasible
+LP if the pinned values are far from the midpoints.
+
+### HDA Case Study (`examples/hda_case_study.py`)
+
+The classic Hydrodealkylation (HDA) process — toluene + H2 → benzene + CH4 —
+is available as a complete worked example. It exercises the PFR reactor,
+isothermal flash, and two-column distillation train, connected via a toluene
+recycle loop.
+
+```bash
+python examples/hda_case_study.py
+```
+
+### Weather-Driven Optimisation
+
+Optimise PEM electrolysis across a day or year using a real solar profile:
+
+```python
+from pse_ecosystem.data.weather import (
+    SiteData, fetch_solar_profile, electricity_price_from_solar,
+    WeatherDrivenFlowsheet, generate_demand_profile,
+)
+from pse_ecosystem.flowsheets.hydrogen.electrolysis_grid import make_electrolysis_only
+
+# Surrey, UK solar profile for 2023
+site   = SiteData(51.24, -0.59, 50, "Europe/London")
+ghi    = fetch_solar_profile(site, 2023)
+prices = electricity_price_from_solar(ghi, base_price=0.10, solar_discount=0.05)
+
+wdf = WeatherDrivenFlowsheet(
+    name="solar_pem",
+    base_flowsheet=make_electrolysis_only(100.0),
+    solar_ghi=ghi,
+    electricity_prices=prices,
+    h2_demand=generate_demand_profile(50.0),
+)
+
+# Cheapest hour (peak solar)
+from pse_ecosystem.solvers.slp import SLPDriver, SLPConfig
+import numpy as np
+solar_hour = int(np.argmax(ghi))
+fs = wdf.make_pem_snapshot_flowsheet(hour=solar_hour)
+result = SLPDriver(fs, SLPConfig()).run()
+print(f"LCOH at peak solar: {result.kpis['pem.LCOH_GBP_per_kg']:.3f} £/kg")
+```
+
+Requires `pip install 'pse_ecosystem[weather]'` (pvlib).
+
+### Streamlit GUI (Stub)
+
+```bash
+pip install 'pse_ecosystem[gui]'
+streamlit run pse_ecosystem/ui/app_streamlit.py
+```
+
+Sidebar: theme, application, mode, demand, verbose toggle.
+Main panel: KPIs, solution variables, technology selection.
+Current version connects to the existing Hydrogen theme only.
+
+---
+
+## Future Roadmap
+
 The capabilities below are targeted for v1+. They are listed here so
 you can understand the trajectory rather than assume they are missing
 forever.

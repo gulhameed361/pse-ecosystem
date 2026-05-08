@@ -651,7 +651,121 @@ or, without activating:
 
 ---
 
-## 8. Future Roadmap
+## 8. Wrapping a Black-Box Unit
+
+When a simulator (ODE integrator, VLE solver, shortcut method) exists but
+is not algebraic, wrap it as a `BaseUnit` subclass. The SLP driver will use
+the base-class FD Jacobian automatically.
+
+**Pattern** (using `HDAPFRUnit` as the canonical example):
+
+```python
+from pse_ecosystem.models._blackbox.hda_reactor_bb import HDA_Reactor_sim
+from pse_ecosystem.models.base_unit import BaseUnit
+
+class HDAPFRUnit(BaseUnit):
+    is_linear = False
+
+    def __init__(self, unit_id="hda_pfr"):
+        self.unit_id = unit_id
+        self._cache_key = None
+        self._cache_result = None
+
+    def variables(self):
+        # inputs + outputs, all as separate variables
+        return [f"{self.unit_id}.F_H2_in", ..., f"{self.unit_id}.F_H2_out", ...]
+
+    def bounds(self):
+        return {v: (lo, hi) for v in self.variables()}
+
+    def residual(self, x):
+        # 1. Extract inputs, call BB (cached by input key)
+        inputs = tuple(round(x[v], 6) for v in self._input_vars)
+        if inputs != self._cache_key:
+            self._cache_result = HDA_Reactor_sim(*[x[v] for v in self._input_vars])
+            self._cache_key = inputs
+        sim_out = self._cache_result
+        # 2. Residual = output_var - simulator_output
+        return np.array([x[v] - sim_out[k] for k, v in enumerate(self._output_vars)])
+
+    def objective_contribution(self, x): return {}
+```
+
+Do **not** override `linearize()` — the base-class FD fallback will call
+`residual()` with `±step` perturbations for each variable. The cache in
+`residual()` avoids redundant simulator calls within a single FD sweep.
+
+**Cost:** Each SLP iteration requires `2*n + 1` simulator evaluations for the
+FD Jacobian (n = number of variables). For `HDAPFRUnit` (n=13), that is 27
+ODE integrations per iteration. This is acceptable for demos but expensive for
+large flowsheets.
+
+---
+
+## 9. Adding Weather-Driven Scenarios
+
+```python
+from pse_ecosystem.data.weather import (
+    SiteData, fetch_solar_profile, electricity_price_from_solar,
+    generate_demand_profile, WeatherDrivenFlowsheet,
+)
+from pse_ecosystem.flowsheets.hydrogen.electrolysis_grid import make_electrolysis_only
+
+site = SiteData(51.24, -0.59, 50, "Europe/London", "Surrey_UK")
+ghi    = fetch_solar_profile(site, 2023)        # shape (8760,) W/m²
+prices = electricity_price_from_solar(ghi)      # shape (8760,) £/kWh
+demand = generate_demand_profile(100.0)         # flat 100 kg/h
+
+wdf = WeatherDrivenFlowsheet(
+    name="solar_pem",
+    base_flowsheet=make_electrolysis_only(100.0),
+    solar_ghi=ghi,
+    electricity_prices=prices,
+    h2_demand=demand,
+)
+
+# Solve for each hour (sequential)
+from pse_ecosystem.solvers.slp import SLPDriver, SLPConfig
+results = []
+for hour in range(8760):
+    fs = wdf.make_pem_snapshot_flowsheet(hour)
+    r  = SLPDriver(fs, SLPConfig()).run()
+    results.append(r)
+```
+
+`fetch_solar_profile` uses pvlib (install `pse_ecosystem[weather]`).
+`fetch_wind_profile` and the price/demand helpers require only numpy.
+
+---
+
+## 10. Standalone App Structure
+
+**CLI (no extra install):**
+```bash
+python -m pse_ecosystem --theme hydrogen --application electrolysis_only \
+       --mode 1 --demand 100
+```
+
+**Streamlit GUI (requires `pip install pse_ecosystem[gui]`):**
+```bash
+streamlit run pse_ecosystem/ui/app_streamlit.py
+```
+
+The Streamlit module defers all imports inside `main()` so it can be
+imported safely without Streamlit installed. To add a new page, add a
+`st.tabs()` or `st.sidebar.radio()` branch inside `main()`.
+
+For a compiled standalone `.exe` (PyInstaller):
+```bash
+pip install pyinstaller
+pyinstaller --onefile --name pse_ecosystem \
+    --add-data "pse_ecosystem:pse_ecosystem" \
+    pse_ecosystem/ui/entry.py
+```
+
+---
+
+## 11. Future Roadmap
 
 The following are deliberately deferred past v0. Adding any of them
 should not require contract changes in `core/`.

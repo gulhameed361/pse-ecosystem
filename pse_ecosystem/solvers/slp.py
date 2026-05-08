@@ -39,6 +39,38 @@ from pse_ecosystem.solvers.lp_builder import (
 
 
 @dataclass
+class TearStreamConfig:
+    """Wegstein-accelerated tear stream for recycle loops.
+
+    Declare one entry per recycle connection.  The SLP driver applies the
+    Wegstein update after each LP solve, damping the step on the torn variable
+    to improve convergence of recycle loops.
+
+    Parameters
+    ----------
+    var_name:
+        Name of the variable being torn (e.g. ``"reactor.F_Tol_in"``).
+        This is the recycle *destination* — the variable whose value is
+        iterated until it matches the upstream source.
+    connected_to:
+        Name of the upstream variable that feeds the torn stream.
+        Used for convergence reporting only; the LP enforces the connection
+        via a ``Connection`` equality in the flowsheet.
+    q_min, q_max:
+        Wegstein damping bounds.  ``q = 0`` is direct substitution (fast but
+        may oscillate); ``q < 0`` is over-relaxation.  Default ``[-5, 0]``
+        allows mild acceleration.
+    """
+    var_name: str
+    connected_to: str = ""
+    q_min: float = -5.0
+    q_max: float = 0.0
+    _x_prev: float = field(default=0.0, repr=False)
+    _g_prev: float = field(default=0.0, repr=False)
+    _initialised: bool = field(default=False, repr=False)
+
+
+@dataclass
 class SLPConfig:
     """Tuning knobs for the SLP loop.
 
@@ -74,6 +106,10 @@ class SLPConfig:
     """Pyomo solver factory name. ``None`` ⇒ first available LP solver."""
 
     verbose: bool = False
+
+    tear_streams: List["TearStreamConfig"] = field(default_factory=list)
+    """Wegstein-accelerated tear streams for recycle loops.  Leave empty
+    (default) when the flowsheet has no recycle connections."""
 
 
 @dataclass
@@ -160,6 +196,24 @@ class SLPDriver:
 
             x_kp1 = extract_solution(model)
             lp_obj = float(pyo.value(model.objective))
+
+            # ── Wegstein tear-stream update (recycle acceleration) ────────
+            for ts in self.config.tear_streams:
+                g_new = float(x_kp1.get(ts.var_name, 0.0))
+                if not ts._initialised:
+                    ts._x_prev = float(x_k.get(ts.var_name, 0.0))
+                    ts._g_prev = g_new
+                    ts._initialised = True
+                else:
+                    dg = g_new - ts._g_prev
+                    dx = g_new - ts._x_prev
+                    if abs(dg - dx) > 1e-12:
+                        q = np.clip(dg / (dg - dx), ts.q_min, ts.q_max)
+                    else:
+                        q = 0.0  # direct substitution
+                    x_kp1[ts.var_name] = (1.0 - q) * g_new + q * ts._x_prev
+                    ts._g_prev = g_new
+                    ts._x_prev = x_kp1[ts.var_name]
 
             # ── Layer-3 round: evaluate the TRUE non-linear residual ──────
             true_residual = self._concat_residuals(x_kp1)
