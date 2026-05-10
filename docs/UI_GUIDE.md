@@ -133,3 +133,152 @@ python tests/industrial_audit.py   # 11 physics checks
 pytest tests\ -q                   # 107 unit tests
 # Total: 158 checks
 ```
+
+---
+
+## 8. Property Overrides (Code-Level)
+
+The Streamlit UI exposes only *engineering* parameters (flow rates, temperatures, efficiencies). Thermodynamic properties — Shomate Cp/H, Antoine K-values — are computed from NIST data at the solver's operating T and P. This is intentional: exposing raw correlation coefficients in the UI would risk thermodynamic inconsistency (e.g. using methanol Antoine constants with water enthalpy).
+
+### 8a. Overriding unit engineering parameters
+
+Template parameters in **Flowsheet Builder** correspond directly to dataclass fields. You can also pass them programmatically:
+
+```python
+from pse_ecosystem.ui.flowsheet_service import load_template
+
+fs = load_template("hydrogen.electrolysis_only", {
+    "h2_demand_kg_per_h": 200.0,
+    "pem.eta_kg_per_kWh": 0.022,          # advanced-stack efficiency
+    "pem.electricity_price_per_kWh": 0.03, # wind PPA tariff
+    "pem.grid_carbon_intensity_kg_CO2_per_kWh": 0.05,  # wind grid mix
+})
+```
+
+All `default_params` keys from `flowsheet_service._REGISTRY` are valid override keys.
+
+### 8b. Adding a new species to ideal-gas enthalpies
+
+Edit `pse_ecosystem/models/properties/ideal_gas.py`. Add a NIST Shomate entry to `_SHOMATE`:
+
+```python
+_SHOMATE["ethanol"] = {
+    "A": 102.8, "B": -46.69, "C": 9.0, "D": -0.54,
+    "E": 0.0, "F": -217.0, "G": 0.0, "H": -168.6,
+    "T_range": (298.0, 1500.0),
+    "T_ref": 298.15,
+}
+```
+
+Keys match NIST Webbook format; units are J/(mol·K) for Cp, kJ/mol for H. The new species is immediately available to any HF unit that lists it in its `components` argument.
+
+### 8c. Adding a new species to VLE K-values (Antoine)
+
+Edit `pse_ecosystem/models/properties/vle.py`. Add to `ANTOINE`:
+
+```python
+ANTOINE["ethanol"] = {"A": 8.04494, "B": 1554.3, "C": 222.65}  # log10(P/mmHg), T in °C
+```
+
+Standard Antoine base-10 form. The species is then usable in `FlashVLHF`, `FlashSL`, `DistillationHF`, and `GibbsReactor`.
+
+### 8d. Custom equation of state via subclassing
+
+To replace the ideal-gas assumption in a single unit without touching the property module:
+
+```python
+from pse_ecosystem.models.reactors.cstr_hf import CSTRHF, CSTRHFParams, ReactionConfig
+
+class PengRobinsonCSTR(CSTRHF):
+    def residual(self, x):
+        # compute enthalpy departure with PR EOS here, then call super()
+        ...
+```
+
+Only `residual()` and optionally `jacobian()` need overriding. The `LinearizedModel` contract
+(`linearize()`) is inherited and calls your overridden `residual()` for the FD Jacobian.
+
+**Layer boundary note:** All property edits stay inside `pse_ecosystem/models/properties/` (Layer 3). Neither the Orchestrator nor the SLP driver need to know — they only see the `LinearizedModel` returned by `linearize()`.
+
+---
+
+## 9. Flowsheet Merging / Composition
+
+Two `BaseFlowsheet` objects can be composed into a single larger flowsheet by merging their unit lists and wiring the boundary ports.
+
+### 9a. Merging two flowsheets
+
+```python
+from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
+from pse_ecosystem.ui.flowsheet_service import load_template
+
+fs_a = load_template("industrial.gasification_to_power")   # GasifierToy → Compressor
+fs_b = load_template("industrial.green_hydrogen")           # PEMToy → MixerHF
+
+# Combine unit lists (no shared units)
+fs_merged = BaseFlowsheet(
+    name="gasif_plus_pem",
+    units=[*fs_a.units, *fs_b.units],
+)
+
+# Copy connections from both parent flowsheets
+for conn in [*fs_a.connections, *fs_b.connections]:
+    fs_merged.connections.append(conn)
+
+# Merge extra_bounds (fs_b's bounds take precedence on conflicts)
+fs_merged.extra_bounds = {**fs_a.extra_bounds, **fs_b.extra_bounds}
+```
+
+### 9b. Wiring a new cross-flowsheet connection
+
+Use `fs_merged.connect()` to wire a port on a unit from `fs_a` to a port on a unit from `fs_b`:
+
+```python
+# Wire compressor outlet → PEM inlet (hypothetical syngas→electrolysis link)
+comp_unit = next(u for u in fs_a.units if "comp" in u.unit_id)
+pem_unit  = next(u for u in fs_b.units if "pem"  in u.unit_id)
+
+fs_merged.connect(
+    comp_unit.outlet_port,
+    pem_unit.inlet_port,
+    description="Syngas to PEM feed",
+)
+```
+
+`connect()` generates `Connection` objects — each wiring one scalar port variable to another. It raises `ValueError` if both ports do not share the same component list.
+
+### 9c. Registering a merged flowsheet in the UI
+
+Add the merged template to `flowsheet_service.py`:
+
+```python
+# In _REGISTRY list:
+TemplateSpec(
+    key="industrial.gasif_plus_pem",
+    display_name="Gasification + PEM Hub",
+    category="Industrial",
+    description="Biomass gasification feeding a PEM electrolysis buffer.",
+    topology_diagram=("graph LR\n  Feed --> Gasif --> Comp --> PEM --> Out"),
+    unit_labels=["GasifierToy", "Compressor", "PEMToy", "MixerHF"],
+    default_params={},
+)
+
+# In _LOADER_MAP:
+"industrial.gasif_plus_pem": _load_gasif_plus_pem,
+
+# Loader function:
+def _load_gasif_plus_pem(p: dict):
+    fs_a = _load_gasification_to_power(p)
+    fs_b = _load_green_hydrogen(p)
+    # merge as shown in 9a + 9b
+    ...
+```
+
+### 9d. Gotchas
+
+| Issue | Fix |
+|---|---|
+| Port component mismatch | Both ports must list identical components (same strings, same order) |
+| `extra_bounds` conflict | `fs_b.extra_bounds` wins in `{**fs_a.extra_bounds, **fs_b.extra_bounds}` — set explicitly if needed |
+| KPI name collisions | Unit IDs from both flowsheets must be unique; KPIs are keyed by `unit_id.kpi_name` |
+| SLP initial guess | `BaseFlowsheet.initial_guess()` calls `unit.initial_guess()` for all units — ensure each unit provides a sensible midpoint |

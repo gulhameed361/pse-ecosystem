@@ -248,7 +248,7 @@ Enforced by `test_solvers_do_not_import_concrete_unit_modules`.
 
 ---
 
-## Known Limitations (v0.3.0)
+## Known Limitations (v1.0.0)
 
 | Item | Detail |
 |---|---|
@@ -284,7 +284,7 @@ Enforced by `test_solvers_do_not_import_concrete_unit_modules`.
 
 ---
 
-## Documentation Index (v0.3.0)
+## Documentation Index (v1.0.0)
 
 | File | Purpose |
 |---|---|
@@ -295,10 +295,6 @@ Enforced by `test_solvers_do_not_import_concrete_unit_modules`.
 | `docs/DEVELOPER_GUIDE.md` | Adding units, flowsheets, testing patterns, forbidden import rules |
 | `docs/THEORY_REFERENCE.md` | Physics: VLE, Rachford-Rice, ODE, property correlations, SLP theory |
 | `docs/SYSTEM_STATE.md` | This file — source of truth for system state |
-
----
-
-| VLE model | Raoult's Law (ideal VLE). NRTL/Wilson activity coefficients deferred to v1.1. |
 
 ---
 

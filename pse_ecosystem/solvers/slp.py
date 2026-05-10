@@ -18,7 +18,7 @@ contract surface.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import pyomo.environ as pyo
@@ -110,6 +110,15 @@ class SLPConfig:
     tear_streams: List["TearStreamConfig"] = field(default_factory=list)
     """Wegstein-accelerated tear streams for recycle loops.  Leave empty
     (default) when the flowsheet has no recycle connections."""
+
+    iteration_callback: Optional[Callable[[int, float, float], None]] = None
+    """Optional hook called at the end of each SLP iteration.
+
+    Signature: ``callback(iteration, objective, residual_norm)``
+
+    Used by the Streamlit Solver Monitor to stream live convergence data
+    without creating a Layer-1 dependency inside the solver.
+    """
 
 
 @dataclass
@@ -245,6 +254,8 @@ class SLPDriver:
                     f"[SLP] iter {k}: obj={lp_obj:.6g} step={step:.3g} "
                     f"‖f‖={res_norm:.3g} Δ={delta:.3g}"
                 )
+            if self.config.iteration_callback is not None:
+                self.config.iteration_callback(k, lp_obj, res_norm)
 
             # ── Convergence test ─────────────────────────────────────────
             if (

@@ -449,11 +449,57 @@ def _page_solver_monitor():
             from pse_ecosystem.solvers.slp import SLPConfig
             from pse_ecosystem.core.contracts import SolveMode, SolverStatus
 
-            slp_cfg = SLPConfig(max_iter=int(max_iter), eps_x=float(eps_x), verbose=verbose)
             mode = SolveMode.FIXED_LP if "1" in mode_choice else SolveMode.FLEXIBLE_MILP
             params = st.session_state.get("template_params", {})
 
-            with st.spinner(f"Solving {spec.display_name}..."):
+            # ── Live convergence containers ──────────────────────────────────
+            progress_bar = st.progress(0)
+            iter_text    = st.empty()
+            live_chart   = st.empty()
+            _iter_history: list = []
+
+            def _on_iter(k: int, obj: float, resid: float) -> None:
+                _iter_history.append({"iteration": k, "objective": obj,
+                                      "residual_norm": resid})
+                progress_bar.progress(min((k + 1) / max(max_iter, 1), 1.0))
+                iter_text.caption(
+                    f"Iteration {k + 1} / {max_iter}  |  "
+                    f"Obj: {obj:.4g}  |  ‖f‖: {resid:.3g}"
+                )
+                if len(_iter_history) > 1:
+                    import plotly.graph_objects as go
+                    from plotly.subplots import make_subplots
+                    iters_  = [h["iteration"]    for h in _iter_history]
+                    objs_   = [h["objective"]    for h in _iter_history]
+                    resids_ = [h["residual_norm"] for h in _iter_history]
+                    fig_ = make_subplots(specs=[[{"secondary_y": True}]])
+                    fig_.add_trace(
+                        go.Scatter(x=iters_, y=objs_, mode="lines+markers",
+                                   name="Objective"),
+                        secondary_y=False,
+                    )
+                    fig_.add_trace(
+                        go.Scatter(x=iters_, y=resids_, mode="lines+markers",
+                                   name="‖f‖", line=dict(dash="dash")),
+                        secondary_y=True,
+                    )
+                    fig_.update_layout(
+                        title="SLP — Live Convergence",
+                        xaxis_title="Iteration",
+                        height=300,
+                    )
+                    fig_.update_yaxes(title_text="Objective",    secondary_y=False)
+                    fig_.update_yaxes(title_text="Residual norm", secondary_y=True)
+                    live_chart.plotly_chart(fig_, use_container_width=True)
+
+            slp_cfg = SLPConfig(
+                max_iter=int(max_iter),
+                eps_x=float(eps_x),
+                verbose=verbose,
+                iteration_callback=_on_iter,
+            )
+
+            with st.spinner(f"Solving {spec.display_name}…"):
                 # Custom flowsheet: use pre-built flowsheet from session state
                 if selected_key == "custom.user_flowsheet":
                     flowsheet = st.session_state.get("custom_flowsheet")
@@ -475,6 +521,8 @@ def _page_solver_monitor():
                 )
                 result = orch.solve()
 
+            # Collapse the live chart — the final chart below is higher quality.
+            live_chart.empty()
             st.session_state["last_result"] = result
 
         except Exception as exc:
