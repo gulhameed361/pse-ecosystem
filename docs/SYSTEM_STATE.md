@@ -1,8 +1,37 @@
 # PSE Ecosystem — System State Ledger
 
-**Version:** 0.2.0
+**Version:** 0.3.0
 **Date:** 2026-05-10
-**Status:** v0.2.0 stable — 107 pytest tests + 17 system audit checks passing
+**Status:** v0.3.0 stable — 107 pytest tests + 15 UI audit checks + 17 system audit checks passing
+
+---
+
+## What's New in v0.3.0
+
+### Multi-Page Streamlit UI
+- `pse_ecosystem/ui/app_streamlit.py` replaced: single-page stub → full 4-page Streamlit application.
+- **Page 1 — Dashboard**: metric cards (templates, solver status, last solve), template gallery, architecture overview.
+- **Page 2 — Flowsheet Builder**: category filter, template selector, Mermaid topology diagram (+ Graphviz offline fallback), dynamic parameter form, connection table.
+- **Page 3 — GPS Weather**: lat/lon/altitude/timezone inputs → pvlib clearsky solar GHI + synthetic Weibull wind → Plotly time-series charts.
+- **Page 4 — Solver Monitor**: Max-iter slider, Mode 1/Mode 2 radio, Run Solve button → convergence plot (dual-axis: objective + residual norm), KPI cards, KPI bar chart, solution variables table.
+
+### Flowsheet Service Bridge
+- `pse_ecosystem/ui/flowsheet_service.py` (new): sole Layer-1 module authorised to import from Layer-3 factories. All Layer-3 imports deferred inside loader functions.
+- Registry of 9 templates with `TemplateSpec` metadata (key, display_name, category, topology_diagram, unit_labels, default_params, supports_milp).
+- Public API: `list_templates()`, `load_template(key, params)`, `load_template_with_choices(key, params)`.
+
+### Three Industrial Flowsheet Templates
+| File | Topology | Objective KPI |
+|---|---|---|
+| `flowsheets/industrial/green_hydrogen.py` | PEMToy → MixerHF (H2 buffer) | LCOH |
+| `flowsheets/industrial/power_to_methanol.py` | StoichiometricReactor → SeparatorHF | methanol_yield |
+| `flowsheets/industrial/gasification_to_power.py` | StoichiometricReactor (dry reforming) → Compressor | syngas_yield |
+
+### UI Audit
+- `tests/ui_audit.py` (new): 15-check standalone audit (no pytest) covering service imports, template solve convergence, layer boundary, and MILP loading.
+
+### Dependency Addition
+- `pyproject.toml`: added `plotly>=5.0` to the `gui` optional group.
 
 This file is the **source of truth** for future Claude sessions.
 Update it whenever the system state changes.
