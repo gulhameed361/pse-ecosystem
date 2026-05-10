@@ -1,6 +1,6 @@
 # PSE Ecosystem — User Manual
 
-**Version:** 0.2.0 | **Date:** May 2026
+**Version:** 0.3.0 | **Date:** May 2026
 
 ---
 
@@ -8,17 +8,39 @@
 
 ### Installation
 
-```bash
+```powershell
 # Activate the project venv (outside OneDrive)
-C:\Users\gh00616\.venvs\pse_ecosystem\Scripts\activate
+& C:\Users\gh00616\.venvs\pse_ecosystem\Scripts\Activate.ps1
 
-# Install in editable mode with optional extras
-pip install -e ".[solvers,weather,blackbox]"
+# Install in editable mode with all extras (includes Streamlit + Plotly)
+pip install -e ".[solvers,weather,gui,blackbox]"
 ```
+
+### Launching the Streamlit UI (v0.3.0)
+
+The fastest way to interact with the ecosystem is via the browser UI:
+
+```powershell
+streamlit run pse_ecosystem/ui/app_streamlit.py
+```
+
+This opens a 4-page app at **http://localhost:8501**:
+
+| Page | What it does |
+|---|---|
+| **Dashboard** | System status, LP solver check, template gallery |
+| **Flowsheet Builder** | Select a template, view its topology diagram, configure parameters |
+| **GPS Weather** | Fetch site-specific solar GHI + wind profiles via pvlib |
+| **Solver Monitor** | Run the optimiser, view convergence plot and KPIs |
+
+See [`docs/UI_USER_GUIDE.md`](UI_USER_GUIDE.md) for a full page-by-page walkthrough.
 
 ### Verify Installation
 
-```bash
+```powershell
+# UI audit — 15 checks covering service bridge, templates, layer boundaries
+python tests/ui_audit.py
+
 # Regression baseline — must show 17/17 passed
 python tests/system_audit.py
 
@@ -31,7 +53,43 @@ pytest tests/ -v
 
 ---
 
-## 2. Building a Flowsheet with `fs.connect()`
+## 2. Pre-Built Industrial Flowsheets
+
+v0.3.0 ships three one-click industrial templates. Each can be loaded via the
+Flowsheet Builder UI or directly in Python:
+
+```python
+from pse_ecosystem.ui.flowsheet_service import load_template
+from pse_ecosystem.solvers.orchestrator import Orchestrator
+from pse_ecosystem.core.contracts import SolveMode
+
+fs = load_template("industrial.green_hydrogen", {"h2_demand_kg_per_h": 100.0})
+result = Orchestrator(fs, SolveMode.FIXED_LP).solve()
+print(result.status, result.kpis)
+```
+
+| Template key | Process | Units | Solver |
+|---|---|---|---|
+| `industrial.green_hydrogen` | PEM electrolysis → H2 buffer | PEMToy + MixerHF | Mode 1 LP (2 iter) |
+| `industrial.power_to_methanol` | CO2 + 3H2 → MeOH, split separation | StoichiometricReactor + SeparatorHF | Mode 1 LP (1 iter) |
+| `industrial.gasification_to_power` | Dry reforming + syngas compression | StoichiometricReactor + Compressor | Mode 1 LP (4 iter) |
+
+For the MILP technology-selection template:
+
+```python
+from pse_ecosystem.ui.flowsheet_service import load_template_with_choices
+
+fs, choices = load_template_with_choices(
+    "hydrogen.electrolysis_or_gasification", {"h2_demand_kg_per_h": 100.0}
+)
+result = Orchestrator(fs, SolveMode.FLEXIBLE_MILP,
+                      technology_choices=choices).solve()
+print(result.technology_selection)   # {'pick_pem': True, 'pick_gasifier': False}
+```
+
+---
+
+## 3. Building a Flowsheet with `fs.connect()`
 
 ### Concept
 
@@ -91,7 +149,7 @@ fs.connect(flash.vapor_port,  sep.inlet_port,    description="Flash vapor to Sep
 
 ---
 
-## 3. Properties Module
+## 4. Properties Module
 
 ### Ideal Gas Properties
 
@@ -136,7 +194,7 @@ T_bub = bubble_T(z, 101325.0, ["benzene", "toluene"], T_guess=370.0)
 
 ---
 
-## 4. Unit Catalog
+## 5. Unit Catalog
 
 ### Reactors
 
@@ -171,7 +229,7 @@ T_bub = bubble_T(z, 101325.0, ["benzene", "toluene"], T_guess=370.0)
 
 ---
 
-## 5. Recycle Handling
+## 6. Recycle Handling
 
 Declare recycle tear streams via `TearStreamConfig` in `SLPConfig`.
 Wegstein acceleration is applied after each LP solve.
@@ -202,7 +260,7 @@ The Wegstein state resets at the start of every `SLPDriver.run()` call.
 
 ---
 
-## 6. Costing Guide
+## 7. Costing Guide
 
 ```python
 from pse_ecosystem.models.costing.sslw_costing import (
@@ -221,7 +279,7 @@ objective.  OPEX (variable cost) enters the objective via `objective_contributio
 
 ---
 
-## 7. SLP Configuration Guide
+## 8. SLP Configuration Guide
 
 ```python
 SLPConfig(
@@ -242,7 +300,7 @@ SLPConfig(
 
 ---
 
-## 8. Adding a Custom Unit
+## 9. Adding a Custom Unit
 
 ```python
 from pse_ecosystem.models.base_unit import BaseUnit
@@ -280,10 +338,10 @@ Override with an analytical version for performance.
 
 ---
 
-## 9. Layer Architecture
+## 10. Layer Architecture
 
 ```
-Layer 1 (UI)      themes/, ui/           — app logic, CLI, Streamlit
+Layer 1 (UI)      themes/, ui/           — Streamlit app, flowsheet_service.py, CLI
 Layer 2 (Solver)  solvers/               — SLP engine, LP/MILP builders
 Layer 3 (Models)  models/, flowsheets/   — unit physics, port connectivity
 ```
@@ -291,14 +349,19 @@ Layer 3 (Models)  models/, flowsheets/   — unit physics, port connectivity
 **Rules:**
 - Layer 2 **must never** import concrete unit modules from Layer 3.
 - Layer 3 may import from `core/` (contract surface) only.
+- `ui/flowsheet_service.py` is the **sole** Layer-1 module authorised to import
+  from Layer-3 factories — all imports are deferred inside loader functions.
+- `ui/app_streamlit.py` imports only from `flowsheet_service`, `solvers/`, and `core/`.
 - The test `test_solvers_do_not_import_concrete_unit_modules` in
-  `tests/test_slp_convergence.py` enforces this automatically.
+  `tests/test_slp_convergence.py` and the layer checks in `tests/ui_audit.py`
+  enforce boundaries automatically.
 
 **Cross-layer communication:**
 - Layer 2 → Layer 3: via `PrimalGuess` (linearization request)
 - Layer 3 → Layer 2: via `LinearizedModel` and `UnitResponse`
+- Layer 1 → Layer 3: via `flowsheet_service.load_template()` only
 - `CompositeUnit` is the only sanctioned reverse call (deferred import)
 
 ---
 
-*End of User Manual v0.2.0*
+*End of User Manual v0.3.0*
