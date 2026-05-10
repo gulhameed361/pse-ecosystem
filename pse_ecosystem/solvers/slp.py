@@ -133,6 +133,12 @@ class SLPDriver:
     # ── Public entry ──────────────────────────────────────────────────────
 
     def run(self, x0: Optional[Dict[str, float]] = None) -> SolveResult:
+        # Reset Wegstein state so repeated run() calls start fresh.
+        for ts in self.config.tear_streams:
+            ts._initialised = False
+            ts._x_prev = 0.0
+            ts._g_prev = 0.0
+
         x_k = dict(x0) if x0 is not None else self.flowsheet.initial_guess()
         history: List[Dict[str, float]] = []
 

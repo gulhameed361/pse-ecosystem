@@ -31,6 +31,53 @@ import numpy as np
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Stream Ports
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class StreamPort:
+    """Name-generator for a process stream — holds no values, only produces
+    flat variable strings scoped to the owning unit_id.
+
+    Variable order (canonical): F_<comp>... , T (if has_T), P (if has_P).
+    This is intentionally a thin wrapper so the LP builder sees only the
+    familiar flat string names it has always handled.
+
+    Usage::
+
+        port = StreamPort("cstr", "outlet", components=["A", "B"], has_T=True, has_P=True)
+        port.variable_names()
+        # → ["cstr.outlet.F_A", "cstr.outlet.F_B", "cstr.outlet.T", "cstr.outlet.P"]
+
+        fs.connect(cstr.outlet_port, flash.inlet_port)
+    """
+
+    unit_id: str
+    tag: str  # e.g. "inlet", "outlet", "vapor", "liquid"
+    components: List[str] = field(default_factory=list)
+    has_T: bool = True
+    has_P: bool = True
+
+    def variable_names(self) -> List[str]:
+        names = [f"{self.unit_id}.{self.tag}.F_{c}" for c in self.components]
+        if self.has_T:
+            names.append(f"{self.unit_id}.{self.tag}.T")
+        if self.has_P:
+            names.append(f"{self.unit_id}.{self.tag}.P")
+        return names
+
+    def T(self) -> str:
+        return f"{self.unit_id}.{self.tag}.T"
+
+    def P(self) -> str:
+        return f"{self.unit_id}.{self.tag}.P"
+
+    def F(self, component: str) -> str:
+        return f"{self.unit_id}.{self.tag}.F_{component}"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Enums
 # ──────────────────────────────────────────────────────────────────────────────
 

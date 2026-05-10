@@ -96,6 +96,13 @@ def test_mode2_milp_picks_a_technology(lp_solver):
 _FORBIDDEN_IMPORTS = (
     "pse_ecosystem.models.electrolysis",
     "pse_ecosystem.models.gasification",
+    "pse_ecosystem.models.reactors",
+    "pse_ecosystem.models.separators",
+    "pse_ecosystem.models.heat_exchangers",
+    "pse_ecosystem.models.pressure_changers",
+    "pse_ecosystem.models.mixers",
+    "pse_ecosystem.models.costing",
+    "pse_ecosystem.models.properties",
 )
 
 

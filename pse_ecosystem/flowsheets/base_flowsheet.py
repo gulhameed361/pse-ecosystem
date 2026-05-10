@@ -19,6 +19,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from pse_ecosystem.core.contracts import StreamPort
 from pse_ecosystem.models.base_unit import BaseUnit
 
 
@@ -51,6 +52,35 @@ class BaseFlowsheet:
     """Variable names that participate in recycle loops.  Metadata only —
     the solver never reads this field.  Declare recycle tear streams in
     :class:`~pse_ecosystem.solvers.slp.TearStreamConfig` instead."""
+
+    # ── Port connectivity ────────────────────────────────────────────────────
+
+    def connect(
+        self,
+        port_a: StreamPort,
+        port_b: StreamPort,
+        description: str = "",
+    ) -> None:
+        """Wire an outlet port to an inlet port.
+
+        Generates one :class:`Connection` per shared variable (matched by
+        canonical position in ``variable_names()``).  Both ports must have
+        identical component lists and T/P flags.
+
+        Raises ``ValueError`` if the port variable counts differ.
+        """
+        a_names = port_a.variable_names()
+        b_names = port_b.variable_names()
+        if len(a_names) != len(b_names):
+            raise ValueError(
+                f"connect(): port '{port_a.tag}' on '{port_a.unit_id}' has "
+                f"{len(a_names)} variables but port '{port_b.tag}' on "
+                f"'{port_b.unit_id}' has {len(b_names)}. Ports must match."
+            )
+        for va, vb in zip(a_names, b_names):
+            self.connections.append(
+                Connection(var_a=va, var_b=vb, description=description)
+            )
 
     # ── Topology helpers ────────────────────────────────────────────────────
 

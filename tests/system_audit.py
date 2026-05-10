@@ -232,6 +232,13 @@ def _():
     forbidden = (
         "pse_ecosystem.models.electrolysis",
         "pse_ecosystem.models.gasification",
+        "pse_ecosystem.models.reactors",
+        "pse_ecosystem.models.separators",
+        "pse_ecosystem.models.heat_exchangers",
+        "pse_ecosystem.models.pressure_changers",
+        "pse_ecosystem.models.mixers",
+        "pse_ecosystem.models.costing",
+        "pse_ecosystem.models.properties",
     )
     offenders = []
     solvers_dir = Path(solvers_pkg.__file__).parent

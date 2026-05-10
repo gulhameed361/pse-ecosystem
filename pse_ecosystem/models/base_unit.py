@@ -80,6 +80,34 @@ class BaseUnit(ABC):
         """Optional analytical KPI gradients. Default: empty (no sensitivity report)."""
         return {}
 
+    def capex(self, x: Dict[str, float]) -> float:
+        """Capital expenditure estimate in USD (purchase cost, CE500 basis).
+
+        Reported as a KPI only — never enters the LP objective.  Override
+        in units that have SSLW or custom costing.
+        """
+        return 0.0
+
+    def opex_per_year(self, x: Dict[str, float]) -> float:
+        """Annual operating cost in USD/yr at operating point x.
+
+        Default implementation sums ``objective_contribution * x``, which
+        already encodes price × throughput for flow variables.  Override
+        when OPEX has a more complex structure.
+        """
+        return sum(
+            coeff * x.get(v, 0.0)
+            for v, coeff in self.objective_contribution(x).items()
+        )
+
+    def control_hooks(self) -> Dict[str, str]:
+        """Optional control pairing: {controlled_var: manipulated_var}.
+
+        Returns an empty dict by default.  For display and documentation
+        only in v0.2 — not consumed by any solver path.
+        """
+        return {}
+
     # ── Default implementations (override only when you can do better) ────
 
     def evaluate(self, x: Dict[str, float]) -> UnitResponse:
@@ -128,6 +156,15 @@ class BaseUnit(ABC):
             trust_region=self.trust_region,
             kpi_gradients=self.kpi_gradients(x0_dict),
         )
+
+    def get_linearization(self, x_current: Dict[str, float]) -> "LinearizedModel":
+        """Preferred public alias for :meth:`linearize`.
+
+        Accepts a plain ``Dict[str, float]`` instead of a ``PrimalGuess``
+        wrapper.  New HF units call this; existing units keep ``linearize()``.
+        """
+        guess = PrimalGuess(values=x_current, iteration=0)
+        return self.linearize(guess)
 
     # ── Internals ─────────────────────────────────────────────────────────
 
