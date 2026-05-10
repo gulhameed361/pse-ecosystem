@@ -43,7 +43,38 @@ A browser window opens automatically at `http://localhost:8501`.
 
 ### 3.1 Dashboard
 
-<!-- SCREENSHOT PLACEHOLDER: Dashboard page with 4 metric cards -->
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  ⚗ PSE Ecosystem                                    v0.3.0          │
+│  Private — University of Surrey                                      │
+├──────────────┬──────────────┬──────────────┬───────────────────────┤
+│  Templates   │  Unit Models │  LP Solver   │  Last Solve           │
+│     9        │  16+ HF units│  Available   │  CONVERGED            │
+├──────────────┴──────────────┴──────────────┴───────────────────────┤
+│  ▼ Architecture Overview                                             │
+│    Layer 1: UI (Streamlit)          ← you are here                  │
+│        │  calls flowsheet_service.py                                 │
+│    Layer 2: Solvers (Pyomo LP/MILP) ← Orchestrator, SLPDriver       │
+│        │  calls LinearizedModel interface                            │
+│    Layer 3: Knowledge (Unit Models) ← Physics, VLE, costing         │
+├─────────────────────────────────────────────────────────────────────┤
+│  Template Gallery                                                    │
+│  ┌──────────────────────────────┬────────────┬────────────────────┐ │
+│  │ Name                         │ Category   │ Units              │ │
+│  ├──────────────────────────────┼────────────┼────────────────────┤ │
+│  │ PEM Electrolysis             │ Hydrogen   │ PEMToy             │ │
+│  │ PEM + Gasifier (MILP)        │ Hydrogen   │ PEMToy, GasifierToy│ │
+│  │ Green Hydrogen Hub           │ Industrial │ PEMToy, MixerHF    │ │
+│  │ Power-to-Methanol            │ Industrial │ StoichRxr, SepHF   │ │
+│  │ Gasification to Power        │ Industrial │ StoichRxr, Comp    │ │
+│  │ CSTR + Flash                 │ Small      │ CSTRHF, FlashVLHF  │ │
+│  │ ...                          │ ...        │ ...                │ │
+│  └──────────────────────────────┴────────────┴────────────────────┘ │
+│                                                                      │
+│  Last Solve Result                                                   │
+│  ✓ Converged in 4 iteration(s)  |  Objective: 9.62e+05              │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 **What you see:**
 
@@ -63,7 +94,33 @@ The **Architecture Overview** expander shows the 3-layer split as an ASCII diagr
 
 ### 3.2 Flowsheet Builder
 
-<!-- SCREENSHOT PLACEHOLDER: Flowsheet Builder with CSTR+Flash selected -->
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  🔧 Flowsheet Builder                                                │
+├──────────────────────┬──────────────────────────────────────────────┤
+│  Category            │  Flowsheet Topology                          │
+│  [Industrial      ▼] │                                              │
+│                      │   Feed([CO2+H2]) --> Rxr[Stoich. Reactor]    │
+│  Template            │   Rxr --> Sep[Separator]                     │
+│  [Power-to-Methanol▼]│   Sep --> Vap([Gas phase])                   │
+│                      │   Sep --> Liq([Liquid MeOH])                 │
+│  CO2 + 3H2 → methanol│                                              │
+│  + H2O, then split   │  ┌──────────────────────────────────────┐   │
+│  separation.         │  │ Stream Connections                    │   │
+│  Fully linear.       │  │ From            To        Description │   │
+│                      │  │ Reactor outlet  Sep inlet  Rxr → Sep  │   │
+│  ☐ MILP template     │  └──────────────────────────────────────┘   │
+│                      │                                              │
+│                      │  Parameters                                  │
+│                      │  ┌──────────────────────────────────────┐   │
+│                      │  │ Extent Max   [  3.0              ]   │   │
+│                      │  │                                      │   │
+│                      │  │         [ Apply & Select ]           │   │
+│                      │  └──────────────────────────────────────┘   │
+│                      │  ✓ Template Power-to-Methanol selected.      │
+│                      │    Go to Solver Monitor to run.              │
+└──────────────────────┴──────────────────────────────────────────────┘
+```
 
 **Step-by-step:**
 
@@ -84,7 +141,37 @@ wired by `fs.connect()`.
 
 ### 3.3 GPS Weather
 
-<!-- SCREENSHOT PLACEHOLDER: GPS Weather page with solar profile chart -->
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  🌍 GPS Weather                                                      │
+│  Fetch site-specific solar & wind profiles via pvlib.                │
+├─────────────────────┬──────────────────────┬────────────────────────┤
+│  Latitude (°N)      │  Longitude (°E)      │  Altitude (m)          │
+│  [ 51.2400        ] │  [ -0.5900         ] │  [ 68.0             ]  │
+├─────────────────────┴──────────────────────┴────────────────────────┤
+│  Timezone (IANA)  [ Europe/London ]    Year  [ 2023 ]               │
+│                                                                      │
+│                        [ Fetch Profiles ]                            │
+├──────────────────────────────────────────────────────────────────────┤
+│  ✓ Profiles fetched for Site (51.24°N, -0.59°E), year 2023.         │
+├───────────────────┬──────────────────┬──────────────────────────────┤
+│  Peak GHI (W/m²)  │  Mean Wind (m/s) │  Solar Hours / Year          │
+│      892          │      7.84        │       4 380                  │
+├───────────────────┴──────────────────┴──────────────────────────────┤
+│  [ Solar GHI ]  [ Wind Speed ]                                       │
+│                                                                      │
+│  Annual Solar GHI Profile                                            │
+│                                                                      │
+│  900 ┤                        ╭──╮                                   │
+│  700 ┤               ╭──╮   ╭╯  ╰╮   ╭──╮                          │
+│  500 ┤         ╭╮   ╭╯  ╰───╯    ╰───╯  ╰╮                         │
+│  300 ┤    ╭╮  ╭╯╰───╯                     ╰──╮  ╭╮                  │
+│  100 ┤────╯╰──╯                               ╰──╯╰────             │
+│    0 ┤                                                               │
+│      └────────────────────────────────────────────────── hour        │
+│         0      1000     2000     3000     4000     8760              │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 **Purpose:** Fetch site-specific solar GHI and wind speed profiles via pvlib clearsky models.
 The profiles are stored in the session and can be used to contextualise the simulation.
@@ -107,7 +194,57 @@ The profiles are stored in the session and can be used to contextualise the simu
 
 ### 3.4 Solver Monitor
 
-<!-- SCREENSHOT PLACEHOLDER: Solver Monitor showing convergence plot -->
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  📊 Solver Monitor                                                   │
+│  Template: Power-to-Methanol   Key: industrial.power_to_methanol     │
+│  Category: Industrial                                                │
+├─────────────────────────────────────────────────────────────────────┤
+│  ▼ Solver Settings                                                   │
+│    Max iterations  [=============================·····] 50          │
+│    Step tolerance  [ 1.00e-04 ]                                      │
+│    ● Mode 1 — Fixed LP   ○ Mode 2 — Flexible MILP                   │
+│    ☐ Verbose solver output                                           │
+│                                                                      │
+│                          [ Run Solve ]                               │
+├─────────────────────────────────────────────────────────────────────┤
+│  ✓  Converged in 1 iteration(s)  |  Objective: 0.0000               │
+├─────────────────────────────────────────────────────────────────────┤
+│  SLP Convergence                                                     │
+│                                                                      │
+│  Obj  1e5 ┤●                                                         │
+│           │╲  — Objective                                            │
+│       5e4 ┤ ╲                           - - Residual norm           │
+│           │  ●───────────────────────                                │
+│       0   ┤                                           iteration      │
+│           └────────────────────────────                              │
+│               0         1                                            │
+├─────────────────────────────────────────────────────────────────────┤
+│  KPIs                                                                │
+│  ┌───────────────┬───────────────┬───────────────┬─────────────┐   │
+│  │  V frac       │  vapor flow   │  liquid flow  │  Q W        │   │
+│  │    0.05       │   0.5882      │   11.18       │   0.0       │   │
+│  └───────────────┴───────────────┴───────────────┴─────────────┘   │
+│                                                                      │
+│  ████████████████████████████                                        │
+│    vapor_flow  ██████████                    [KPI bar chart]         │
+│    liquid_flow ████████████████████████████                          │
+│    Q_W         ▏                                                     │
+├─────────────────────────────────────────────────────────────────────┤
+│  Solution Variables                                                  │
+│  ┌───────────────────────────────┬──────────────┐                   │
+│  │ Variable                      │ Value        │                   │
+│  ├───────────────────────────────┼──────────────┤                   │
+│  │ rxr.inlet.F_CO2               │ 3.000000     │                   │
+│  │ rxr.inlet.F_H2                │ 9.000000     │                   │
+│  │ rxr.outlet.F_methanol         │ 3.000000     │                   │
+│  │ rxr.outlet.F_water            │ 3.000000     │                   │
+│  │ sep.outlet_1.F_methanol       │ 2.850000     │                   │
+│  │ sep.outlet_1.F_water          │ 2.940000     │                   │
+│  │ ...                           │ ...          │                   │
+│  └───────────────────────────────┴──────────────┘                   │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 **Step-by-step:**
 
