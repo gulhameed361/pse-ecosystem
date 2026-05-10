@@ -34,7 +34,7 @@
 - `pyproject.toml`: added `plotly>=5.0` to the `gui` optional group.
 
 ### Documentation Updates
-- `docs/UI_USER_GUIDE.md` (new): full page-by-page walkthrough with ASCII mockups for all 4 pages (Dashboard, Flowsheet Builder, GPS Weather, Solver Monitor), template reference table, troubleshooting guide, developer guide for adding templates.
+- `docs/UI_GUIDE.md` (merged v1.0): full page-by-page walkthrough with ASCII mockups, template reference, troubleshooting, developer guide, property overrides, and flowsheet merging How-Tos.
 - `docs/USER_MANUAL.md` updated to v0.3.0: Streamlit launch instructions, 4-page UI table, new §2 Pre-Built Industrial Flowsheets with Python API examples, layer architecture updated to document `flowsheet_service.py` boundary rule.
 - `README.md` updated: version header, `streamlit run` command in quick-start.
 
@@ -290,7 +290,7 @@ Enforced by `test_solvers_do_not_import_concrete_unit_modules`.
 |---|---|
 | `docs/ARCHITECTURE.md` | Load-bearing architectural blueprint: 3-layer split, Handshake Protocol, layer boundary enforcement |
 | `docs/UI_GUIDE.md` | ← NEW v1.0.0: condensed quick-start, parameter reference, CI guide, custom flowsheet, packaging |
-| `docs/UI_USER_GUIDE.md` | Full walkthrough with ASCII mockups, template reference, troubleshooting, developer guide |
+| `docs/UI_GUIDE.md` | Full guide: quick-start, ASCII walkthrough, template ref, troubleshooting, developer guide, property overrides, flowsheet merging |
 | `docs/USER_MANUAL.md` | v0.3.0: installation, Streamlit launch, pre-built templates API, fs.connect() patterns, unit catalog, SLP config |
 | `docs/DEVELOPER_GUIDE.md` | Adding units, flowsheets, testing patterns, forbidden import rules |
 | `docs/THEORY_REFERENCE.md` | Physics: VLE, Rachford-Rice, ODE, property correlations, SLP theory |

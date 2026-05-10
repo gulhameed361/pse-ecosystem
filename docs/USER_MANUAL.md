@@ -33,7 +33,7 @@ This opens a 4-page app at **http://localhost:8501**:
 | **GPS Weather** | Fetch site-specific solar GHI + wind profiles via pvlib |
 | **Solver Monitor** | Run the optimiser, view convergence plot and KPIs |
 
-See [`docs/UI_USER_GUIDE.md`](UI_USER_GUIDE.md) for a full page-by-page walkthrough.
+See [`docs/UI_GUIDE.md`](UI_GUIDE.md) for a full page-by-page walkthrough.
 
 ### Verify Installation
 

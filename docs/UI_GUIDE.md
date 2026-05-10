@@ -1,12 +1,10 @@
-# PSE Ecosystem — UI Quick-Start Guide (v1.0)
+# PSE Ecosystem — UI Guide (v1.0)
 
 **Private — University of Surrey**
 
-For the full page-by-page walkthrough see [`docs/UI_USER_GUIDE.md`](UI_USER_GUIDE.md).
-
 ---
 
-## 1. Install & Launch (3 commands)
+## 1. Install & Launch
 
 ```powershell
 & C:\Users\gh00616\.venvs\pse_ecosystem\Scripts\Activate.ps1
@@ -14,7 +12,11 @@ pip install -e ".[solvers,weather,gui]"
 streamlit run pse_ecosystem/ui/app_streamlit.py
 ```
 
-Opens at **http://localhost:8501**.
+Opens at **http://localhost:8501**. Requires at least one LP solver — install HiGHS if not present:
+
+```powershell
+pip install highspy
+```
 
 ---
 
@@ -25,13 +27,190 @@ Opens at **http://localhost:8501**.
 | 1 | **Dashboard** | Check LP Solver = "Available". Browse the template gallery. |
 | 2 | **Flowsheet Builder** | Pick category → template → configure parameters → **Apply & Select**. |
 | 3 | **GPS Weather** | Enter lat/lon → **Fetch Profiles** → view solar GHI and wind charts. |
-| 4 | **Solver Monitor** | Set max iterations → **Run Solve** → inspect convergence + KPIs. |
+| 4 | **Solver Monitor** | Set max iterations → **Run Solve** → watch live convergence + KPIs. |
 
 ---
 
-## 3. Engineering Parameter Reference
+## 3. Page-by-Page Walkthrough
 
-All editable parameters across templates. Adjusted in the **Flowsheet Builder** parameter form.
+### 3.1 Dashboard
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  ⚗ PSE Ecosystem                                    v1.0.0          │
+│  Private — University of Surrey                                      │
+├──────────────┬──────────────┬──────────────┬───────────────────────┤
+│  Templates   │  Unit Models │  LP Solver   │  Last Solve           │
+│     11       │  16+ HF units│  Available   │  CONVERGED            │
+├──────────────┴──────────────┴──────────────┴───────────────────────┤
+│  ▼ Architecture Overview                                             │
+│    Layer 1: UI (Streamlit)          ← you are here                  │
+│        │  calls flowsheet_service.py                                 │
+│    Layer 2: Solvers (Pyomo LP/MILP) ← Orchestrator, SLPDriver       │
+│        │  calls LinearizedModel interface                            │
+│    Layer 3: Knowledge (Unit Models) ← Physics, VLE, costing         │
+├─────────────────────────────────────────────────────────────────────┤
+│  Template Gallery                                                    │
+│  ┌──────────────────────────────┬────────────┬────────────────────┐ │
+│  │ Name                         │ Category   │ Units              │ │
+│  ├──────────────────────────────┼────────────┼────────────────────┤ │
+│  │ PEM Electrolysis             │ Hydrogen   │ PEMToy             │ │
+│  │ PEM + Gasifier (MILP)        │ Hydrogen   │ PEMToy, GasifierToy│ │
+│  │ Green Hydrogen Hub           │ Industrial │ PEMToy, MixerHF    │ │
+│  │ Power-to-Methanol            │ Industrial │ StoichRxr, SepHF   │ │
+│  │ Gasification to Power        │ Industrial │ StoichRxr, Comp    │ │
+│  │ Syngas Production            │ Industrial │ GasifierToy, SepHF │ │
+│  │ CSTR + Flash                 │ Small      │ CSTRHF, FlashVLHF  │ │
+│  │ ...                          │ ...        │ ...                │ │
+│  └──────────────────────────────┴────────────┴────────────────────┘ │
+│                                                                      │
+│  Last Solve Result                                                   │
+│  ✓ Converged in 3 iteration(s)  |  Objective: 9.62e+05              │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+| Card | Meaning |
+|---|---|
+| Templates | Number of registered flowsheet templates |
+| Unit Models | "16+ HF units" — the Layer-3 model library |
+| LP Solver | "Available" if HiGHS/GLPK detected, else an install hint |
+| Last Solve | Status of the most recent solver run |
+
+---
+
+### 3.2 Flowsheet Builder
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  🔧 Flowsheet Builder                                                │
+├──────────────────────┬──────────────────────────────────────────────┤
+│  Category            │  Flowsheet Topology                          │
+│  [Industrial      ▼] │                                              │
+│                      │   Feed([CO2+H2]) --> Rxr[Stoich. Reactor]    │
+│  Template            │   Rxr --> Sep[Separator]                     │
+│  [Power-to-Methanol▼]│   Sep --> Vap([Gas phase])                   │
+│                      │   Sep --> Liq([Liquid MeOH])                 │
+│  CO2 + 3H2 → methanol│                                              │
+│  + H2O, then split.  │  Stream Connections                          │
+│  Fully linear.       │  From            To        Description       │
+│                      │  Reactor outlet  Sep inlet  Rxr → Sep        │
+│                      │                                              │
+│                      │  Parameters                                  │
+│                      │  ┌──────────────────────────────────────┐   │
+│                      │  │ ▼ Flowsheet                          │   │
+│                      │  │   Extent Max   [  3.0            ]   │   │
+│                      │  │         [ Apply & Select ]           │   │
+│                      │  └──────────────────────────────────────┘   │
+│                      │  ✓ Template selected. Go to Solver Monitor.  │
+└──────────────────────┴──────────────────────────────────────────────┘
+```
+
+1. **Filter by Category** — All / Custom / Hydrogen / Industrial / Small.
+2. **Select Template** — description appears below the list.
+3. **View Topology** — Mermaid diagram renders the flowsheet. Toggle "Use simple Graphviz diagram" for offline environments.
+4. **Configure Parameters** — grouped by unit in collapsible expanders.
+5. **Apply & Select** → navigate to **Solver Monitor** to run.
+
+For the **Custom Flowsheet** option see §6 below.
+
+---
+
+### 3.3 GPS Weather
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  🌍 GPS Weather                                                      │
+│  Fetch site-specific solar & wind profiles via pvlib.                │
+├─────────────────────┬──────────────────────┬────────────────────────┤
+│  Latitude (°N)      │  Longitude (°E)      │  Altitude (m)          │
+│  [ 51.2400        ] │  [ -0.5900         ] │  [ 68.0             ]  │
+├─────────────────────┴──────────────────────┴────────────────────────┤
+│  Timezone (IANA)  [ Europe/London ]    Year  [ 2023 ]               │
+│                        [ Fetch Profiles ]                            │
+├──────────────────────────────────────────────────────────────────────┤
+│  Peak GHI (W/m²)  │  Mean Wind (m/s)  │  Solar Hours / Year         │
+│      833          │      7.11         │       4 380                 │
+├──────────────────────────────────────────────────────────────────────┤
+│  [ Solar GHI ]  [ Wind Speed ]         (interactive Plotly tabs)    │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+Default site: University of Surrey, Guildford (51.24°N, −0.59°E, 68 m).  
+Profiles are stored in session state and persist while the browser tab is open.
+
+---
+
+### 3.4 Solver Monitor
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  📊 Solver Monitor                                                   │
+│  Template: Syngas Production   Key: industrial.syngas_production     │
+├─────────────────────────────────────────────────────────────────────┤
+│  ▼ Solver Settings                                                   │
+│    Max iterations  [=============================·····] 50          │
+│    Step tolerance  [ 1.00e-04 ]                                      │
+│    ● Mode 1 — Fixed LP                                               │
+│    ☐ Verbose solver output                                           │
+│                          [ Run Solve ]                               │
+├─────────────────────────────────────────────────────────────────────┤
+│  [████████████████████░░░░░] Iteration 2 / 3 | Obj: 9.618e+05 | ‖f‖: 0.031
+│                                                                      │
+│  SLP — Live Convergence (updates each iteration)                     │
+│  Obj  1e6 ┤●                                                         │
+│           │╲                                                         │
+│       5e5 ┤ ╲●────────────────  — Objective                         │
+│       ‖f‖     ╲●  - - - - - - -  - - Residual norm                  │
+│           └──────────────────── iteration                            │
+├─────────────────────────────────────────────────────────────────────┤
+│  ✓ Converged in 3 iteration(s)  |  Objective: 9.619e+05             │
+│                                                                      │
+│  CI — gasifier (kg CO₂/kg H₂)   0.280   -0.720 vs 1.0 threshold ✓  │
+│                                                                      │
+│  h2_produced  │  lcoh    │  capex_USD  │  opex_per_year             │
+│    ...        │  ...     │  ...        │  ...                       │
+│                                                                      │
+│  [KPI bar chart]        [Solution Variables table]                   │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**During solve (non-linear templates):** progress bar + per-iteration caption + live dual-axis chart update on every SLP step.  
+**After solve:** live chart clears; full-resolution convergence chart, KPI cards, KPI bar chart, and solution variables table appear.  
+**Linear templates** (PEM, P2M): single LP shot — progress bar jumps to 100 % immediately.
+
+| Section | Content |
+|---|---|
+| Progress bar + caption | Iteration count, current objective, residual norm ‖f‖ |
+| Convergence plot | Dual-axis: Objective (left) + Residual norm (right) vs. SLP iteration |
+| CI KPI cards | Carbon Intensity highlighted with EU green H₂ threshold (1.0 kg CO₂/kg H₂) |
+| Other KPI cards | Rows of 4 metric cards |
+| KPI bar chart | All KPIs in one Plotly bar chart |
+| Solution Variables | Full `result.x` dict as a scrollable table |
+| Technology Selection | JSON badge (MILP mode only) showing active technologies |
+
+---
+
+## 4. Template Reference
+
+| Key | Name | Category | Units | Mode |
+|---|---|---|---|---|
+| `hydrogen.electrolysis_only` | PEM Electrolysis | Hydrogen | PEMToy | LP |
+| `hydrogen.electrolysis_or_gasification` | PEM + Gasifier | Hydrogen | PEMToy, GasifierToy | MILP |
+| `industrial.green_hydrogen` | Green Hydrogen Hub | Industrial | PEMToy, MixerHF | LP |
+| `industrial.power_to_methanol` | Power-to-Methanol | Industrial | StoichiometricReactor, SeparatorHF | LP |
+| `industrial.gasification_to_power` | Gasification to Power | Industrial | StoichiometricReactor, Compressor | LP |
+| `industrial.syngas_production` | Syngas Production | Industrial | GasifierToy, SeparatorHF | LP |
+| `custom.user_flowsheet` | Custom Flowsheet | Custom | User-defined (1–4 units) | LP |
+| `small.cstr_flash` | CSTR + Flash | Small | CSTRHF, FlashVLHF | LP |
+| `small.compression_train` | Compression Train | Small | Compressor, ShellTubeHX, Valve | LP |
+| `small.mixer_settler` | Mixer + Settler | Small | MixerHF, SeparatorHF | LP |
+| `small.distillation` | Distillation Column | Small | DistillationHF | LP |
+
+---
+
+## 5. Engineering Parameter Reference
+
+All editable parameters. Adjusted in the **Flowsheet Builder** parameter form.
 
 | Template | Parameter | Default | Unit | What it controls |
 |---|---|---|---|---|
@@ -39,26 +218,24 @@ All editable parameters across templates. Adjusted in the **Flowsheet Builder** 
 | All PEM templates | `pem.capacity_kW` | 10 000 | kW | Maximum rated power |
 | All PEM templates | `pem.electricity_price_per_kWh` | 0.05 | £/kWh | Electricity OPEX rate |
 | All PEM templates | `pem.capex_annual_per_kW` | 100 | £/kW/yr | Annualised CAPEX rate |
-| **All PEM templates** | **`pem.grid_carbon_intensity_kg_CO2_per_kWh`** | **0.233** | **kg CO₂/kWh** | **Grid emission factor** |
+| All PEM templates | `pem.grid_carbon_intensity_kg_CO2_per_kWh` | 0.233 | kg CO₂/kWh | Grid emission factor |
 | All PEM templates | `h2_demand_kg_per_h` | 100 | kg/h | H₂ production target |
 | P2M | `extent_max` | 3.0 | mol/s | Max reaction extent |
 | G2P | `comp.eta_isentropic` | 0.78 | — | Compressor isentropic efficiency |
 | G2P | `comp.P_out_Pa` | 500 000 | Pa | Compressor outlet pressure |
 | Syngas | `h2_demand_kg_per_h` | 200 | kg/h | Syngas production target |
 | Syngas | `co2_capture_fraction` | 0.95 | — | CO₂ scrubber removal fraction |
-| **Syngas** | **`gasifier.biomass_carbon_intensity_kg_CO2_per_kg`** | **0.03** | **kg CO₂/kg** | **Biomass lifecycle emission factor** |
+| Syngas | `gasifier.biomass_carbon_intensity_kg_CO2_per_kg` | 0.03 | kg CO₂/kg | Biomass lifecycle emission factor |
 | CSTR+Flash | `cstr.volume_m3` | 1.0 | m³ | Reactor volume |
 | Compression | `comp.eta_isentropic` | 0.75 | — | Compressor efficiency |
 | Compression | `hx.U_W_per_m2_K` | 500 | W/m²K | HX overall heat transfer coeff. |
 | Compression | `hx.A_m2` | 10 | m² | HX heat transfer area |
 
-**Note:** Cp and K-values are computed from NIST Shomate / Antoine correlations at the solver's operating T and P — they are not user-settable. This preserves thermodynamic consistency.
+**Note:** Cp and K-values are computed from NIST Shomate / Antoine correlations — not user-settable via the UI. See §9 for code-level overrides.
 
 ---
 
-## 4. Carbon Intensity KPI
-
-The **Solver Monitor** highlights the Carbon Intensity (CI) KPI separately when it appears in the results:
+## 6. Carbon Intensity KPI
 
 ```
 CI = (emission_factor × energy_or_feed × operating_hours) / annual_H2_produced
@@ -69,23 +246,22 @@ CI = (emission_factor × energy_or_feed × operating_hours) / annual_H2_produced
 | PEM templates | grid_carbon_intensity × electricity_kW × 8000 h / annual_H2_kg |
 | Syngas Production | biomass_carbon_intensity × feed_kg_h × 8000 h / annual_H2_kg |
 
-**EU green hydrogen threshold: 1.0 kg CO₂/kg H₂.**  
-The UI shows a red/green delta indicator against this value.
+**EU green hydrogen threshold: 1.0 kg CO₂/kg H₂.** The UI shows a red/green delta indicator.
 
 Typical values:
-- UK grid (2023): CI ≈ 12–13 kg CO₂/kg H₂ (high — use renewable tariff)
-- Wind/solar power: CI ≈ 0.3–0.8 kg CO₂/kg H₂ (below threshold)
+- UK grid (2023): CI ≈ 12–13 kg CO₂/kg H₂ (use renewable tariff to reduce)
+- Wind/solar power: CI ≈ 0.3–0.8 kg CO₂/kg H₂
 - Biomass gasification (residual): CI ≈ 0.3 kg CO₂/kg H₂
 
 ---
 
-## 5. Custom Flowsheet Walkthrough
+## 7. Custom Flowsheet
 
 1. In **Flowsheet Builder**, select category **Custom** → **Custom Flowsheet**.
 2. Set **Number of units** (1–4).
 3. For each unit: pick a **type** from the allowlist and enter a short **ID** (e.g. `pem`, `comp`).
 4. In the **Connections** panel, confirm which units wire together (outlet → inlet).
-5. Click **Build & Select** — the flowsheet is assembled and stored in session state.
+5. Click **Build & Select** — the flowsheet is stored in session state.
 6. Go to **Solver Monitor** → **Run Solve**.
 
 **Available unit types:**
@@ -101,29 +277,24 @@ Typical values:
 | `HeatExchangerNTU` | No | Q, effectiveness |
 
 **Tips:**
-- Connections only work when both ports have the same component list.
-- For complex topologies, build a factory function in `flowsheets/` instead (see Developer Guide in `UI_USER_GUIDE.md`).
+- Connections only work when both ports share the same component list.
+- For complex topologies, build a factory function in `flowsheets/` and register it (see §11).
 
 ---
 
-## 6. Packaging as a Standalone App
+## 8. Packaging as a Standalone App
 
 ```powershell
-# Check that PyInstaller and all deps are ready
-python scripts/package_app.py --check
-
-# Build (creates dist/pse_ecosystem_ui/)
-python scripts/package_app.py --build
-
-# See known issues (Streamlit bootstrap, solver bundling, etc.)
-python scripts/package_app.py --info
+python scripts/package_app.py --check    # pre-flight: Python version, PyInstaller, deps
+python scripts/package_app.py --build    # creates dist/pse_ecosystem_ui/
+python scripts/package_app.py --info     # known issues (Streamlit bootstrap, solver bundling)
 ```
 
-Output: `dist/pse_ecosystem_ui/` folder — copy to target machine and run.
+Output: `dist/pse_ecosystem_ui/` folder — copy to target machine and run. See `scripts/package_app.py` for Nuitka alternative and macOS/Linux notes.
 
 ---
 
-## 7. Running All Tests
+## 9. Running All Tests
 
 ```powershell
 python tests/ui_backend_sync.py    # 8 math accuracy checks
@@ -136,30 +307,68 @@ pytest tests\ -q                   # 107 unit tests
 
 ---
 
-## 8. Property Overrides (Code-Level)
+## 10. Troubleshooting
 
-The Streamlit UI exposes only *engineering* parameters (flow rates, temperatures, efficiencies). Thermodynamic properties — Shomate Cp/H, Antoine K-values — are computed from NIST data at the solver's operating T and P. This is intentional: exposing raw correlation coefficients in the UI would risk thermodynamic inconsistency (e.g. using methanol Antoine constants with water enthalpy).
+| Symptom | Fix |
+|---|---|
+| "No LP solver available" | `pip install highspy` or install GLPK |
+| "pvlib not installed" | `pip install 'pse_ecosystem[weather]'` |
+| "streamlit is required" | `pip install 'pse_ecosystem[gui]'` |
+| Template shows INFEASIBLE | Increase Max iterations in Solver Settings |
+| Mermaid diagram blank | Toggle "Use simple Graphviz diagram" (CDN may be blocked) |
+| Pyomo W1002 warning | Harmless numerical precision note; result is correct |
+| Live chart doesn't update | Only non-linear templates (Syngas, G2P, CSTR+Flash) trigger the callback; linear templates solve in one shot |
 
-### 8a. Overriding unit engineering parameters
+---
 
-Template parameters in **Flowsheet Builder** correspond directly to dataclass fields. You can also pass them programmatically:
+## 11. Developer Guide — Adding a Template
+
+1. **Create the flowsheet factory** in `pse_ecosystem/flowsheets/` (Layer 3). Follow patterns in `pse_ecosystem/flowsheets/industrial/`.
+
+2. **Register in `flowsheet_service.py`** (Layer 1 bridge):
+   - Add a `TemplateSpec` to `_REGISTRY`.
+   - Write `_load_<name>(p: dict)` with deferred Layer-3 imports.
+   - Add the key → loader mapping to `_LOADER_MAP`.
+
+3. **Verify** with the UI audit:
+   ```powershell
+   python tests/ui_audit.py
+   ```
+
+4. **Test convergence** programmatically:
+   ```python
+   from pse_ecosystem.ui.flowsheet_service import load_template
+   from pse_ecosystem.solvers.orchestrator import Orchestrator
+   from pse_ecosystem.core.contracts import SolveMode
+   fs = load_template("your.template.key", {})
+   r = Orchestrator(fs, SolveMode.FIXED_LP).solve()
+   print(r.status, r.kpis)
+   ```
+
+---
+
+## 12. Property Overrides (Code-Level)
+
+The UI exposes only engineering parameters. Thermodynamic properties (Shomate Cp/H, Antoine K-values) are computed from NIST data at the solver's operating T and P — exposing raw coefficients in the UI would risk thermodynamic inconsistency.
+
+### 12a. Overriding engineering parameters programmatically
 
 ```python
 from pse_ecosystem.ui.flowsheet_service import load_template
 
 fs = load_template("hydrogen.electrolysis_only", {
     "h2_demand_kg_per_h": 200.0,
-    "pem.eta_kg_per_kWh": 0.022,          # advanced-stack efficiency
-    "pem.electricity_price_per_kWh": 0.03, # wind PPA tariff
-    "pem.grid_carbon_intensity_kg_CO2_per_kWh": 0.05,  # wind grid mix
+    "pem.eta_kg_per_kWh": 0.022,
+    "pem.electricity_price_per_kWh": 0.03,
+    "pem.grid_carbon_intensity_kg_CO2_per_kWh": 0.05,
 })
 ```
 
 All `default_params` keys from `flowsheet_service._REGISTRY` are valid override keys.
 
-### 8b. Adding a new species to ideal-gas enthalpies
+### 12b. Adding a new species to ideal-gas enthalpies
 
-Edit `pse_ecosystem/models/properties/ideal_gas.py`. Add a NIST Shomate entry to `_SHOMATE`:
+Edit `pse_ecosystem/models/properties/ideal_gas.py`, add to `_SHOMATE`:
 
 ```python
 _SHOMATE["ethanol"] = {
@@ -170,71 +379,60 @@ _SHOMATE["ethanol"] = {
 }
 ```
 
-Keys match NIST Webbook format; units are J/(mol·K) for Cp, kJ/mol for H. The new species is immediately available to any HF unit that lists it in its `components` argument.
+NIST Webbook format; units are J/(mol·K) for Cp, kJ/mol for H. Immediately available to any HF unit listing the species in `components`.
 
-### 8c. Adding a new species to VLE K-values (Antoine)
+### 12c. Adding a new species to VLE K-values (Antoine)
 
-Edit `pse_ecosystem/models/properties/vle.py`. Add to `ANTOINE`:
+Edit `pse_ecosystem/models/properties/vle.py`, add to `ANTOINE`:
 
 ```python
 ANTOINE["ethanol"] = {"A": 8.04494, "B": 1554.3, "C": 222.65}  # log10(P/mmHg), T in °C
 ```
 
-Standard Antoine base-10 form. The species is then usable in `FlashVLHF`, `FlashSL`, `DistillationHF`, and `GibbsReactor`.
+Usable in `FlashVLHF`, `FlashSL`, `DistillationHF`, and `GibbsReactor`.
 
-### 8d. Custom equation of state via subclassing
-
-To replace the ideal-gas assumption in a single unit without touching the property module:
+### 12d. Custom EOS via subclassing
 
 ```python
-from pse_ecosystem.models.reactors.cstr_hf import CSTRHF, CSTRHFParams, ReactionConfig
+from pse_ecosystem.models.reactors.cstr_hf import CSTRHF
 
 class PengRobinsonCSTR(CSTRHF):
     def residual(self, x):
-        # compute enthalpy departure with PR EOS here, then call super()
+        # add PR enthalpy departure, then call super()
         ...
 ```
 
-Only `residual()` and optionally `jacobian()` need overriding. The `LinearizedModel` contract
-(`linearize()`) is inherited and calls your overridden `residual()` for the FD Jacobian.
+Only `residual()` (and optionally `jacobian()`) need overriding. `linearize()` is inherited and calls your overridden `residual()` for the FD Jacobian.
 
-**Layer boundary note:** All property edits stay inside `pse_ecosystem/models/properties/` (Layer 3). Neither the Orchestrator nor the SLP driver need to know — they only see the `LinearizedModel` returned by `linearize()`.
+**Layer boundary:** all property edits stay in `models/properties/` (Layer 3) — the Orchestrator and SLP driver only see `LinearizedModel`.
 
 ---
 
-## 9. Flowsheet Merging / Composition
+## 13. Flowsheet Merging / Composition
 
-Two `BaseFlowsheet` objects can be composed into a single larger flowsheet by merging their unit lists and wiring the boundary ports.
-
-### 9a. Merging two flowsheets
+### 13a. Merging two flowsheets
 
 ```python
 from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
 from pse_ecosystem.ui.flowsheet_service import load_template
 
-fs_a = load_template("industrial.gasification_to_power")   # GasifierToy → Compressor
-fs_b = load_template("industrial.green_hydrogen")           # PEMToy → MixerHF
+fs_a = load_template("industrial.gasification_to_power")
+fs_b = load_template("industrial.green_hydrogen")
 
-# Combine unit lists (no shared units)
 fs_merged = BaseFlowsheet(
     name="gasif_plus_pem",
     units=[*fs_a.units, *fs_b.units],
 )
-
-# Copy connections from both parent flowsheets
 for conn in [*fs_a.connections, *fs_b.connections]:
     fs_merged.connections.append(conn)
 
-# Merge extra_bounds (fs_b's bounds take precedence on conflicts)
+# fs_b's bounds take precedence on conflicts
 fs_merged.extra_bounds = {**fs_a.extra_bounds, **fs_b.extra_bounds}
 ```
 
-### 9b. Wiring a new cross-flowsheet connection
-
-Use `fs_merged.connect()` to wire a port on a unit from `fs_a` to a port on a unit from `fs_b`:
+### 13b. Wiring a cross-flowsheet connection
 
 ```python
-# Wire compressor outlet → PEM inlet (hypothetical syngas→electrolysis link)
 comp_unit = next(u for u in fs_a.units if "comp" in u.unit_id)
 pem_unit  = next(u for u in fs_b.units if "pem"  in u.unit_id)
 
@@ -245,40 +443,31 @@ fs_merged.connect(
 )
 ```
 
-`connect()` generates `Connection` objects — each wiring one scalar port variable to another. It raises `ValueError` if both ports do not share the same component list.
+`connect()` raises `ValueError` if ports have different component lists.
 
-### 9c. Registering a merged flowsheet in the UI
-
-Add the merged template to `flowsheet_service.py`:
+### 13c. Registering a merged flowsheet in the UI
 
 ```python
-# In _REGISTRY list:
+# flowsheet_service.py — _REGISTRY
 TemplateSpec(
     key="industrial.gasif_plus_pem",
     display_name="Gasification + PEM Hub",
     category="Industrial",
     description="Biomass gasification feeding a PEM electrolysis buffer.",
-    topology_diagram=("graph LR\n  Feed --> Gasif --> Comp --> PEM --> Out"),
+    topology_diagram="graph LR\n  Feed --> Gasif --> Comp --> PEM --> Out",
     unit_labels=["GasifierToy", "Compressor", "PEMToy", "MixerHF"],
     default_params={},
 )
 
-# In _LOADER_MAP:
+# _LOADER_MAP
 "industrial.gasif_plus_pem": _load_gasif_plus_pem,
-
-# Loader function:
-def _load_gasif_plus_pem(p: dict):
-    fs_a = _load_gasification_to_power(p)
-    fs_b = _load_green_hydrogen(p)
-    # merge as shown in 9a + 9b
-    ...
 ```
 
-### 9d. Gotchas
+### 13d. Gotchas
 
 | Issue | Fix |
 |---|---|
 | Port component mismatch | Both ports must list identical components (same strings, same order) |
-| `extra_bounds` conflict | `fs_b.extra_bounds` wins in `{**fs_a.extra_bounds, **fs_b.extra_bounds}` — set explicitly if needed |
-| KPI name collisions | Unit IDs from both flowsheets must be unique; KPIs are keyed by `unit_id.kpi_name` |
-| SLP initial guess | `BaseFlowsheet.initial_guess()` calls `unit.initial_guess()` for all units — ensure each unit provides a sensible midpoint |
+| `extra_bounds` conflict | Set explicitly; `{**fs_a, **fs_b}` gives fs_b precedence |
+| KPI name collisions | Unit IDs from both flowsheets must be unique |
+| SLP initial guess | Ensure each unit's `initial_guess()` returns a sensible midpoint |
