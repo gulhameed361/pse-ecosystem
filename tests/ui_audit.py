@@ -125,15 +125,15 @@ def _():
     return "import OK"
 
 
-@test("Service / list_templates() returns >= 9 entries")
+@test("Service / list_templates() returns >= 11 entries")
 def _():
     from pse_ecosystem.ui.flowsheet_service import list_templates
     ts = list_templates()
-    assert len(ts) >= 9, f"Expected >= 9 templates, got {len(ts)}"
+    assert len(ts) >= 11, f"Expected >= 11 templates, got {len(ts)}"
     for t in ts:
         assert t.key, "TemplateSpec.key is empty"
         assert t.display_name, "TemplateSpec.display_name is empty"
-        assert t.category in ("Small", "Hydrogen", "Industrial"), \
+        assert t.category in ("Small", "Hydrogen", "Industrial", "Custom"), \
             f"Unknown category: {t.category}"
     return f"{len(ts)} templates registered"
 

@@ -40,6 +40,7 @@ class GasifierToyParams:
     steam_price_per_kg: float = 0.02
     operating_hours_per_year: float = 8000.0
     capex_annual_GBP: float = 5_000_000.0
+    biomass_carbon_intensity_kg_CO2_per_kg: float = 0.03  # residual biomass lifecycle
 
 
 class GasifierToy(BaseUnit):
@@ -111,11 +112,17 @@ class GasifierToy(BaseUnit):
         annual_opex = annual_feed_cost + annual_steam_cost
         annual_capex = self.params.capex_annual_GBP
         lcoh = (annual_capex + annual_opex) / annual_h2 if annual_h2 > 1e-9 else float("nan")
+        annual_co2_kg = (
+            self.params.biomass_carbon_intensity_kg_CO2_per_kg
+            * feed * hours
+        )
+        ci = annual_co2_kg / annual_h2 if annual_h2 > 1e-9 else float("nan")
         return {
             f"{self.unit_id}.annual_h2_kg": annual_h2,
             f"{self.unit_id}.annual_opex_GBP": annual_opex,
             f"{self.unit_id}.annual_capex_GBP": annual_capex,
             f"{self.unit_id}.LCOH_GBP_per_kg": lcoh,
+            f"{self.unit_id}.CI_kg_CO2_per_kg_H2": ci,
         }
 
     # ── Analytical linearisation ──────────────────────────────────────────

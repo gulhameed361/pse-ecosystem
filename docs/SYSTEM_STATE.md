@@ -1,8 +1,8 @@
 # PSE Ecosystem — System State Ledger
 
-**Version:** 0.3.0
+**Version:** 1.0.0
 **Date:** 2026-05-10
-**Status:** v0.3.0 stable — 107 pytest tests + 15 UI audit checks + 17 system audit checks passing
+**Status:** v1.0.0 stable — 107 pytest + 15 UI audit + 17 system audit + 11 industrial audit + 8 backend-sync = **158 checks passing**
 
 ---
 
@@ -37,6 +37,31 @@
 - `docs/UI_USER_GUIDE.md` (new): full page-by-page walkthrough with ASCII mockups for all 4 pages (Dashboard, Flowsheet Builder, GPS Weather, Solver Monitor), template reference table, troubleshooting guide, developer guide for adding templates.
 - `docs/USER_MANUAL.md` updated to v0.3.0: Streamlit launch instructions, 4-page UI table, new §2 Pre-Built Industrial Flowsheets with Python API examples, layer architecture updated to document `flowsheet_service.py` boundary rule.
 - `README.md` updated: version header, `streamlit run` command in quick-start.
+
+### What's New in v1.0.0
+
+#### Carbon Intensity KPI
+- `PEMToyParams.grid_carbon_intensity_kg_CO2_per_kWh` (default 0.233 — UK grid 2023) added; `PEMToy.kpis()` now returns `CI_kg_CO2_per_kg_H2`.
+- `GasifierToyParams.biomass_carbon_intensity_kg_CO2_per_kg` (default 0.03 — residual biomass lifecycle) added; `GasifierToy.kpis()` returns same CI key.
+- Solver Monitor page highlights CI KPI with EU green hydrogen threshold (1.0 kg CO₂/kg H₂) and red/green delta indicator.
+
+#### Syngas Production Flowsheet
+- `flowsheets/industrial/syngas_production.py` — GasifierToy → SeparatorHF (CO₂ scrubber). Converges in 3 iterations. CI KPI available.
+
+#### Enhanced Flowsheet Builder
+- Engineering parameters grouped by unit in collapsible expanders.
+- **Custom Flowsheet** assembler: pick 1–4 units from allowlist, wire ports, build and solve.
+- `flowsheet_service.py`: `AVAILABLE_UNITS` allowlist, `build_custom_flowsheet()`, deferred `_instantiate_unit()`.
+
+#### Packaging Script
+- `scripts/package_app.py` — PyInstaller/Nuitka packaging helper with `--check`, `--build`, `--info` modes.
+
+#### Backend Sync Audit
+- `tests/ui_backend_sync.py` — 8 math accuracy checks: demand equality, LCOH formula, CI formula, P2M stoichiometry, G2P pressure, G2P extent, Syngas CI, custom flowsheet build.
+
+#### Documentation
+- `docs/UI_GUIDE.md` (new) — condensed quick-start, parameter reference, CI guide, custom flowsheet walkthrough, packaging.
+- All docs updated to v1.0.0.
 
 ---
 
@@ -104,7 +129,7 @@ Update it whenever the system state changes.
 
 ---
 
-## Complete Package Structure (v0.3.0)
+## Complete Package Structure (v1.0.0)
 
 ```
 pse_ecosystem/
@@ -117,10 +142,11 @@ pse_ecosystem/
 │   ├── base_flowsheet.py    BaseFlowsheet (with connect()), CompositeUnit
 │   ├── hydrogen/
 │   │   └── electrolysis_grid.py
-│   ├── industrial/                              ← NEW v0.3.0
-│   │   ├── green_hydrogen.py        PEMToy → MixerHF (LCOH KPI)
+│   ├── industrial/
+│   │   ├── green_hydrogen.py        PEMToy → MixerHF (LCOH + CI KPIs)
 │   │   ├── power_to_methanol.py     StoichRxr → SeparatorHF (linear, 1-iter)
-│   │   └── gasification_to_power.py StoichRxr (dry reforming) → Compressor
+│   │   ├── gasification_to_power.py StoichRxr (dry reforming) → Compressor
+│   │   └── syngas_production.py     ← NEW v1.0: GasifierToy → SeparatorHF (CO2 scrub, CI KPI)
 │   └── small/
 │       ├── adiabatic_cstr_flash.py
 │       ├── compression_train.py
@@ -178,11 +204,12 @@ pse_ecosystem/
 
 ---
 
-## Test Suite (v0.3.0)
+## Test Suite (v1.0.0)
 
 | File | Tests | Coverage |
 |---|---|---|
-| `tests/ui_audit.py` | 15 (standalone) | ← NEW v0.3.0: service imports, template convergence, layer boundary, MILP |
+| `tests/ui_backend_sync.py` | 8 (standalone) | ← NEW v1.0.0: math accuracy (demand, LCOH, CI, stoich, pressure, extent, custom) |
+| `tests/ui_audit.py` | 15 (standalone) | Service imports, template convergence (11 templates), layer boundary, MILP |
 | `tests/system_audit.py` | 17 (standalone) | Handshake, SLP, Hydrogen theme, KPI sanity, layer boundary |
 | `tests/industrial_audit.py` | 11 (standalone) | Feed→CSTR→Flash→Sep: physics closure, costing, layer boundary |
 | `tests/test_base_unit.py` | 4 pytest | BaseUnit Jacobian, bounds, FD correctness |
@@ -193,10 +220,11 @@ pse_ecosystem/
 | `tests/test_hf_units.py` | 38 pytest | All 16 HF units: residual shape, mass balance, capex |
 | `tests/test_costing.py` | 17 pytest | SSLW correlations, CEPCI escalation, Pyomo-free check |
 
-**Total: 107 pytest + 15 UI audit + 17 system audit + 11 industrial audit = 150 checks**
+**Total: 107 pytest + 8 backend-sync + 15 UI audit + 17 system audit + 11 industrial audit = 158 checks**
 
 Run all:
 ```powershell
+python tests/ui_backend_sync.py
 python tests/ui_audit.py
 python tests/system_audit.py
 python tests/industrial_audit.py
@@ -261,7 +289,8 @@ Enforced by `test_solvers_do_not_import_concrete_unit_modules`.
 | File | Purpose |
 |---|---|
 | `docs/ARCHITECTURE.md` | Load-bearing architectural blueprint: 3-layer split, Handshake Protocol, layer boundary enforcement |
-| `docs/UI_USER_GUIDE.md` | ← NEW v0.3.0: Streamlit UI walkthrough with ASCII mockups, template reference, troubleshooting, developer guide |
+| `docs/UI_GUIDE.md` | ← NEW v1.0.0: condensed quick-start, parameter reference, CI guide, custom flowsheet, packaging |
+| `docs/UI_USER_GUIDE.md` | Full walkthrough with ASCII mockups, template reference, troubleshooting, developer guide |
 | `docs/USER_MANUAL.md` | v0.3.0: installation, Streamlit launch, pre-built templates API, fs.connect() patterns, unit catalog, SLP config |
 | `docs/DEVELOPER_GUIDE.md` | Adding units, flowsheets, testing patterns, forbidden import rules |
 | `docs/THEORY_REFERENCE.md` | Physics: VLE, Rachford-Rice, ODE, property correlations, SLP theory |
@@ -269,4 +298,8 @@ Enforced by `test_solvers_do_not_import_concrete_unit_modules`.
 
 ---
 
-*Source of truth for PSE Ecosystem v0.3.0. Update this file after every significant change.*
+| VLE model | Raoult's Law (ideal VLE). NRTL/Wilson activity coefficients deferred to v1.1. |
+
+---
+
+*Source of truth for PSE Ecosystem v1.0.0. Update this file after every significant change.*

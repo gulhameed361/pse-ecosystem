@@ -28,6 +28,7 @@ class PEMToyParams:
     electricity_price_per_kWh: float = 0.05   # GBP / kWh
     capex_annual_per_kW: float = 100.0        # GBP / kW / yr
     operating_hours_per_year: float = 8000.0
+    grid_carbon_intensity_kg_CO2_per_kWh: float = 0.233  # UK grid avg 2023
 
 
 class PEMToy(BaseUnit):
@@ -83,11 +84,17 @@ class PEMToy(BaseUnit):
         annual_opex = electricity * self.params.electricity_price_per_kWh * hours
         annual_capex = self.params.capex_annual_per_kW * self.params.capacity_kW
         lcoh = (annual_capex + annual_opex) / annual_h2 if annual_h2 > 1e-9 else float("nan")
+        annual_co2_kg = (
+            self.params.grid_carbon_intensity_kg_CO2_per_kWh
+            * electricity * hours
+        )
+        ci = annual_co2_kg / annual_h2 if annual_h2 > 1e-9 else float("nan")
         return {
             f"{self.unit_id}.annual_h2_kg": annual_h2,
             f"{self.unit_id}.annual_opex_GBP": annual_opex,
             f"{self.unit_id}.annual_capex_GBP": annual_capex,
             f"{self.unit_id}.LCOH_GBP_per_kg": lcoh,
+            f"{self.unit_id}.CI_kg_CO2_per_kg_H2": ci,
         }
 
     # ── Analytical linearisation override ─────────────────────────────────

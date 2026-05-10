@@ -140,7 +140,9 @@ def _page_flowsheet_builder():
     st.title("Flowsheet Builder")
 
     templates = list_templates()
-    categories = ["All"] + sorted({t.category for t in templates})
+    categories = ["All"] + sorted({t.category for t in templates},
+                                  key=lambda c: ["Custom", "Hydrogen", "Industrial", "Small"].index(c)
+                                  if c in ["Custom", "Hydrogen", "Industrial", "Small"] else 99)
 
     col_left, col_right = st.columns([1, 2])
 
@@ -200,37 +202,111 @@ def _page_flowsheet_builder():
                 hide_index=True,
             )
 
-        # Parameter form
-        st.subheader("Parameters")
+        # Parameter form — grouped by unit prefix
+        st.subheader("Engineering Parameters")
         defaults = dict(spec.default_params)
         current_params = st.session_state.get("template_params", {})
         if st.session_state.get("selected_template") != chosen_key:
             current_params = {}
 
-        with st.form("configure_template"):
-            updated: dict = {}
-            if defaults:
-                for k, v in defaults.items():
-                    label = k.replace("_", " ").title()
-                    cur_val = current_params.get(k, v)
-                    if isinstance(v, float):
-                        updated[k] = st.number_input(label, value=float(cur_val), format="%.4g")
-                    elif isinstance(v, int):
-                        updated[k] = int(st.number_input(label, value=int(cur_val), step=1))
-                    elif isinstance(v, str):
-                        updated[k] = st.text_input(label, value=str(cur_val))
-                    else:
-                        updated[k] = v
-            else:
-                st.info("This template uses fixed default parameters.")
+        # Custom flowsheet assembler (shown only for custom.user_flowsheet)
+        if chosen_key == "custom.user_flowsheet":
+            _render_custom_assembler(st, current_params, chosen_key, spec)
+        else:
+            with st.form("configure_template"):
+                updated: dict = {}
+                if defaults:
+                    # Group params by unit prefix (e.g. "pem.", "comp.")
+                    groups: dict = {}
+                    for k, v in defaults.items():
+                        prefix = k.split(".")[0] if "." in k else "flowsheet"
+                        groups.setdefault(prefix, {})[k] = v
 
-            if st.form_submit_button("Apply & Select", type="primary"):
-                st.session_state["selected_template"] = chosen_key
-                st.session_state["template_params"] = updated
-                st.success(
-                    f"Template **{spec.display_name}** selected. "
-                    "Go to **Solver Monitor** to run."
-                )
+                    for group_name, group_params in groups.items():
+                        label = "Flowsheet" if group_name == "flowsheet" else f"Unit: {group_name}"
+                        with st.expander(label, expanded=True):
+                            for k, v in group_params.items():
+                                param_label = k.split(".")[-1].replace("_", " ").title()
+                                cur_val = current_params.get(k, v)
+                                if isinstance(v, float):
+                                    updated[k] = st.number_input(
+                                        param_label, value=float(cur_val), format="%.4g",
+                                        key=f"param_{chosen_key}_{k}"
+                                    )
+                                elif isinstance(v, int):
+                                    updated[k] = int(st.number_input(
+                                        param_label, value=int(cur_val), step=1,
+                                        key=f"param_{chosen_key}_{k}"
+                                    ))
+                                elif isinstance(v, str):
+                                    updated[k] = st.text_input(
+                                        param_label, value=str(cur_val),
+                                        key=f"param_{chosen_key}_{k}"
+                                    )
+                                else:
+                                    updated[k] = v
+                else:
+                    st.info("This template uses fixed default parameters.")
+
+                if st.form_submit_button("Apply & Select", type="primary"):
+                    st.session_state["selected_template"] = chosen_key
+                    st.session_state["template_params"] = updated
+                    st.success(
+                        f"Template **{spec.display_name}** selected. "
+                        "Go to **Solver Monitor** to run."
+                    )
+
+
+# ── Custom flowsheet assembler ────────────────────────────────────────────────
+
+def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) -> None:
+    """Render the unit-picker + port-wiring UI for the custom template."""
+    from pse_ecosystem.ui.flowsheet_service import AVAILABLE_UNITS, build_custom_flowsheet
+
+    st.info(
+        "Pick up to 4 units, set their parameters, declare connections, "
+        "then click **Build & Select**."
+    )
+
+    n_units = st.number_input("Number of units", min_value=1, max_value=4, value=2, step=1)
+    unit_types = list(AVAILABLE_UNITS.keys())
+
+    unit_configs = []
+    for i in range(int(n_units)):
+        with st.expander(f"Unit {i + 1}", expanded=True):
+            utype = st.selectbox(
+                "Type", unit_types,
+                index=min(i, len(unit_types) - 1),
+                key=f"custom_unit_type_{i}",
+                help=AVAILABLE_UNITS.get(unit_types[min(i, len(unit_types)-1)], ""),
+            )
+            uid = st.text_input("Unit ID", value=f"u{i+1}", key=f"custom_unit_id_{i}")
+            unit_configs.append({"type": utype, "id": uid, "params": {}})
+
+    st.subheader("Connections")
+    st.caption("Wire outlet → inlet between adjacent units (sequential by default).")
+    ids = [u["id"] for u in unit_configs]
+    connections = []
+    for i in range(len(ids) - 1):
+        col_a, col_b = st.columns(2)
+        from_u = col_a.selectbox("From", ids, index=i,   key=f"conn_from_{i}")
+        to_u   = col_b.selectbox("To",   ids, index=i+1, key=f"conn_to_{i}")
+        connections.append({"from_unit": from_u, "to_unit": to_u})
+
+    if st.button("Build & Select", type="primary"):
+        try:
+            config = {"units": unit_configs, "connections": connections}
+            fs = build_custom_flowsheet(config)
+            st.session_state["selected_template"] = chosen_key
+            st.session_state["template_params"] = {}
+            st.session_state["custom_flowsheet"] = fs
+            n_conn = len(fs.connections)
+            st.success(
+                f"Custom flowsheet built: {len(fs.units)} units, "
+                f"{n_conn} connections. Go to **Solver Monitor** to run."
+            )
+        except Exception as exc:
+            st.error(f"Build failed: {exc}")
 
 
 # ── Page 3: GPS Weather ───────────────────────────────────────────────────────
@@ -378,7 +454,14 @@ def _page_solver_monitor():
             params = st.session_state.get("template_params", {})
 
             with st.spinner(f"Solving {spec.display_name}..."):
-                if mode == SolveMode.FLEXIBLE_MILP:
+                # Custom flowsheet: use pre-built flowsheet from session state
+                if selected_key == "custom.user_flowsheet":
+                    flowsheet = st.session_state.get("custom_flowsheet")
+                    if flowsheet is None:
+                        st.error("No custom flowsheet built yet. Go to Flowsheet Builder first.")
+                        return
+                    tech_choices = []
+                elif mode == SolveMode.FLEXIBLE_MILP:
                     flowsheet, tech_choices = load_template_with_choices(selected_key, params)
                 else:
                     flowsheet = load_template(selected_key, params)
@@ -447,10 +530,37 @@ def _page_solver_monitor():
         import plotly.graph_objects as go
 
         st.subheader("KPIs")
-        kpi_items = list(result.kpis.items())
-        row_size  = 4
-        for row_start in range(0, len(kpi_items), row_size):
-            row_items = kpi_items[row_start:row_start + row_size]
+
+        # Carbon Intensity — highlight separately with threshold indicator
+        _CI_KEY_SUFFIX = "CI_kg_CO2_per_kg_H2"
+        _CI_GREEN_THRESHOLD = 1.0   # kg CO2/kg H2 (below = green hydrogen)
+        ci_kpis = {k: v for k, v in result.kpis.items() if k.endswith(_CI_KEY_SUFFIX)}
+        if ci_kpis:
+            ci_cols = st.columns(len(ci_kpis))
+            for col, (k, v) in zip(ci_cols, ci_kpis.items()):
+                unit_label = k.split(".")[0]
+                delta_str = (
+                    f"{v - _CI_GREEN_THRESHOLD:+.3f} vs 1.0 threshold"
+                    if not (v != v) else "N/A"
+                )
+                col.metric(
+                    f"CI — {unit_label} (kg CO₂/kg H₂)",
+                    f"{v:.3f}" if not (v != v) else "N/A",
+                    delta=delta_str,
+                    delta_color="inverse",
+                )
+            st.caption(
+                "Carbon Intensity threshold: **1.0 kg CO₂/kg H₂** "
+                "(EU green hydrogen definition). Lower is greener."
+            )
+            st.divider()
+
+        # All other KPIs in rows of 4
+        other_kpis = [(k, v) for k, v in result.kpis.items()
+                      if not k.endswith(_CI_KEY_SUFFIX)]
+        row_size = 4
+        for row_start in range(0, len(other_kpis), row_size):
+            row_items = other_kpis[row_start:row_start + row_size]
             cols = st.columns(len(row_items))
             for col, (k, v) in zip(cols, row_items):
                 label = k.split(".")[-1].replace("_", " ")

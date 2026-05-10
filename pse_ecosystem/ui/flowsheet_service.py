@@ -29,13 +29,26 @@ class TemplateSpec:
 
     key: str
     display_name: str
-    category: str          # "Small" | "Hydrogen" | "Industrial"
+    category: str          # "Small" | "Hydrogen" | "Industrial" | "Custom"
     description: str
     topology_diagram: str  # Mermaid flowchart string
     unit_labels: List[str]
     default_params: Dict[str, Any] = field(default_factory=dict)
     supports_milp: bool = False
     connections_human: List[Tuple[str, str, str]] = field(default_factory=list)
+
+
+# ── Allowlist for the custom flowsheet assembler ──────────────────────────────
+
+AVAILABLE_UNITS: Dict[str, str] = {
+    "PEMToy":                "Electrolyser — linear (LCOH + Carbon Intensity KPIs)",
+    "GasifierToy":           "Gasifier toy — non-linear (LCOH + Carbon Intensity KPIs)",
+    "StoichiometricReactor": "Stoichiometric reactor — linear (exact analytical J)",
+    "MixerHF":               "Multi-stream mixer — non-linear (energy balance)",
+    "SeparatorHF":           "Separator — split fractions, linear",
+    "Compressor":            "Isentropic compressor — non-linear",
+    "HeatExchangerNTU":      "Heat exchanger NTU — non-linear (counter-current)",
+}
 
 
 # ── Internal template registry ────────────────────────────────────────────────
@@ -47,7 +60,7 @@ _REGISTRY: List[TemplateSpec] = [
         display_name="PEM Electrolysis",
         category="Hydrogen",
         description="Single PEM electrolyser meeting a fixed H2 demand. "
-                    "Fully linear — solves in one LP step.",
+                    "Fully linear — solves in one LP step. Reports LCOH and Carbon Intensity.",
         topology_diagram=(
             "graph LR\n"
             "    Grid([Grid / Renewables]) --> PEM[PEM Electrolyser]\n"
@@ -55,7 +68,14 @@ _REGISTRY: List[TemplateSpec] = [
             "    style PEM fill:#4a90e2,color:#fff"
         ),
         unit_labels=["PEMToy"],
-        default_params={"h2_demand_kg_per_h": 100.0},
+        default_params={
+            "h2_demand_kg_per_h": 100.0,
+            "pem.eta_kg_per_kWh": 0.018,
+            "pem.capacity_kW": 10_000.0,
+            "pem.electricity_price_per_kWh": 0.05,
+            "pem.capex_annual_per_kW": 100.0,
+            "pem.grid_carbon_intensity_kg_CO2_per_kWh": 0.233,
+        },
     ),
 
     TemplateSpec(
@@ -74,7 +94,12 @@ _REGISTRY: List[TemplateSpec] = [
             "    style Gas fill:#e67e22,color:#fff"
         ),
         unit_labels=["PEMToy", "GasifierToy"],
-        default_params={"h2_demand_kg_per_h": 100.0},
+        default_params={
+            "h2_demand_kg_per_h": 100.0,
+            "pem.electricity_price_per_kWh": 0.05,
+            "pem.grid_carbon_intensity_kg_CO2_per_kWh": 0.233,
+            "gasifier.biomass_carbon_intensity_kg_CO2_per_kg": 0.03,
+        },
         supports_milp=True,
     ),
 
@@ -83,7 +108,7 @@ _REGISTRY: List[TemplateSpec] = [
         display_name="Green Hydrogen Hub",
         category="Industrial",
         description="PEM electrolyser with H2 buffer mixer. "
-                    "Includes LCOH KPI and H2 demand equality.",
+                    "Reports LCOH and Carbon Intensity KPIs.",
         topology_diagram=(
             "graph LR\n"
             "    Elec([Electricity]) --> PEM[PEM Electrolyser]\n"
@@ -93,7 +118,14 @@ _REGISTRY: List[TemplateSpec] = [
             "    style Buf fill:#27ae60,color:#fff"
         ),
         unit_labels=["PEMToy", "MixerHF"],
-        default_params={"h2_demand_kg_per_h": 100.0},
+        default_params={
+            "h2_demand_kg_per_h": 100.0,
+            "pem.eta_kg_per_kWh": 0.018,
+            "pem.capacity_kW": 10_000.0,
+            "pem.electricity_price_per_kWh": 0.05,
+            "pem.capex_annual_per_kW": 100.0,
+            "pem.grid_carbon_intensity_kg_CO2_per_kWh": 0.233,
+        },
         connections_human=[("PEM H2 out", "Buffer inlet_0", "H2 mass balance")],
     ),
 
@@ -114,7 +146,11 @@ _REGISTRY: List[TemplateSpec] = [
             "    style Sep fill:#8e44ad,color:#fff"
         ),
         unit_labels=["StoichiometricReactor", "SeparatorHF"],
-        default_params={"extent_max": 3.0},
+        default_params={
+            "extent_max": 3.0,
+            "sep.split_methanol_liquid": 0.95,
+            "sep.split_water_liquid": 0.98,
+        },
         connections_human=[("Reactor outlet", "Separator inlet", "Reactor → Separator")],
     ),
 
@@ -133,8 +169,54 @@ _REGISTRY: List[TemplateSpec] = [
             "    style Comp fill:#c0392b,color:#fff"
         ),
         unit_labels=["StoichiometricReactor", "Compressor"],
-        default_params={"extent_max": 4.0},
+        default_params={
+            "extent_max": 4.0,
+            "comp.eta_isentropic": 0.78,
+            "comp.P_out_Pa": 500_000.0,
+        },
         connections_human=[("Gasifier outlet", "Compressor inlet", "Syngas feed")],
+    ),
+
+    TemplateSpec(
+        key="industrial.syngas_production",
+        display_name="Syngas Production",
+        category="Industrial",
+        description="Toy gasifier → CO2 scrubber (PSA/membrane) → clean syngas. "
+                    "Reports LCOH and Carbon Intensity KPIs.",
+        topology_diagram=(
+            "graph LR\n"
+            "    Feed([Biomass / waste]) --> Gas[GasifierToy\nnon-linear]\n"
+            "    Gas --> Scrub[CO2 Scrubber\nSeparatorHF]\n"
+            "    Scrub --> Syngas([Clean syngas\nH2-rich])\n"
+            "    Scrub --> CO2([CO2 captured])\n"
+            "    style Gas fill:#e67e22,color:#fff\n"
+            "    style Scrub fill:#d35400,color:#fff"
+        ),
+        unit_labels=["GasifierToy", "SeparatorHF"],
+        default_params={
+            "h2_demand_kg_per_h": 200.0,
+            "co2_capture_fraction": 0.95,
+            "gasifier.biomass_carbon_intensity_kg_CO2_per_kg": 0.03,
+        },
+        connections_human=[("Gasifier H2 out", "Scrubber H2_syngas inlet", "H2 mass balance")],
+    ),
+
+    TemplateSpec(
+        key="custom.user_flowsheet",
+        display_name="Custom Flowsheet",
+        category="Custom",
+        description="Assemble your own flowsheet: pick up to 4 units from the "
+                    "allowlist, set their engineering parameters, and wire ports.",
+        topology_diagram=(
+            "graph LR\n"
+            "    U1[Unit 1] --> U2[Unit 2]\n"
+            "    U2 --> U3[Unit 3]\n"
+            "    style U1 fill:#95a5a6,color:#fff\n"
+            "    style U2 fill:#7f8c8d,color:#fff\n"
+            "    style U3 fill:#636e72,color:#fff"
+        ),
+        unit_labels=[],
+        default_params={},
     ),
 
     TemplateSpec(
@@ -153,6 +235,7 @@ _REGISTRY: List[TemplateSpec] = [
             "    style Flash fill:#7b68ee,color:#fff"
         ),
         unit_labels=["CSTRHF", "FlashVLHF"],
+        default_params={"cstr.volume_m3": 1.0},
         connections_human=[("CSTR outlet", "Flash inlet", "Reactor effluent")],
     ),
 
@@ -173,6 +256,12 @@ _REGISTRY: List[TemplateSpec] = [
             "    style Valve fill:#1a6fa0,color:#fff"
         ),
         unit_labels=["Compressor", "ShellTubeHX", "Valve"],
+        default_params={
+            "comp.eta_isentropic": 0.75,
+            "comp.P_out_Pa": 500_000.0,
+            "hx.U_W_per_m2_K": 500.0,
+            "hx.A_m2": 10.0,
+        },
         connections_human=[
             ("Compressor outlet", "HX hot inlet", "Compressed gas → cooler"),
             ("HX hot outlet", "Valve inlet", "Cooled gas → let-down"),
@@ -232,16 +321,7 @@ def get_template(key: str) -> TemplateSpec:
 
 
 def load_template(key: str, params: Optional[Dict[str, Any]] = None) -> "BaseFlowsheet":
-    """Import the factory for *key* and return a ``BaseFlowsheet``.
-
-    Parameters
-    ----------
-    key:
-        Template registry key, e.g. ``"industrial.green_hydrogen"``.
-    params:
-        Dict of parameter overrides matching the template's ``default_params``
-        keys.  Missing keys fall back to the template defaults.
-    """
+    """Import the factory for *key* and return a ``BaseFlowsheet``."""
     p = dict(_REGISTRY_MAP[key].default_params)
     p.update(params or {})
     loader = _LOADER_MAP.get(key)
@@ -256,8 +336,7 @@ def load_template_with_choices(
 ) -> "Tuple[BaseFlowsheet, list]":
     """Like ``load_template`` but returns ``(flowsheet, technology_choices)``.
 
-    Only valid for MILP templates (``supports_milp=True``).  Raises
-    ``ValueError`` for non-MILP templates.
+    Only valid for MILP templates (``supports_milp=True``).
     """
     spec = _REGISTRY_MAP[key]
     if not spec.supports_milp:
@@ -273,19 +352,152 @@ def load_template_with_choices(
     return loader(p)
 
 
+def build_custom_flowsheet(config: Dict[str, Any]) -> "BaseFlowsheet":
+    """Assemble a BaseFlowsheet from a user-defined unit + connection config.
+
+    Parameters
+    ----------
+    config : dict with keys:
+        ``"units"`` — list of dicts: {``"type"``: str, ``"id"``: str, ``"params"``: dict}
+        ``"connections"`` — list of dicts: {``"from_unit"``: str, ``"to_unit"``: str}
+            Each connection wires *from_unit*.outlet_port → *to_unit*.inlet_port.
+
+    Only unit types in ``AVAILABLE_UNITS`` are accepted.
+    """
+    from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
+
+    unit_objects = []
+    unit_map: Dict[str, Any] = {}
+
+    for unit_cfg in config.get("units", []):
+        utype  = unit_cfg["type"]
+        uid    = unit_cfg["id"]
+        params = unit_cfg.get("params", {})
+
+        if utype not in AVAILABLE_UNITS:
+            raise ValueError(
+                f"Unit type '{utype}' is not in the allowed list. "
+                f"Choose from: {list(AVAILABLE_UNITS)}"
+            )
+
+        unit_obj = _instantiate_unit(utype, uid, params)
+        unit_objects.append(unit_obj)
+        unit_map[uid] = unit_obj
+
+    fs = BaseFlowsheet(name="custom.user_flowsheet", units=unit_objects)
+
+    for conn in config.get("connections", []):
+        from_u = unit_map.get(conn["from_unit"])
+        to_u   = unit_map.get(conn["to_unit"])
+        if from_u is None or to_u is None:
+            continue
+        out_port = getattr(from_u, "outlet_port", None)
+        in_port  = getattr(to_u,   "inlet_port",  None)
+        if out_port is not None and in_port is not None:
+            try:
+                fs.connect(out_port, in_port,
+                           description=f"{conn['from_unit']} → {conn['to_unit']}")
+            except ValueError:
+                pass  # port mismatch — skip silently, UI shows warning
+
+    return fs
+
+
+def _instantiate_unit(utype: str, uid: str, params: dict) -> Any:
+    """Instantiate a unit by type name using safe deferred imports."""
+    if utype == "PEMToy":
+        from pse_ecosystem.models.electrolysis.pem_toy import PEMToy, PEMToyParams
+        p = PEMToyParams(
+            eta_kg_per_kWh=float(params.get("eta_kg_per_kWh", 0.018)),
+            capacity_kW=float(params.get("capacity_kW", 10_000.0)),
+            electricity_price_per_kWh=float(params.get("electricity_price_per_kWh", 0.05)),
+            capex_annual_per_kW=float(params.get("capex_annual_per_kW", 100.0)),
+            grid_carbon_intensity_kg_CO2_per_kWh=float(
+                params.get("grid_carbon_intensity_kg_CO2_per_kWh", 0.233)
+            ),
+        )
+        return PEMToy(uid, p)
+
+    if utype == "GasifierToy":
+        from pse_ecosystem.models.gasification.gasifier_toy import GasifierToy, GasifierToyParams
+        p = GasifierToyParams(
+            biomass_carbon_intensity_kg_CO2_per_kg=float(
+                params.get("biomass_carbon_intensity_kg_CO2_per_kg", 0.03)
+            ),
+        )
+        return GasifierToy(uid, p)
+
+    if utype == "StoichiometricReactor":
+        from pse_ecosystem.models.reactors.stoichiometric_reactor import (
+            StoichiometricReactor, StoichiometricParams,
+        )
+        components = params.get("components", ["CO2", "H2", "methanol", "water"])
+        stoich = params.get("stoichiometry", {"CO2": [-1.0], "H2": [-3.0],
+                                               "methanol": [1.0], "water": [1.0]})
+        sp = StoichiometricParams(
+            stoichiometry={c: stoich.get(c, [0.0]) for c in components},
+            xi_max=params.get("xi_max", None),
+            feed_max=float(params.get("feed_max", 50.0)),
+        )
+        return StoichiometricReactor(uid, components, sp)
+
+    if utype == "MixerHF":
+        from pse_ecosystem.models.mixers.mixer_hf import MixerHF, MixerHFParams
+        components = params.get("components", ["H2", "H2O"])
+        mp = MixerHFParams(n_inlets=int(params.get("n_inlets", 2)))
+        return MixerHF(uid, components, mp)
+
+    if utype == "SeparatorHF":
+        from pse_ecosystem.models.separators.separator_hf import SeparatorHF, SeparatorHFParams
+        components = params.get("components", ["H2", "CO2"])
+        sp = SeparatorHFParams(n_outlets=int(params.get("n_outlets", 2)))
+        return SeparatorHF(uid, components, sp)
+
+    if utype == "Compressor":
+        from pse_ecosystem.models.pressure_changers.compressor import Compressor, CompressorParams
+        components = params.get("components", ["H2", "CO", "CO2"])
+        cp = CompressorParams(
+            eta_isentropic=float(params.get("eta_isentropic", 0.78)),
+            P_out_Pa=float(params.get("P_out_Pa", 500_000.0)),
+        )
+        return Compressor(uid, components, cp)
+
+    if utype == "HeatExchangerNTU":
+        from pse_ecosystem.models.heat_exchangers.heat_exchanger_ntu import (
+            HeatExchangerNTU, HeatExchangerNTUParams,
+        )
+        hot  = params.get("hot_components",  ["H2", "CO"])
+        cold = params.get("cold_components", ["H2O"])
+        hp = HeatExchangerNTUParams(
+            UA_W_per_K=float(params.get("UA_W_per_K", 5000.0)),
+        )
+        return HeatExchangerNTU(uid, hot, cold, hp)
+
+    raise ValueError(f"Unknown unit type: {utype}")
+
+
 # ── Deferred layer-3 loaders ─────────────────────────────────────────────────
-# All Layer-3 imports happen INSIDE these functions.  Top-level imports of
-# this module therefore do not trigger scipy / pyomo / pvlib import chains.
 
 def _load_electrolysis_only(p: dict):
     from pse_ecosystem.flowsheets.hydrogen.electrolysis_grid import make_electrolysis_only
-    return make_electrolysis_only(h2_demand_kg_per_h=float(p["h2_demand_kg_per_h"]))
+    from pse_ecosystem.models.electrolysis.pem_toy import PEMToyParams
+    pem_p = PEMToyParams(
+        eta_kg_per_kWh=float(p.get("pem.eta_kg_per_kWh", 0.018)),
+        capacity_kW=float(p.get("pem.capacity_kW", 10_000.0)),
+        electricity_price_per_kWh=float(p.get("pem.electricity_price_per_kWh", 0.05)),
+        capex_annual_per_kW=float(p.get("pem.capex_annual_per_kW", 100.0)),
+        grid_carbon_intensity_kg_CO2_per_kWh=float(
+            p.get("pem.grid_carbon_intensity_kg_CO2_per_kWh", 0.233)
+        ),
+    )
+    return make_electrolysis_only(
+        h2_demand_kg_per_h=float(p["h2_demand_kg_per_h"]),
+        pem_params=pem_p,
+    )
 
 
 def _load_electrolysis_or_gasification_flowsheet(p: dict):
-    from pse_ecosystem.flowsheets.hydrogen.electrolysis_grid import (
-        make_electrolysis_or_gasification,
-    )
+    from pse_ecosystem.flowsheets.hydrogen.electrolysis_grid import make_electrolysis_or_gasification
     fs, _ = make_electrolysis_or_gasification(
         h2_demand_kg_per_h=float(p["h2_demand_kg_per_h"])
     )
@@ -293,9 +505,7 @@ def _load_electrolysis_or_gasification_flowsheet(p: dict):
 
 
 def _load_electrolysis_or_gasification_milp(p: dict):
-    from pse_ecosystem.flowsheets.hydrogen.electrolysis_grid import (
-        make_electrolysis_or_gasification,
-    )
+    from pse_ecosystem.flowsheets.hydrogen.electrolysis_grid import make_electrolysis_or_gasification
     return make_electrolysis_or_gasification(
         h2_demand_kg_per_h=float(p["h2_demand_kg_per_h"])
     )
@@ -303,7 +513,20 @@ def _load_electrolysis_or_gasification_milp(p: dict):
 
 def _load_green_hydrogen(p: dict):
     from pse_ecosystem.flowsheets.industrial.green_hydrogen import make_green_hydrogen_hub
-    return make_green_hydrogen_hub(h2_demand_kg_per_h=float(p["h2_demand_kg_per_h"]))
+    from pse_ecosystem.models.electrolysis.pem_toy import PEMToyParams
+    pem_p = PEMToyParams(
+        eta_kg_per_kWh=float(p.get("pem.eta_kg_per_kWh", 0.018)),
+        capacity_kW=float(p.get("pem.capacity_kW", 10_000.0)),
+        electricity_price_per_kWh=float(p.get("pem.electricity_price_per_kWh", 0.05)),
+        capex_annual_per_kW=float(p.get("pem.capex_annual_per_kW", 100.0)),
+        grid_carbon_intensity_kg_CO2_per_kWh=float(
+            p.get("pem.grid_carbon_intensity_kg_CO2_per_kWh", 0.233)
+        ),
+    )
+    return make_green_hydrogen_hub(
+        h2_demand_kg_per_h=float(p["h2_demand_kg_per_h"]),
+        pem_params=pem_p,
+    )
 
 
 def _load_power_to_methanol(p: dict):
@@ -312,17 +535,38 @@ def _load_power_to_methanol(p: dict):
 
 
 def _load_gasification_to_power(p: dict):
-    from pse_ecosystem.flowsheets.industrial.gasification_to_power import (
-        make_gasification_to_power,
+    from pse_ecosystem.flowsheets.industrial.gasification_to_power import make_gasification_to_power
+    from pse_ecosystem.models.pressure_changers.compressor import CompressorParams
+    comp_p = CompressorParams(
+        eta_isentropic=float(p.get("comp.eta_isentropic", 0.78)),
+        P_out_Pa=float(p.get("comp.P_out_Pa", 500_000.0)),
+        feed_max=30.0, T_min=300.0, T_max=2000.0, P_min=1e4, P_max=2e7,
     )
-    return make_gasification_to_power(extent_max=float(p.get("extent_max", 4.0)))
+    return make_gasification_to_power(
+        extent_max=float(p.get("extent_max", 4.0)),
+        comp_params=comp_p,
+    )
+
+
+def _load_syngas_production(p: dict):
+    from pse_ecosystem.flowsheets.industrial.syngas_production import make_syngas_production
+    from pse_ecosystem.models.gasification.gasifier_toy import GasifierToyParams
+    gas_p = GasifierToyParams(
+        biomass_carbon_intensity_kg_CO2_per_kg=float(
+            p.get("gasifier.biomass_carbon_intensity_kg_CO2_per_kg", 0.03)
+        ),
+    )
+    return make_syngas_production(
+        h2_demand_kg_per_h=float(p.get("h2_demand_kg_per_h", 200.0)),
+        gasifier_params=gas_p,
+        co2_capture_fraction=float(p.get("co2_capture_fraction", 0.95)),
+    )
 
 
 def _load_cstr_flash(p: dict):
     from pse_ecosystem.models.reactors.cstr_hf import CSTRHF, CSTRHFParams, ReactionConfig
     from pse_ecosystem.models.separators.flash_vl_hf import FlashVLHF, FlashVLHFParams
     from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
-
     components = ["CO", "H2O", "CO2", "H2"]
     wgs = ReactionConfig(
         stoichiometry={"CO": -1.0, "H2O": -1.0, "CO2": 1.0, "H2": 1.0},
@@ -330,13 +574,14 @@ def _load_cstr_flash(p: dict):
         reaction_orders={"CO": 1.0, "H2O": 1.0},
         delta_H_J_per_mol=-41_000.0,
     )
-    cstr  = CSTRHF("cstr",  components, CSTRHFParams(reactions=[wgs], volume_m3=1.0))
+    cstr  = CSTRHF("cstr", components,
+                   CSTRHFParams(reactions=[wgs],
+                                volume_m3=float(p.get("cstr.volume_m3", 1.0))))
     flash = FlashVLHF("flash", components,
                       FlashVLHFParams(species_vle=["CO2", "H2"],
                                       T_min=200.0, T_max=1500.0))
     fs = BaseFlowsheet(name="small.cstr_flash", units=[cstr, flash])
     fs.connect(cstr.outlet_port, flash.inlet_port, description="CSTR → Flash")
-    # Seed feed: 10 mol/s CO + 10 mol/s H2O at 700 K, 1 atm
     fs.extra_bounds["cstr.inlet.F_CO"]  = (10.0, 10.0)
     fs.extra_bounds["cstr.inlet.F_H2O"] = (10.0, 10.0)
     fs.extra_bounds["cstr.inlet.F_CO2"] = (0.0, 0.0)
@@ -348,22 +593,32 @@ def _load_cstr_flash(p: dict):
 
 def _load_compression_train(p: dict):
     from pse_ecosystem.flowsheets.small.compression_train import make_compression_train
+    from pse_ecosystem.models.pressure_changers.compressor import CompressorParams
+    from pse_ecosystem.models.heat_exchangers.shell_tube import ShellTubeParams
+    comp_p = CompressorParams(
+        eta_isentropic=float(p.get("comp.eta_isentropic", 0.75)),
+        P_out_Pa=float(p.get("comp.P_out_Pa", 500_000.0)),
+    )
+    hx_p = ShellTubeParams(
+        U_W_per_m2_K=float(p.get("hx.U_W_per_m2_K", 500.0)),
+        A_m2=float(p.get("hx.A_m2", 10.0)),
+    )
     return make_compression_train(
         hot_components=["CO", "H2", "CO2"],
         cold_components=["H2O"],
-        P_compressed_Pa=500_000.0,
+        P_compressed_Pa=float(p.get("comp.P_out_Pa", 500_000.0)),
+        comp_params=comp_p,
+        hx_params=hx_p,
     )
 
 
 def _load_mixer_settler(p: dict):
     from pse_ecosystem.flowsheets.small.mixer_settler import make_mixer_settler
-    from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
     components = ["H2", "CH4", "CO2"]
     fs = make_mixer_settler(
         components=components,
         split_fractions=[[0.8, 0.2], [0.3, 0.7], [0.6, 0.4]],
     )
-    # Seed both mixer inlets so LP has a well-defined starting point
     for inlet_k in ["0", "1"]:
         for c in components:
             fs.extra_bounds[f"mixer.inlet_{inlet_k}.F_{c}"] = (0.0, 100.0)
@@ -374,19 +629,23 @@ def _load_mixer_settler(p: dict):
 
 def _load_distillation(p: dict):
     from pse_ecosystem.flowsheets.small.distillation_column import make_distillation_column
-    from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
     fs = make_distillation_column(
         components=["benzene", "toluene"],
-        lk="benzene",
-        hk="toluene",
+        lk="benzene", hk="toluene",
         species_vle=["benzene", "toluene"],
     )
-    # Pin feed: 5 mol/s benzene + 5 mol/s toluene at 350 K, 1 bar
     fs.extra_bounds["col.feed.F_benzene"] = (5.0, 5.0)
     fs.extra_bounds["col.feed.F_toluene"] = (5.0, 5.0)
     fs.extra_bounds["col.feed.T"] = (350.0, 350.0)
     fs.extra_bounds["col.feed.P"] = (101325.0, 101325.0)
     return fs
+
+
+def _load_custom_user_flowsheet(p: dict):
+    # Returns an empty single-PEM flowsheet as a safe placeholder.
+    # The real custom flowsheet is built via build_custom_flowsheet().
+    from pse_ecosystem.flowsheets.hydrogen.electrolysis_grid import make_electrolysis_only
+    return make_electrolysis_only(h2_demand_kg_per_h=100.0)
 
 
 # ── Loader dispatch maps ──────────────────────────────────────────────────────
@@ -397,6 +656,8 @@ _LOADER_MAP: Dict[str, Callable] = {
     "industrial.green_hydrogen":               _load_green_hydrogen,
     "industrial.power_to_methanol":            _load_power_to_methanol,
     "industrial.gasification_to_power":        _load_gasification_to_power,
+    "industrial.syngas_production":            _load_syngas_production,
+    "custom.user_flowsheet":                   _load_custom_user_flowsheet,
     "small.cstr_flash":                        _load_cstr_flash,
     "small.compression_train":                 _load_compression_train,
     "small.mixer_settler":                     _load_mixer_settler,
