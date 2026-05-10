@@ -289,9 +289,8 @@ Enforced by `test_solvers_do_not_import_concrete_unit_modules`.
 | File | Purpose |
 |---|---|
 | `docs/ARCHITECTURE.md` | Load-bearing architectural blueprint: 3-layer split, Handshake Protocol, layer boundary enforcement |
-| `docs/UI_GUIDE.md` | ← NEW v1.0.0: condensed quick-start, parameter reference, CI guide, custom flowsheet, packaging |
-| `docs/UI_GUIDE.md` | Full guide: quick-start, ASCII walkthrough, template ref, troubleshooting, developer guide, property overrides, flowsheet merging |
-| `docs/USER_MANUAL.md` | v0.3.0: installation, Streamlit launch, pre-built templates API, fs.connect() patterns, unit catalog, SLP config |
+| `docs/UI_GUIDE.md` | Single UI reference (v1.0): quick-start, ASCII mockups, template ref, parameter table, CI KPI, custom flowsheet, packaging, troubleshooting, developer guide, property overrides, flowsheet merging |
+| `docs/USER_MANUAL.md` | Installation, Streamlit launch, pre-built templates API, fs.connect() patterns, unit catalog, SLP config |
 | `docs/DEVELOPER_GUIDE.md` | Adding units, flowsheets, testing patterns, forbidden import rules |
 | `docs/THEORY_REFERENCE.md` | Physics: VLE, Rachford-Rice, ODE, property correlations, SLP theory |
 | `docs/SYSTEM_STATE.md` | This file — source of truth for system state |
