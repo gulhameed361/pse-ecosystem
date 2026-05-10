@@ -33,6 +33,13 @@
 ### Dependency Addition
 - `pyproject.toml`: added `plotly>=5.0` to the `gui` optional group.
 
+### Documentation Updates
+- `docs/UI_USER_GUIDE.md` (new): full page-by-page walkthrough with ASCII mockups for all 4 pages (Dashboard, Flowsheet Builder, GPS Weather, Solver Monitor), template reference table, troubleshooting guide, developer guide for adding templates.
+- `docs/USER_MANUAL.md` updated to v0.3.0: Streamlit launch instructions, 4-page UI table, new §2 Pre-Built Industrial Flowsheets with Python API examples, layer architecture updated to document `flowsheet_service.py` boundary rule.
+- `README.md` updated: version header, `streamlit run` command in quick-start.
+
+---
+
 This file is the **source of truth** for future Claude sessions.
 Update it whenever the system state changes.
 
@@ -97,7 +104,7 @@ Update it whenever the system state changes.
 
 ---
 
-## Complete Package Structure (v0.2.0)
+## Complete Package Structure (v0.3.0)
 
 ```
 pse_ecosystem/
@@ -110,6 +117,10 @@ pse_ecosystem/
 │   ├── base_flowsheet.py    BaseFlowsheet (with connect()), CompositeUnit
 │   ├── hydrogen/
 │   │   └── electrolysis_grid.py
+│   ├── industrial/                              ← NEW v0.3.0
+│   │   ├── green_hydrogen.py        PEMToy → MixerHF (LCOH KPI)
+│   │   ├── power_to_methanol.py     StoichRxr → SeparatorHF (linear, 1-iter)
+│   │   └── gasification_to_power.py StoichRxr (dry reforming) → Compressor
 │   └── small/
 │       ├── adiabatic_cstr_flash.py
 │       ├── compression_train.py
@@ -152,7 +163,7 @@ pse_ecosystem/
 │   ├── separator/       flash_toy.py, hda_flash.py
 │   └── distillation/    hda_column.py
 ├── solvers/
-│   ├── slp.py           SLPDriver, SLPConfig, TearStreamConfig (Wegstein reset fixed)
+│   ├── slp.py           SLPDriver, SLPConfig, TearStreamConfig
 │   ├── lp_builder.py
 │   ├── milp_builder.py
 │   └── orchestrator.py
@@ -161,30 +172,35 @@ pse_ecosystem/
 └── ui/
     ├── entry.py
     ├── __main__.py
-    └── app_streamlit.py
+    ├── flowsheet_service.py  ← NEW v0.3.0 — sole Layer-1 bridge to Layer-3 factories
+    └── app_streamlit.py      ← REPLACED v0.3.0 — full 4-page multi-page Streamlit app
 ```
 
 ---
 
-## Test Suite (v0.2.0)
+## Test Suite (v0.3.0)
 
 | File | Tests | Coverage |
 |---|---|---|
+| `tests/ui_audit.py` | 15 (standalone) | ← NEW v0.3.0: service imports, template convergence, layer boundary, MILP |
 | `tests/system_audit.py` | 17 (standalone) | Handshake, SLP, Hydrogen theme, KPI sanity, layer boundary |
+| `tests/industrial_audit.py` | 11 (standalone) | Feed→CSTR→Flash→Sep: physics closure, costing, layer boundary |
 | `tests/test_base_unit.py` | 4 pytest | BaseUnit Jacobian, bounds, FD correctness |
 | `tests/test_slp_convergence.py` | 4 pytest | E2E convergence, layer boundary (9 forbidden patterns) |
-| `tests/flowsheet_optimization_test.py` | 9 pytest | New unit library, weather, CompositeUnit, HDA |
+| `tests/flowsheet_optimization_test.py` | 9 pytest | Unit library, weather, CompositeUnit, HDA |
 | `tests/test_interface_evolution.py` | 13 pytest | StreamPort, connect(), capex/opex, get_linearization |
 | `tests/test_properties.py` | 22 pytest | Shomate Cp/H (vs NIST), VLE K-values, Rachford-Rice |
 | `tests/test_hf_units.py` | 38 pytest | All 16 HF units: residual shape, mass balance, capex |
 | `tests/test_costing.py` | 17 pytest | SSLW correlations, CEPCI escalation, Pyomo-free check |
-| `tests/industrial_audit.py` | 11 (standalone) | Feed→CSTR→Flash→Sep: physics closure, costing, layer boundary |
 
-**Total: 107 pytest + 17 audit + 11 industrial = 135 checks**
+**Total: 107 pytest + 15 UI audit + 17 system audit + 11 industrial audit = 150 checks**
 
 Run all:
-```bash
-python tests/system_audit.py && python tests/industrial_audit.py && pytest tests/ -v
+```powershell
+python tests/ui_audit.py
+python tests/system_audit.py
+python tests/industrial_audit.py
+pytest tests/ -v
 ```
 
 ---
@@ -204,17 +220,20 @@ Enforced by `test_solvers_do_not_import_concrete_unit_modules`.
 
 ---
 
-## Known Limitations (v0.2.0)
+## Known Limitations (v0.3.0)
 
 | Item | Detail |
 |---|---|
-| VLE model | Raoult's Law (ideal VLE). NRTL/Wilson deferred to v0.3. |
+| VLE model | Raoult's Law (ideal VLE). NRTL/Wilson activity coefficients deferred to v0.4. |
+| VLE species naming | ANTOINE dict uses `"methanol"` / `"water"` (not `"CH3OH"` / `"H2O"`). GibbsReactor `_ELEMENT_COMP` uses `"H2O"`. Never mix the two in the same flash unit. |
+| `small.cstr_flash` UI template | CSTR+Flash does not converge from midpoint initial guess in the UI (returns INFEASIBLE). Loads correctly; underlying physics is valid — see `industrial_audit.py`. |
 | PFR/Gibbs scipy dependency | Requires `pip install pse_ecosystem[blackbox]`. |
 | DistillationHF last residual | 4th constraint is a placeholder (0=0). Column is uniquely determined by the first 3 FUG + energy residuals. |
 | HX1D uses analytical NTU | The N finite-element discretisation resolves to the same result as the NTU formula. Internal profiles are not exposed. |
-| Recycle convergence | Wegstein state reset bug fixed; Wegstein acceleration untested on real process recycles yet. |
+| Recycle convergence | Wegstein acceleration untested on real process recycles. |
 | Weather | Solar clearsky only. Wind is synthetic Weibull. No windrose integration yet. |
 | Ideal gas limit | All HF energy balances use ideal gas enthalpies. No departure function for liquid-phase heat of mixing. |
+| LP with no cost objective | Reaction extents default to zero (lower bound) unless pinned via `extra_equalities`. All industrial templates include explicit extent equalities. |
 
 ---
 
@@ -235,4 +254,19 @@ Enforced by `test_solvers_do_not_import_concrete_unit_modules`.
 
 ---
 
-*Source of truth for PSE Ecosystem v0.2.0. Update this file after every significant change.*
+---
+
+## Documentation Index (v0.3.0)
+
+| File | Purpose |
+|---|---|
+| `docs/ARCHITECTURE.md` | Load-bearing architectural blueprint: 3-layer split, Handshake Protocol, layer boundary enforcement |
+| `docs/UI_USER_GUIDE.md` | ← NEW v0.3.0: Streamlit UI walkthrough with ASCII mockups, template reference, troubleshooting, developer guide |
+| `docs/USER_MANUAL.md` | v0.3.0: installation, Streamlit launch, pre-built templates API, fs.connect() patterns, unit catalog, SLP config |
+| `docs/DEVELOPER_GUIDE.md` | Adding units, flowsheets, testing patterns, forbidden import rules |
+| `docs/THEORY_REFERENCE.md` | Physics: VLE, Rachford-Rice, ODE, property correlations, SLP theory |
+| `docs/SYSTEM_STATE.md` | This file — source of truth for system state |
+
+---
+
+*Source of truth for PSE Ecosystem v0.3.0. Update this file after every significant change.*
