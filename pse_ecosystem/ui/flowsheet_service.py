@@ -303,6 +303,48 @@ _REGISTRY: List[TemplateSpec] = [
         ),
         unit_labels=["DistillationHF"],
     ),
+
+    TemplateSpec(
+        key="biomass.gasification_to_hydrogen",
+        display_name="Biomass → H2 (Gasification)",
+        category="Hydrogen",
+        description=(
+            "Full B-HYPSYS flowsheet: drying → thermochemical equilibrium "
+            "gasification → WGS reactor → PSA separation. "
+            "Reports LCOH, CGE, and H2 production KPIs. SLP-solved."
+        ),
+        topology_diagram=(
+            "graph LR\n"
+            "    BS[Biomass Storage\nDrying+Preheating] --> BG[Gasifier\nEquilibrium]\n"
+            "    BG -->|Syngas| WGS[WGS Reactor\nCO+H2O→CO2+H2]\n"
+            "    WGS -->|H2-rich| PSA[PSA Separator]\n"
+            "    PSA --> H2([H2 Product])\n"
+            "    PSA --> TG([Tail Gas])\n"
+            "    style BS fill:#8e44ad,color:#fff\n"
+            "    style BG fill:#e67e22,color:#fff\n"
+            "    style WGS fill:#c0392b,color:#fff\n"
+            "    style PSA fill:#27ae60,color:#fff"
+        ),
+        unit_labels=["BiomassStorageHF", "BiomassGasifierHF", "WGSReactorHF", "H2SeparatorPSA"],
+        default_params={
+            "biomass_type": "Pine Wood",
+            "gasifying_agent": "Steam",
+            "biomass_feed_kg_s": 1.0,
+            "steam_to_biomass_ratio": 1.0,
+            "T_gasifier_C": 800.0,
+            "T_wgs_C": 400.0,
+            "H2_recovery": 0.85,
+            "plant_life_yr": 20,
+            "interest_rate": 0.08,
+            "target_year": 2024,
+        },
+        supports_milp=False,
+        connections_human=[
+            ("Biomass Storage dry out", "Gasifier biomass in", "Dry biomass feed"),
+            ("Gasifier syngas out", "WGS syngas in", "Raw syngas"),
+            ("WGS shifted out", "PSA feed in", "H2-rich shifted gas"),
+        ],
+    ),
 ]
 
 _REGISTRY_MAP: Dict[str, TemplateSpec] = {t.key: t for t in _REGISTRY}
@@ -648,6 +690,116 @@ def _load_custom_user_flowsheet(p: dict):
     return make_electrolysis_only(h2_demand_kg_per_h=100.0)
 
 
+def _load_biomass_gasification_to_h2(p: dict):
+    from pse_ecosystem.models.biomass.biomass_database import get_biomass, element_feeds_mol_s
+    from pse_ecosystem.models.biomass.biomass_storage import BiomassStorageHF
+    from pse_ecosystem.models.biomass.biomass_gasifier import BiomassGasifierHF
+    from pse_ecosystem.models.biomass.wgs_reactor import WGSReactorHF
+    from pse_ecosystem.models.biomass.h2_separator import H2SeparatorPSA
+    from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
+
+    biomass_type   = str(p.get("biomass_type", "Pine Wood"))
+    agent          = str(p.get("gasifying_agent", "Steam"))
+    feed_wet_kg_s  = float(p.get("biomass_feed_kg_s", 1.0))
+    sb_ratio       = float(p.get("steam_to_biomass_ratio", 1.0))
+    T_gas_C        = float(p.get("T_gasifier_C", 800.0))
+    T_wgs_C        = float(p.get("T_wgs_C", 400.0))
+    H2_recovery    = float(p.get("H2_recovery", 0.85))
+
+    b = get_biomass(biomass_type)
+    MC = b["MC"]
+    feed_dry_kg_s = feed_wet_kg_s * (1.0 - MC)
+
+    # Instantiate units
+    storage  = BiomassStorageHF("storage",  biomass_type=biomass_type)
+    gasifier = BiomassGasifierHF("gasifier", biomass_type=biomass_type,
+                                  T_gasifier_C=T_gas_C, gasifying_agent=agent)
+    wgs      = WGSReactorHF("wgs", T_wgs_C=T_wgs_C)
+    psa      = H2SeparatorPSA("psa", H2_recovery=H2_recovery)
+
+    fs = BaseFlowsheet(name="biomass.gasification_to_hydrogen",
+                       units=[storage, gasifier, wgs, psa])
+
+    # Port-validated connections
+    fs.connect(storage.dry_out_port,  gasifier.biomass_in_port,
+               description="Dry biomass → gasifier")
+    fs.connect(gasifier.syngas_out_port, wgs.syngas_in_port,
+               description="Raw syngas → WGS")
+    fs.connect(wgs.shifted_out_port,  psa.feed_in_port,
+               description="Shifted gas → PSA")
+
+    # Fix wet biomass feed (design basis)
+    fs.extra_bounds["storage.wet_in.F_Biomass"]  = (feed_wet_kg_s,  feed_wet_kg_s)
+
+    # Fix steam agent feed (computed from mass ratio)
+    n_steam = feed_dry_kg_s * sb_ratio * 1000.0 / 18.015   # mol/s
+    fs.extra_bounds["gasifier.agent_in.F_H2O"] = (n_steam, n_steam)
+
+    # Approximate initial syngas composition for SLP warm start
+    # Based on element feeds at 800°C typical distribution
+    feeds = element_feeds_mol_s(biomass_type, feed_dry_kg_s)
+    n_C = feeds["C"]
+    n_H = feeds["H"] + 2.0 * n_steam
+    n_O = feeds["O"] + n_steam
+    # Rough split: 60% CO, 30% CO2, 10% CH4 for carbon; remaining H2
+    n_CO_est  = max(0.60 * n_C, 0.01)
+    n_CO2_est = max(0.30 * n_C, 0.01)
+    n_CH4_est = max(0.10 * n_C, 0.01)
+    n_H2O_est = max(0.10 * n_O, 0.01)
+    n_H2_est  = max((n_H - 2.0 * n_H2O_est - 4.0 * n_CH4_est) / 2.0, 0.01)
+    n_N2_est  = max(feeds["N"] / 2.0, 0.001)
+
+    _vars_est = {
+        "gasifier.syngas_out.F_H2":  n_H2_est,
+        "gasifier.syngas_out.F_CO":  n_CO_est,
+        "gasifier.syngas_out.F_CO2": n_CO2_est,
+        "gasifier.syngas_out.F_H2O": n_H2O_est,
+        "gasifier.syngas_out.F_CH4": n_CH4_est,
+        "gasifier.syngas_out.F_N2":  n_N2_est,
+    }
+    for v, est in _vars_est.items():
+        lo = max(est * 0.05, 1e-6)
+        hi = est * 20.0
+        fs.extra_bounds[v] = (lo, hi)
+
+    # WGS outlet initial bounds (H2 increases, CO decreases)
+    # Rough: 80% CO conversion
+    X_CO_est = 0.8
+    fs.extra_bounds["wgs.syngas_in.F_H2"]  = (max(n_H2_est * 0.05, 1e-6), n_H2_est * 20)
+    fs.extra_bounds["wgs.syngas_in.F_CO"]  = (max(n_CO_est * 0.05, 1e-6), n_CO_est * 20)
+    fs.extra_bounds["wgs.syngas_in.F_CO2"] = (max(n_CO2_est * 0.05, 1e-6), n_CO2_est * 20)
+    fs.extra_bounds["wgs.syngas_in.F_H2O"] = (max(n_H2O_est * 0.05, 1e-6), n_H2O_est * 20)
+    fs.extra_bounds["wgs.syngas_in.F_CH4"] = (max(n_CH4_est * 0.05, 1e-6), n_CH4_est * 20)
+    fs.extra_bounds["wgs.syngas_in.F_N2"]  = (max(n_N2_est * 0.001, 1e-9), n_N2_est * 100)
+
+    dn_CO = n_CO_est * X_CO_est
+    fs.extra_bounds["wgs.shifted_out.F_H2"]  = (max((n_H2_est + dn_CO) * 0.1, 1e-6),
+                                                  (n_H2_est + dn_CO) * 10)
+    fs.extra_bounds["wgs.shifted_out.F_CO"]  = (max(n_CO_est * (1 - X_CO_est) * 0.1, 1e-6),
+                                                  n_CO_est * 5)
+    fs.extra_bounds["wgs.shifted_out.F_CO2"] = (max((n_CO2_est + dn_CO) * 0.1, 1e-6),
+                                                  (n_CO2_est + dn_CO) * 10)
+    fs.extra_bounds["wgs.shifted_out.F_H2O"] = (max((n_H2O_est - dn_CO) * 0.05, 1e-6),
+                                                  n_H2O_est * 5)
+    fs.extra_bounds["wgs.shifted_out.F_CH4"] = (max(n_CH4_est * 0.05, 1e-6), n_CH4_est * 10)
+    fs.extra_bounds["wgs.shifted_out.F_N2"]  = (max(n_N2_est * 0.001, 1e-9), n_N2_est * 100)
+
+    # PSA feed bounds (same as WGS shifted out)
+    n_H2_wgs_est = n_H2_est + dn_CO
+    fs.extra_bounds["psa.feed_in.F_H2"]  = (max(n_H2_wgs_est * 0.1, 1e-6), n_H2_wgs_est * 10)
+    fs.extra_bounds["psa.feed_in.F_CO"]  = (max(n_CO_est * (1 - X_CO_est) * 0.1, 1e-6), n_CO_est * 5)
+    fs.extra_bounds["psa.feed_in.F_CO2"] = (max((n_CO2_est + dn_CO) * 0.1, 1e-6),
+                                              (n_CO2_est + dn_CO) * 10)
+    fs.extra_bounds["psa.feed_in.F_H2O"] = (max((n_H2O_est - dn_CO) * 0.05, 1e-6), n_H2O_est * 5)
+    fs.extra_bounds["psa.feed_in.F_CH4"] = (max(n_CH4_est * 0.05, 1e-6), n_CH4_est * 10)
+    fs.extra_bounds["psa.feed_in.F_N2"]  = (max(n_N2_est * 0.001, 1e-9), n_N2_est * 100)
+
+    fs.extra_bounds["wgs.X_CO"] = (0.01, 0.999)
+    fs.objective_kpi = "LCOH"
+
+    return fs
+
+
 # ── Loader dispatch maps ──────────────────────────────────────────────────────
 
 _LOADER_MAP: Dict[str, Callable] = {
@@ -662,6 +814,7 @@ _LOADER_MAP: Dict[str, Callable] = {
     "small.compression_train":                 _load_compression_train,
     "small.mixer_settler":                     _load_mixer_settler,
     "small.distillation":                      _load_distillation,
+    "biomass.gasification_to_hydrogen":        _load_biomass_gasification_to_h2,
 }
 
 _MILP_LOADER_MAP: Dict[str, Callable] = {

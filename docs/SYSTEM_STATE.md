@@ -1,8 +1,66 @@
 # PSE Ecosystem — System State Ledger
 
-**Version:** 1.0.0
-**Date:** 2026-05-10
-**Status:** v1.0.0 stable — 107 pytest + 15 UI audit + 17 system audit + 11 industrial audit + 8 backend-sync = **158 checks passing**
+**Version:** 1.1.0
+**Date:** 2026-05-11
+**Status:** v1.1.0 — 130 pytest (fast) + 1 end-to-end solve (slow) + 15 UI audit + 17 system audit + 11 industrial audit + 8 backend-sync = **181 checks total**
+
+---
+
+## What's New in v1.1.0 — SaaS Case Study 01: Biomass → H₂
+
+### Physics Audit: B-HYPSYS Defect Corrections
+
+Audited the client-provided B-HYPSYS code (`Extra/`). **16 defects identified; all corrected** before implementation.
+
+| # | Original Error | Fix Applied |
+|---|---|---|
+| 1, 2 | Equilibrium constants applied to molar flows ≠ mole fractions | Extent-of-reaction with proper Kp(T) expressions |
+| 3 | WGS and gasifier use same temperature variable | Separate T_gasifier and T_wgs parameters per unit |
+| 4, 5, 6 | Elemental balances mix normalised (mol/mol biomass) and absolute (mol/s) units | All balances in mol/s; ×1000 g/kg conversion applied |
+| 8 | WGS CO conversion and H₂O conversion are independent variables (violates 1:1 stoichiometry) | Single X_CO drives both CO and H₂O depletion |
+| 12 | CHP energy balance form violates 1st law | CHP modelled as post-processing KPI only |
+| 13 | Drying duty omits latent heat of evaporation | Q_dry includes sensible + h_vap (2257 kJ/kg) + steam superheat |
+| 9, 10, 11, 15 | N₂ in LHV/CGE denominators; LHV includes CO₂/H₂O | LHV uses H₂, CO, CH₄ only; N₂ balanced separately |
+
+### New Layer 3 Unit Models
+
+| Class | File | `is_linear` | Purpose |
+|---|---|---|---|
+| `BiomassStorageHF` | `models/biomass/biomass_storage.py` | True | Drying + preheating; latent heat included |
+| `BiomassGasifierHF` | `models/biomass/biomass_gasifier.py` | False | Equilibrium gasifier (6 residuals: element balances + WGS + methanation Kp) |
+| `WGSReactorHF` | `models/biomass/wgs_reactor.py` | False | WGS at fixed T; single X_CO enforces 1:1 stoichiometry |
+| `H2SeparatorPSA` | `models/biomass/h2_separator.py` | True | PSA H₂ recovery; tail gas tracking |
+
+### Biomass Database (`models/biomass/biomass_database.py`)
+8 representative biomasses with dry mass elemental fractions, moisture content, and LHV:
+Pine Wood, Miscanthus, Rice Straw, Wheat Straw, Willow, MSW, Sewage Sludge, Sugarcane Bagasse.
+
+### Economic Engine (`models/costing/economic_engine.py`)
+- CEPCI historical data: 2001–2024 (source: Chemical Engineering magazine) + projection at 2.5%/yr
+- `EconomicEngine` dataclass: `cepci_factor()`, `capital_recovery_factor()` (CRF), `annualized_capex()`, `lcoh()`
+- Used by Case Study page for CAPEX escalation and LCOH computation
+
+### Port Validation (`core/contracts.py`, `flowsheets/base_flowsheet.py`)
+- `StreamPort` extended with `phase: str = "gas"` and `species: frozenset = frozenset()`
+- `PortCompatibilityError(ValueError)` raised by `BaseFlowsheet.connect()` on phase or species mismatch
+- Backward-compatible: existing units without declared `phase`/`species` default to unconstrained
+
+### New UI Page — Case Study: Biomass → H₂ (`ui/app_streamlit.py`)
+- 5th page added between Flowsheet Builder and GPS Weather
+- Inputs: biomass type (8 choices), gasifying agent (Steam/Air), feed rate, steam/biomass ratio, T_gasifier, T_wgs, H₂ recovery, plant life, interest rate, CEPCI year
+- Outputs: LCOH [$/kg H₂], CGE [%], H₂ production [kg/h], H₂ vol% in syngas
+- LCOH waterfall bar chart, syngas composition pie chart, full KPI table, solution variables
+
+### New Template (`ui/flowsheet_service.py`)
+- `biomass.gasification_to_hydrogen` added (12th template, Hydrogen category)
+- Port-validated connections: storage → gasifier → WGS → PSA
+- Warm-start initial bounds computed from stoichiometric estimates for SLP convergence
+
+### Test Suite (`tests/biomass_audit.py`)
+23 unit tests (fast) + 1 end-to-end solve (marked `slow`):
+- Database integrity, unit residual correctness, equilibrium calibration, stoichiometry, port validation, template loading, plausibility checks
+
+---
 
 ---
 

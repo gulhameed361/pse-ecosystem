@@ -35,6 +35,10 @@ import numpy as np
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+class PortCompatibilityError(ValueError):
+    """Raised when two ports cannot be connected due to mismatched phase or species."""
+
+
 @dataclass
 class StreamPort:
     """Name-generator for a process stream — holds no values, only produces
@@ -51,6 +55,14 @@ class StreamPort:
         # → ["cstr.outlet.F_A", "cstr.outlet.F_B", "cstr.outlet.T", "cstr.outlet.P"]
 
         fs.connect(cstr.outlet_port, flash.inlet_port)
+
+    Port Validation
+    ---------------
+    ``phase``   : Physical phase of the stream ("gas", "liquid", "solid_dry",
+                  "mixed", or "any" to skip phase checking).
+    ``species``  : Frozenset of component names expected on this port.  An empty
+                  frozenset means unconstrained (validation skipped).  When both
+                  ports declare non-empty species sets, they must match exactly.
     """
 
     unit_id: str
@@ -58,6 +70,8 @@ class StreamPort:
     components: List[str] = field(default_factory=list)
     has_T: bool = True
     has_P: bool = True
+    phase: str = "gas"
+    species: frozenset = frozenset()
 
     def variable_names(self) -> List[str]:
         names = [f"{self.unit_id}.{self.tag}.F_{c}" for c in self.components]

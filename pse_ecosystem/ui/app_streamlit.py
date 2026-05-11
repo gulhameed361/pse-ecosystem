@@ -57,7 +57,7 @@ def _page_dashboard():
     from pse_ecosystem.ui.flowsheet_service import list_templates
 
     st.title("PSE Ecosystem")
-    st.caption("v0.3.0  |  Private — University of Surrey")
+    st.caption("v1.1.0  |  Private — University of Surrey")
 
     # ── LP solver check ────────────────────────────────────────────────────
     try:
@@ -309,7 +309,236 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
             st.error(f"Build failed: {exc}")
 
 
-# ── Page 3: GPS Weather ───────────────────────────────────────────────────────
+# ── Page 3: Case Study — Biomass → H2 ───────────────────────────────────────
+
+def _page_case_study():
+    st = _require_streamlit()
+    _init_state(st)
+
+    st.title("Case Study: Biomass → H₂ (Gasification)")
+    st.caption(
+        "Full B-HYPSYS flowsheet: drying → thermochemical gasification "
+        "→ WGS reactor → PSA separation. "
+        "Physics corrected from B-HYPSYS audit (16 defects fixed)."
+    )
+
+    # ── Inputs ───────────────────────────────────────────────────────────────
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("Process Inputs")
+        from pse_ecosystem.models.biomass.biomass_database import BIOMASS_DB
+        biomass_type = st.selectbox("Biomass Type", list(BIOMASS_DB.keys()))
+        agent = st.radio("Gasifying Agent", ["Steam", "Air"])
+        feed_kg_s = st.number_input(
+            "Biomass Feed Rate (kg/s wet)", min_value=0.1, max_value=20.0,
+            value=1.0, step=0.1, format="%.2f",
+        )
+        sb_ratio = st.number_input(
+            "Steam-to-Biomass Ratio (kg/kg dry)", min_value=0.1, max_value=3.0,
+            value=1.0, step=0.1, format="%.2f",
+        )
+        T_gas = st.slider("Gasifier Temperature (°C)", 600, 900, 800, step=10)
+        T_wgs = st.slider("WGS Temperature (°C)", 250, 500, 400, step=10)
+        H2_rec = st.slider("H2 PSA Recovery (%)", 60, 97, 85) / 100.0
+
+    with col2:
+        st.subheader("Economic Parameters")
+        plant_life = st.number_input(
+            "Plant Life (years)", min_value=5, max_value=40, value=20, step=1,
+        )
+        interest = st.slider("Interest Rate (%)", 2, 20, 8) / 100.0
+
+        from pse_ecosystem.models.costing.economic_engine import CEPCI
+        cepci_years = sorted(CEPCI.keys())
+        target_year = st.selectbox(
+            "Cost Year (CEPCI)", cepci_years, index=cepci_years.index(2024),
+        )
+
+        st.subheader("Biomass Properties")
+        b = BIOMASS_DB[biomass_type]
+        props_col1, props_col2 = st.columns(2)
+        props_col1.metric("Moisture Content", f"{b['MC']*100:.0f}%")
+        props_col1.metric("LHV (dry)", f"{b['LHV_MJ_kg']:.1f} MJ/kg")
+        props_col2.metric("C content (dry)", f"{b['C']*100:.1f}%")
+        props_col2.metric("H content (dry)", f"{b['H']*100:.1f}%")
+
+    st.divider()
+
+    # ── Run button ────────────────────────────────────────────────────────────
+    if st.button("Run Case Study", type="primary"):
+        try:
+            from pse_ecosystem.ui.flowsheet_service import load_template
+            from pse_ecosystem.solvers.orchestrator import Orchestrator
+            from pse_ecosystem.solvers.slp import SLPConfig
+            from pse_ecosystem.core.contracts import SolveMode
+            from pse_ecosystem.models.costing.economic_engine import EconomicEngine
+
+            params = {
+                "biomass_type": biomass_type,
+                "gasifying_agent": agent,
+                "biomass_feed_kg_s": feed_kg_s,
+                "steam_to_biomass_ratio": sb_ratio,
+                "T_gasifier_C": float(T_gas),
+                "T_wgs_C": float(T_wgs),
+                "H2_recovery": H2_rec,
+                "plant_life_yr": plant_life,
+                "interest_rate": interest,
+                "target_year": target_year,
+            }
+
+            progress = st.progress(0, text="Building flowsheet…")
+
+            with st.spinner("Solving Biomass → H₂ flowsheet…"):
+                fs = load_template("biomass.gasification_to_hydrogen", params)
+
+                _cs_history: list = []
+
+                def _on_iter(k: int, obj: float, resid: float) -> None:
+                    _cs_history.append(k)
+                    progress.progress(
+                        min((k + 1) / 50, 1.0),
+                        text=f"SLP iteration {k+1}  |  ‖f‖ = {resid:.3g}",
+                    )
+
+                cfg = SLPConfig(
+                    max_iter=60,
+                    eps_x=1e-4,
+                    eps_f=1e-4,
+                    use_trust_region=True,
+                    trust_region_init=0.5,
+                    verbose=False,
+                    iteration_callback=_on_iter,
+                )
+                orch = Orchestrator(flowsheet=fs, mode=SolveMode.FIXED_LP, slp_config=cfg)
+                result = orch.solve()
+
+            progress.empty()
+
+        except Exception as exc:
+            st.error(f"Solve failed: {exc}")
+            import traceback
+            with st.expander("Traceback"):
+                st.code(traceback.format_exc())
+            return
+
+        # ── Results ───────────────────────────────────────────────────────────
+        if result.converged:
+            st.success(f"Converged in {result.iterations} iteration(s).")
+        else:
+            st.warning(
+                f"Solver status: {str(result.status).split('.')[-1]}  |  "
+                f"{result.message}"
+            )
+
+        kpis = result.kpis
+
+        # Compute economics
+        eco = EconomicEngine(
+            target_year=int(target_year),
+            plant_life_yr=int(plant_life),
+            interest_rate=float(interest),
+        )
+
+        h2_kg_s = kpis.get("psa.H2_production_kg_s", 0.0)
+        capex_est_USD = sum(
+            u.capex(result.x) for u in fs.units
+            if hasattr(u, "capex")
+        )
+        capex_annual = eco.annualized_capex(capex_est_USD)
+        biomass_cost_per_year = (
+            feed_kg_s * 3600 * eco.operating_hours_per_year *
+            float(params.get("biomass_cost_USD_per_kg", 0.05))
+        )
+        opex_annual = biomass_cost_per_year + kpis.get("storage.Q_drying_kW", 0.0) * 0.05 * 8000 * 3600
+        lcoh = eco.lcoh(capex_annual, opex_annual, h2_kg_s)
+
+        # Key metric cards
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("LCOH", f"${lcoh:.2f} / kg H₂" if lcoh < 1e6 else "N/A")
+        m2.metric(
+            "Cold Gas Efficiency",
+            f"{kpis.get('gasifier.CGE_percent', 0.0):.1f}%",
+        )
+        m3.metric(
+            "H₂ Production",
+            f"{kpis.get('psa.H2_production_kg_h', 0.0):.1f} kg/h",
+        )
+        m4.metric(
+            "H₂ in Syngas (gasifier)",
+            f"{kpis.get('gasifier.H2_pct_vol', 0.0):.1f} vol%",
+        )
+
+        # Additional KPIs
+        st.subheader("Unit KPIs")
+        import pandas as pd
+        kpi_rows = [
+            {"Unit": k.split(".")[0], "KPI": k.split(".", 1)[1], "Value": f"{v:.4g}"}
+            for k, v in kpis.items()
+        ]
+        if kpi_rows:
+            st.dataframe(
+                pd.DataFrame(kpi_rows),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        # LCOH breakdown
+        if lcoh < 1e6:
+            st.subheader("LCOH Breakdown")
+            import plotly.graph_objects as go
+            fig = go.Figure(go.Bar(
+                x=["CAPEX (annualised)", "OPEX (annual)", "Total LCOH × 100 kg/yr"],
+                y=[capex_annual / max(h2_kg_s * 8000 * 3600, 1),
+                   opex_annual / max(h2_kg_s * 8000 * 3600, 1),
+                   lcoh],
+                marker_color=["#3498db", "#e67e22", "#2ecc71"],
+                text=[f"${capex_annual/max(h2_kg_s*8000*3600,1):.2f}/kg",
+                      f"${opex_annual/max(h2_kg_s*8000*3600,1):.2f}/kg",
+                      f"${lcoh:.2f}/kg"],
+                textposition="auto",
+            ))
+            fig.update_layout(
+                title="LCOH Cost Breakdown [$/kg H₂]",
+                yaxis_title="$/kg H₂",
+                height=350,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Syngas composition at gasifier outlet
+        st.subheader("Syngas Composition (Gasifier Outlet)")
+        syngas_vars = {
+            "H2": result.x.get("gasifier.syngas_out.F_H2", 0),
+            "CO": result.x.get("gasifier.syngas_out.F_CO", 0),
+            "CO2": result.x.get("gasifier.syngas_out.F_CO2", 0),
+            "H2O": result.x.get("gasifier.syngas_out.F_H2O", 0),
+            "CH4": result.x.get("gasifier.syngas_out.F_CH4", 0),
+            "N2": result.x.get("gasifier.syngas_out.F_N2", 0),
+        }
+        n_total = sum(syngas_vars.values())
+        if n_total > 1e-9:
+            import plotly.graph_objects as go
+            fig2 = go.Figure(go.Pie(
+                labels=list(syngas_vars.keys()),
+                values=[v / n_total * 100 for v in syngas_vars.values()],
+                hole=0.35,
+            ))
+            fig2.update_layout(title="Syngas Mole % (dry + wet)", height=320)
+            st.plotly_chart(fig2, use_container_width=True)
+
+        # Full solution table
+        with st.expander("Full Solution Variables"):
+            df_x = pd.DataFrame(
+                {"Variable": list(result.x.keys()), "Value": list(result.x.values())}
+            )
+            st.dataframe(
+                df_x.style.format({"Value": "{:.6g}"}),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+
+# ── Page 4: GPS Weather ───────────────────────────────────────────────────────
 
 def _page_gps_weather():
     st = _require_streamlit()
@@ -405,7 +634,7 @@ def _page_gps_weather():
             st.plotly_chart(fig2, use_container_width=True)
 
 
-# ── Page 4: Solver Monitor ────────────────────────────────────────────────────
+# ── Page 5: Solver Monitor ────────────────────────────────────────────────────
 
 def _page_solver_monitor():
     st = _require_streamlit()
@@ -662,10 +891,11 @@ def main() -> None:
     )
 
     pages = [
-        st.Page(_page_dashboard,         title="Dashboard",         icon="🏠"),
-        st.Page(_page_flowsheet_builder,  title="Flowsheet Builder", icon="🔧"),
-        st.Page(_page_gps_weather,        title="GPS Weather",       icon="🌍"),
-        st.Page(_page_solver_monitor,     title="Solver Monitor",    icon="📊"),
+        st.Page(_page_dashboard,         title="Dashboard",              icon="🏠"),
+        st.Page(_page_flowsheet_builder,  title="Flowsheet Builder",      icon="🔧"),
+        st.Page(_page_case_study,         title="Case Study: Biomass→H2", icon="🌿"),
+        st.Page(_page_gps_weather,        title="GPS Weather",            icon="🌍"),
+        st.Page(_page_solver_monitor,     title="Solver Monitor",         icon="📊"),
     ]
     pg = st.navigation(pages)
     pg.run()

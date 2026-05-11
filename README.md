@@ -1,4 +1,4 @@
-# PSE Ecosystem (v1.0.0)
+# PSE Ecosystem (v1.1.0)
 
 Application-centric Knowledge Ecosystem for Process Systems Engineering.  
 Private — University of Surrey.
@@ -36,7 +36,8 @@ python -m venv $HOME\.venvs\pse_ecosystem
 pip install -e ".[dev,solvers,gui,weather]"
 
 # Run tests
-pytest tests\ -q                        # 107 unit tests
+pytest tests\ -q -m "not slow"          # 130 unit tests (all fast)
+pytest tests\biomass_audit.py -m slow   # end-to-end biomass solve
 python tests/industrial_audit.py        # 11 physics checks
 python tests/ui_audit.py                # 15 service + layer checks
 
