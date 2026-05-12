@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pse_ecosystem"
-version = "0.1.0"
-description = "Application-centric Knowledge Ecosystem for Process Systems Engineering (v0.1)."
+version = "1.2.0"
+description = "Application-centric Knowledge Ecosystem for Process Systems Engineering — general-purpose Aspen-style process simulator."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
@@ -17,6 +17,7 @@ keywords = ["process-systems-engineering", "hydrogen", "optimisation", "pyomo", 
 dependencies = [
     "numpy>=1.24",
     "pyomo>=6.7",
+    "scipy>=1.10",
 ]
 
 [project.optional-dependencies]

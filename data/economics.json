@@ -1,0 +1,29 @@
+{
+  "_comment": "PSE Ecosystem — centralised economic parameters. Edit here; economic_engine.py loads this at runtime.",
+  "cepci": {
+    "2001": 394.3,
+    "2005": 468.2,
+    "2010": 550.8,
+    "2015": 556.8,
+    "2016": 541.7,
+    "2017": 567.5,
+    "2018": 603.1,
+    "2019": 607.5,
+    "2020": 596.2,
+    "2021": 708.8,
+    "2022": 816.0,
+    "2023": 797.6,
+    "2024": 802.3
+  },
+  "cepci_escalation_rate": 0.025,
+  "sslw_reference_cepci": 500.0,
+  "sslw_reference_year": 2001,
+  "default_lang_factor": 5.0,
+  "default_plant_life_yr": 20,
+  "default_interest_rate": 0.08,
+  "default_operating_hours_per_year": 8000.0,
+  "electricity_price_USD_per_kWh": 0.05,
+  "hydrogen_price_USD_per_kg": 4.50,
+  "co2_credit_USD_per_tonne": 50.0,
+  "biomass_cost_USD_per_kg": 0.05
+}

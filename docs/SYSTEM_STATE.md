@@ -1,8 +1,45 @@
 # PSE Ecosystem — System State Ledger
 
-**Version:** 1.1.0
-**Date:** 2026-05-11
-**Status:** v1.1.0 — 130 pytest (fast) + 1 end-to-end solve (slow) + 15 UI audit + 17 system audit + 11 industrial audit + 8 backend-sync = **181 checks total**
+**Version:** 1.2.0
+**Date:** 2026-05-12
+**Status:** v1.2.0 "Industrial Ready" — 107 pytest + DACU end-to-end converges in 2 SLP iterations + all Layer 3 analytical Jacobians validated
+
+---
+
+## What's New in v1.2.0 — Industrial Realignment & DAC Integration
+
+### UI Refactor: General-Purpose Process Simulator
+- Removed standalone "Case Study: Biomass→H₂" page; Biomass template now in the Template Library
+- Template Library grows to 13 templates across 4 categories (Hydrogen / Industrial / Small / Custom)
+- DACU template added: TVSAContactor → ElectrolyserHF → MethanationReactor (Power-to-Methane)
+- **1D Sensitivity Sweep** UI module: sweep any numeric parameter, live Plotly multi-trace chart
+- **Solver Mode Selector**: SLP / NLP / Trust-Region / Adaptive (cascade) in Solver Monitor
+- Unit Catalogue now categorised: Feed/Product, Reactors, Separation/DAC, Heat Exchange, Power/CHP
+
+### Advanced Solver Suite (Layer 2)
+- `SolveMode.NLP_IPOPT`: scipy L-BFGS-B full-NLP driver with analytical Jacobians from `linearize()`
+- `SolveMode.TRUST_REGION`: Filter/Funnel globalisation (Eason & Biegler 2016, Hameed et al. 2021)
+- `SolveMode.ADAPTIVE`: SLP → NLP → Trust-Region cascade (auto-escalation on convergence failure)
+- Auto-scaling: `compute_scaling_factors()` normalises variable magnitudes for LP and NLP
+- SLP infeasibility recovery: warm-start restarts (±5% bound perturbation, up to 3 attempts)
+- TRF Filter/Funnel copied from Extra/ to `pse_ecosystem/solvers/trf/`
+
+### New Layer 3 Unit Models (DAC + Power)
+| Class | File | `is_linear` | Purpose |
+|---|---|---|---|
+| `TVSAContactor` | `models/dac/tvsa_contactor.py` | **True** | TVSA DAC; fan + regen + vacuum energy; analytical J |
+| `ElectrolyserHF` | `models/dac/electrolyser_hf.py` | **True** | PEM/AEL electrolyser; port-based; analytical J |
+| `MethanationReactor` | `models/dac/methanation_reactor.py` | False | Sabatier equilibrium K(T); analytical J |
+| `CHPUnit` | `models/power/chp_unit.py` | **True** | Combined Heat & Power; combustion + HRSG; analytical J |
+
+### Port Validation Architecture
+- `BaseUnit.validate_connection(port_a, port_b)` — static method, raises `PortCompatibilityError`
+- `BaseFlowsheet.connect()` delegates to `validate_connection()` (phase + species checking at build time)
+- Prevents physically inconsistent links (e.g. gas CO2 stream into liquid water port)
+
+### Economics Data
+- `data/economics.json` — centralised CEPCI (2001–2024), escalation rate, costing defaults
+- `economic_engine.py` loads from JSON at import time; falls back to hardcoded dict if absent
 
 ---
 

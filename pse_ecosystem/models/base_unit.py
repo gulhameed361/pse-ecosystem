@@ -30,7 +30,9 @@ import numpy as np
 
 from pse_ecosystem.core.contracts import (
     LinearizedModel,
+    PortCompatibilityError,
     PrimalGuess,
+    StreamPort,
     UnitResponse,
 )
 
@@ -107,6 +109,29 @@ class BaseUnit(ABC):
         only in v0.2 — not consumed by any solver path.
         """
         return {}
+
+    # ── Port validation ───────────────────────────────────────────────────
+
+    @staticmethod
+    def validate_connection(port_a: StreamPort, port_b: StreamPort) -> None:
+        """Raise ``PortCompatibilityError`` if port_a and port_b cannot be wired.
+
+        Called automatically by ``BaseFlowsheet.connect()``. Unit authors may
+        also call it directly when building manual connections.
+        """
+        if port_a.phase != "any" and port_b.phase != "any":
+            if port_a.phase != port_b.phase:
+                raise PortCompatibilityError(
+                    f"Phase mismatch: '{port_a.unit_id}.{port_a.tag}' "
+                    f"({port_a.phase}) → '{port_b.unit_id}.{port_b.tag}' "
+                    f"({port_b.phase}). Use phase='any' to skip checking."
+                )
+        if port_a.species and port_b.species and port_a.species != port_b.species:
+            raise PortCompatibilityError(
+                f"Species mismatch: '{port_a.unit_id}.{port_a.tag}' carries "
+                f"{set(port_a.species)} but '{port_b.unit_id}.{port_b.tag}' "
+                f"expects {set(port_b.species)}."
+            )
 
     # ── Default implementations (override only when you can do better) ────
 

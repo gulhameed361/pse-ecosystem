@@ -8,13 +8,39 @@ Years after 2024 are projected at CEPCI_ESCALATION_RATE per annum.
 
 from __future__ import annotations
 
+import json
 import math
+import pathlib
 from dataclasses import dataclass
 
 # ── CEPCI data ────────────────────────────────────────────────────────────────
 # Source: Chemical Engineering Plant Cost Index (published monthly)
 # CE=500 is the traditional basis year used in SSLW correlations (~2001).
-CEPCI: dict[int, float] = {
+# Primary source: data/economics.json (loaded at import time if present).
+# Fallback: hardcoded dict below (kept for environments without the data file).
+
+_ECONOMICS_JSON = (
+    pathlib.Path(__file__).parent.parent.parent.parent  # → project root
+    / "data" / "economics.json"
+)
+
+
+def _load_cepci_from_json() -> "tuple[dict[int, float], float]":
+    """Load CEPCI dict and escalation rate from data/economics.json if present."""
+    try:
+        with open(_ECONOMICS_JSON, encoding="utf-8") as fh:
+            data = json.load(fh)
+        raw = data.get("cepci", {})
+        cepci = {int(k): float(v) for k, v in raw.items() if not k.startswith("_")}
+        rate = float(data.get("cepci_escalation_rate", 0.025))
+        return cepci, rate
+    except (FileNotFoundError, KeyError, ValueError):
+        return {}, 0.025
+
+
+_json_cepci, _json_rate = _load_cepci_from_json()
+
+CEPCI: dict[int, float] = _json_cepci or {
     2001: 394.3,   # CE=500 SSLW basis
     2005: 468.2,
     2010: 550.8,
@@ -26,11 +52,11 @@ CEPCI: dict[int, float] = {
     2020: 596.2,
     2021: 708.8,
     2022: 816.0,
-    2023: 797.6,   # preliminary estimate
-    2024: 802.3,   # preliminary estimate
+    2023: 797.6,
+    2024: 802.3,
 }
 
-CEPCI_ESCALATION_RATE: float = 0.025   # 2.5%/yr beyond last data year
+CEPCI_ESCALATION_RATE: float = _json_rate   # 2.5%/yr beyond last data year
 
 _CEPCI_BASE_YEAR: int = 2001           # matches sslw_costing.py (CE=500 at 394.3)
 _CEPCI_SSLW_INDEX: float = 500.0      # legacy SSLW normalisation base

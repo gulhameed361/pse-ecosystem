@@ -69,20 +69,7 @@ class BaseFlowsheet:
 
         Raises ``ValueError`` if the port variable counts differ.
         """
-        # Phase check (skip if either port uses "any")
-        if port_a.phase != port_b.phase and "any" not in (port_a.phase, port_b.phase):
-            raise PortCompatibilityError(
-                f"connect() phase mismatch: '{port_a.unit_id}.{port_a.tag}' "
-                f"is '{port_a.phase}' but '{port_b.unit_id}.{port_b.tag}' "
-                f"is '{port_b.phase}'."
-            )
-        # Species check (only if both ports declare non-empty species sets)
-        if port_a.species and port_b.species and port_a.species != port_b.species:
-            raise PortCompatibilityError(
-                f"connect() species mismatch: "
-                f"'{port_a.unit_id}.{port_a.tag}' has {set(port_a.species)} "
-                f"but '{port_b.unit_id}.{port_b.tag}' has {set(port_b.species)}."
-            )
+        BaseUnit.validate_connection(port_a, port_b)
 
         a_names = port_a.variable_names()
         b_names = port_b.variable_names()

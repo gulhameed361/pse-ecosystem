@@ -1,6 +1,6 @@
 # PSE Ecosystem — User Manual
 
-**Version:** 0.3.0 | **Date:** May 2026
+**Version:** 1.2.0 | **Date:** 2026-05-12
 
 ---
 
@@ -16,22 +16,20 @@
 pip install -e ".[solvers,weather,gui,blackbox]"
 ```
 
-### Launching the Streamlit UI (v0.3.0)
-
-The fastest way to interact with the ecosystem is via the browser UI:
+### Launching the Streamlit UI (v1.2.0)
 
 ```powershell
 streamlit run pse_ecosystem/ui/app_streamlit.py
 ```
 
-This opens a 4-page app at **http://localhost:8501**:
+Opens a 4-page app at **http://localhost:8501**:
 
 | Page | What it does |
 |---|---|
-| **Dashboard** | System status, LP solver check, template gallery |
-| **Flowsheet Builder** | Select a template, view its topology diagram, configure parameters |
+| **Dashboard** | System status, LP solver check, 13-template gallery |
+| **Flowsheet Builder** | Select template, view Mermaid topology, configure parameters. Built-in 1D Sensitivity Sweep. Custom flowsheet assembler. |
 | **GPS Weather** | Fetch site-specific solar GHI + wind profiles via pvlib |
-| **Solver Monitor** | Run the optimiser, view convergence plot and KPIs |
+| **Solver Monitor** | Solver mode selector (SLP / NLP / Trust-Region / Adaptive) → live convergence → KPI cards |
 
 See [`docs/UI_GUIDE.md`](UI_GUIDE.md) for a full page-by-page walkthrough.
 
@@ -53,26 +51,30 @@ pytest tests/ -v
 
 ---
 
-## 2. Pre-Built Industrial Flowsheets
+## 2. Pre-Built Flowsheet Templates
 
-v0.3.0 ships three one-click industrial templates. Each can be loaded via the
-Flowsheet Builder UI or directly in Python:
+v1.2.0 ships 13 templates. Each can be loaded via the Flowsheet Builder UI or directly in Python:
 
 ```python
 from pse_ecosystem.ui.flowsheet_service import load_template
 from pse_ecosystem.solvers.orchestrator import Orchestrator
 from pse_ecosystem.core.contracts import SolveMode
 
-fs = load_template("industrial.green_hydrogen", {"h2_demand_kg_per_h": 100.0})
+fs = load_template("dac.power_to_methane", {"F_air_mol_s": 10000.0, "T_rx_K": 673.0})
 result = Orchestrator(fs, SolveMode.FIXED_LP).solve()
 print(result.status, result.kpis)
+# → converged in 2 SLP iterations; KPIs: co2_capture_rate_tonne_per_day, CH4_production_mol_s, ...
 ```
 
-| Template key | Process | Units | Solver |
+| Template key | Process | Key units | Solver |
 |---|---|---|---|
-| `industrial.green_hydrogen` | PEM electrolysis → H2 buffer | PEMToy + MixerHF | Mode 1 LP (2 iter) |
-| `industrial.power_to_methanol` | CO2 + 3H2 → MeOH, split separation | StoichiometricReactor + SeparatorHF | Mode 1 LP (1 iter) |
-| `industrial.gasification_to_power` | Dry reforming + syngas compression | StoichiometricReactor + Compressor | Mode 1 LP (4 iter) |
+| `industrial.green_hydrogen` | PEM → H₂ buffer | PEMToy, MixerHF | LP |
+| `industrial.power_to_methanol` | CO₂ + 3H₂ → MeOH | StoichiometricReactor, SeparatorHF | LP |
+| `industrial.gasification_to_power` | Syngas + compression | StoichiometricReactor, Compressor | LP |
+| `biomass.gasification_to_hydrogen` | Drying → gasification → WGS → PSA | BiomassStorageHF, BiomassGasifierHF, WGSReactorHF, H2SeparatorPSA | SLP |
+| **`dac.power_to_methane`** | **TVSA DAC + electrolysis + Sabatier** | **TVSAContactor, ElectrolyserHF, MethanationReactor** | **SLP (2 iters)** |
+
+For all 13 templates see [UI_GUIDE.md §4](UI_GUIDE.md#4-template-reference-13-templates).
 
 For the MILP technology-selection template:
 
@@ -86,6 +88,37 @@ result = Orchestrator(fs, SolveMode.FLEXIBLE_MILP,
                       technology_choices=choices).solve()
 print(result.technology_selection)   # {'pick_pem': True, 'pick_gasifier': False}
 ```
+
+---
+
+## 2b. Solver Modes (v1.2.0)
+
+```python
+from pse_ecosystem.core.contracts import SolveMode
+from pse_ecosystem.solvers.orchestrator import Orchestrator
+from pse_ecosystem.solvers.slp import SLPConfig
+
+cfg = SLPConfig(max_iter=50, eps_f=1e-3)
+
+# SLP (default — fast LP subproblems)
+result = Orchestrator(fs, SolveMode.FIXED_LP, slp_config=cfg).solve()
+
+# Full NLP (scipy L-BFGS-B with Jacobian from unit.linearize())
+result = Orchestrator(fs, SolveMode.NLP_IPOPT, slp_config=cfg).solve()
+
+# Trust-Region Filter/Funnel (Eason & Biegler 2016)
+result = Orchestrator(fs, SolveMode.TRUST_REGION, slp_config=cfg).solve()
+
+# Adaptive cascade: SLP → NLP → Trust-Region
+result = Orchestrator(fs, SolveMode.ADAPTIVE, slp_config=cfg).solve()
+```
+
+| Mode | When to use |
+|---|---|
+| `FIXED_LP` | Default — fast, handles 90 % of flowsheets |
+| `NLP_IPOPT` | Non-linear, poorly initialised, SLP stagnated |
+| `TRUST_REGION` | Highly non-linear, large Jacobian condition number |
+| `ADAPTIVE` | Unknown difficulty — auto-escalates on convergence failure |
 
 ---
 

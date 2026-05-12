@@ -105,6 +105,15 @@ class SolveMode(str, Enum):
     FLEXIBLE_MILP = "mode_2"
     """Technology choice via binary variables. Outer MILP wrapping operations."""
 
+    NLP_IPOPT = "mode_3"
+    """Full NLP solve via IPOPT using ExternalFunction wrappers for unit residuals."""
+
+    TRUST_REGION = "mode_4"
+    """Trust-Region Filter/Funnel driver (Eason & Biegler 2016). Most robust fallback."""
+
+    ADAPTIVE = "adaptive"
+    """Cascade: SLP → IPOPT → Trust-Region, escalating on convergence failure."""
+
 
 class SolverStatus(str, Enum):
     CONVERGED = "converged"

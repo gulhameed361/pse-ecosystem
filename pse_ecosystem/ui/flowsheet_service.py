@@ -38,16 +38,36 @@ class TemplateSpec:
     connections_human: List[Tuple[str, str, str]] = field(default_factory=list)
 
 
-# ── Allowlist for the custom flowsheet assembler ──────────────────────────────
+# ── Unit catalogue for the custom flowsheet assembler ─────────────────────────
 
 AVAILABLE_UNITS: Dict[str, str] = {
+    # Feed / Product
     "PEMToy":                "Electrolyser — linear (LCOH + Carbon Intensity KPIs)",
     "GasifierToy":           "Gasifier toy — non-linear (LCOH + Carbon Intensity KPIs)",
+    # Reactors
     "StoichiometricReactor": "Stoichiometric reactor — linear (exact analytical J)",
-    "MixerHF":               "Multi-stream mixer — non-linear (energy balance)",
+    "MethanationReactor":    "Sabatier methanation — non-linear equilibrium, analytical J",
+    # Separation / DAC
     "SeparatorHF":           "Separator — split fractions, linear",
-    "Compressor":            "Isentropic compressor — non-linear",
+    "TVSAContactor":         "TVSA DAC contactor — linear, analytical J (415 ppm CO2 feed)",
+    # Heat Exchange
     "HeatExchangerNTU":      "Heat exchanger NTU — non-linear (counter-current)",
+    # Power / CHP
+    "ElectrolyserHF":        "PEM/AEL electrolyser — linear, port-based, analytical J",
+    "CHPUnit":               "Combined Heat & Power — linear, analytical J (H2/CO/CH4 fuel)",
+    # Other
+    "MixerHF":               "Multi-stream mixer — non-linear (energy balance)",
+    "Compressor":            "Isentropic compressor — non-linear",
+}
+
+UNIT_CATEGORIES: Dict[str, List[str]] = {
+    "Feed/Product":       ["PEMToy", "GasifierToy"],
+    "Reactors":           ["StoichiometricReactor", "MethanationReactor"],
+    "Separation/DAC":     ["SeparatorHF", "TVSAContactor"],
+    "Heat Exchange":      ["HeatExchangerNTU"],
+    "Power/CHP":          ["ElectrolyserHF", "CHPUnit"],
+    "Mixing":             ["MixerHF"],
+    "Pressure Changers":  ["Compressor"],
 }
 
 
@@ -345,6 +365,45 @@ _REGISTRY: List[TemplateSpec] = [
             ("WGS shifted out", "PSA feed in", "H2-rich shifted gas"),
         ],
     ),
+
+    TemplateSpec(
+        key="dac.power_to_methane",
+        display_name="Direct Air Capture → Methane (DAC-U)",
+        category="Industrial",
+        description=(
+            "Power-to-Methane via TVSA CO₂ capture (415 ppm), PEM electrolysis, "
+            "and Sabatier methanation (CO₂ + 4H₂ → CH₄ + 2H₂O). "
+            "Reports CO₂ capture rate, SNG production, and specific energy KPIs."
+        ),
+        topology_diagram=(
+            "graph LR\n"
+            "    AIR([Ambient Air]) --> TVSA[TVSA Contactor\nCO2 capture]\n"
+            "    TVSA --> CO2([CO2 stream])\n"
+            "    WATER([Water]) --> ELEC[PEM Electrolyser]\n"
+            "    ELEC --> H2([H2 stream])\n"
+            "    CO2 --> MR[Methanation\nSabatier Reactor]\n"
+            "    H2 --> MR\n"
+            "    MR --> SNG([Synthetic Natural Gas])\n"
+            "    style TVSA fill:#1a6b8a,color:#fff\n"
+            "    style ELEC fill:#4a90e2,color:#fff\n"
+            "    style MR fill:#c0392b,color:#fff"
+        ),
+        unit_labels=["TVSAContactor", "ElectrolyserHF", "MethanationReactor"],
+        default_params={
+            "F_air_mol_s": 10_000.0,
+            "eta_cap": 0.85,
+            "eta_elec": 0.70,
+            "T_rx_K": 673.0,
+            "plant_life_yr": 20,
+            "interest_rate": 0.08,
+            "target_year": 2024,
+        },
+        supports_milp=False,
+        connections_human=[
+            ("TVSAContactor.co2_out", "MethanationReactor.co2_in", "Captured CO2"),
+            ("ElectrolyserHF.h2_out", "MethanationReactor.h2_in", "Green H2"),
+        ],
+    ),
 ]
 
 _REGISTRY_MAP: Dict[str, TemplateSpec] = {t.key: t for t in _REGISTRY}
@@ -514,6 +573,41 @@ def _instantiate_unit(utype: str, uid: str, params: dict) -> Any:
             UA_W_per_K=float(params.get("UA_W_per_K", 5000.0)),
         )
         return HeatExchangerNTU(uid, hot, cold, hp)
+
+    if utype == "TVSAContactor":
+        from pse_ecosystem.models.dac.tvsa_contactor import TVSAContactor
+        return TVSAContactor(
+            uid,
+            eta_cap=float(params.get("eta_cap", 0.85)),
+            dP_fan_Pa=float(params.get("dP_fan_Pa", 200.0)),
+            eta_fan=float(params.get("eta_fan", 0.75)),
+            dH_des_kJ_per_mol=float(params.get("dH_des_kJ_per_mol", 70.0)),
+            T_des_K=float(params.get("T_des_K", 393.0)),
+            P_ads_kPa=float(params.get("P_ads_kPa", 101.325)),
+            P_des_kPa=float(params.get("P_des_kPa", 5.0)),
+            eta_vac=float(params.get("eta_vac", 0.70)),
+        )
+
+    if utype == "ElectrolyserHF":
+        from pse_ecosystem.models.dac.electrolyser_hf import ElectrolyserHF
+        return ElectrolyserHF(uid, eta_elec=float(params.get("eta_elec", 0.70)))
+
+    if utype == "MethanationReactor":
+        from pse_ecosystem.models.dac.methanation_reactor import MethanationReactor
+        return MethanationReactor(
+            uid, T_rx_K_default=float(params.get("T_rx_K", 673.0))
+        )
+
+    if utype == "CHPUnit":
+        from pse_ecosystem.models.power.chp_unit import CHPUnit
+        return CHPUnit(
+            uid,
+            eta_comb=float(params.get("eta_comb", 0.95)),
+            eta_isentropic=float(params.get("eta_isentropic", 0.85)),
+            eta_mechanical=float(params.get("eta_mechanical", 0.98)),
+            eta_hrec=float(params.get("eta_hrec", 0.85)),
+            lambda_air=float(params.get("lambda_air", 1.1)),
+        )
 
     raise ValueError(f"Unknown unit type: {utype}")
 
@@ -800,6 +894,78 @@ def _load_biomass_gasification_to_h2(p: dict):
     return fs
 
 
+def _load_dacu_power_to_methane(p: dict):
+    from pse_ecosystem.models.dac.tvsa_contactor import TVSAContactor
+    from pse_ecosystem.models.dac.electrolyser_hf import ElectrolyserHF
+    from pse_ecosystem.models.dac.methanation_reactor import MethanationReactor
+    from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
+
+    F_air   = float(p.get("F_air_mol_s", 10_000.0))
+    eta_cap = float(p.get("eta_cap", 0.85))
+    eta_elec = float(p.get("eta_elec", 0.70))
+    T_rx    = float(p.get("T_rx_K", 673.0))
+
+    tvsa   = TVSAContactor("tvsa",    eta_cap=eta_cap)
+    elec   = ElectrolyserHF("elec",   eta_elec=eta_elec)
+    meth   = MethanationReactor("meth", T_rx_K_default=T_rx)
+
+    fs = BaseFlowsheet(name="dac.power_to_methane", units=[tvsa, elec, meth])
+
+    # Wire CO2 and H2 streams to methanation reactor
+    fs.connect(tvsa.co2_out_port, meth.co2_in_port,  description="Captured CO2 → reactor")
+    fs.connect(elec.h2_out_port,  meth.h2_in_port,   description="Green H2 → reactor")
+
+    # Fix air feed flow (design basis)
+    fs.extra_bounds["tvsa.air_in.F_Air"] = (F_air, F_air)
+    fs.extra_bounds["tvsa.air_in.T"]     = (288.15, 288.15)   # 15°C ambient
+    fs.extra_bounds["tvsa.air_in.P"]     = (101.325, 101.325) # kPa
+
+    # H2:CO2 stoichiometry (4:1 molar) — enforced via extra_equality
+    # F_H2_elec = 4 × F_CO2_tvsa  →  F_H2 - 4*F_CO2 = 0
+    fs.extra_equalities.append(
+        ({"elec.h2_out.F_H2": 1.0, "tvsa.co2_out.F_CO2": -4.0}, 0.0)
+    )
+
+    # Fix reactor temperature (user-adjustable via sensitivity sweep)
+    fs.extra_bounds["meth.T_rx_K"] = (T_rx, T_rx)
+
+    # Physics-informed bounds to give SLP a well-scaled warm-start
+    cap_rate = eta_cap * 415e-6 * F_air  # mol/s CO2 captured
+    h2_rate  = 4.0 * cap_rate
+
+    # TVSA flow bounds
+    fs.extra_bounds["tvsa.co2_out.F_CO2"]          = (cap_rate * 0.5, cap_rate * 2.0)
+    fs.extra_bounds["tvsa.depleted_air_out.F_Air"] = (F_air * 0.99, F_air * 1.01)
+
+    # TVSA energy bounds (physics-derived to avoid 50,000-kW midpoints)
+    import math as _math
+    _k_fan   = 0.029 * 200.0 / (1.225 * 0.75 * 1000.0)
+    _k_regen = 70.0
+    _k_vac   = 8.314e-3 * 393.0 * _math.log(101.325 / 5.0) / 0.70
+    fs.extra_bounds["tvsa.W_fan_kW"]   = (0.0, _k_fan   * F_air    * 2.0 + 10.0)
+    fs.extra_bounds["tvsa.Q_regen_kW"] = (0.0, _k_regen * cap_rate * 2.0 + 10.0)
+    fs.extra_bounds["tvsa.W_vac_kW"]   = (0.0, _k_vac   * cap_rate * 2.0 + 10.0)
+
+    # Electrolyser bounds (physics-derived)
+    _k_elec = 285.8 / eta_elec
+    fs.extra_bounds["elec.h2_out.F_H2"]    = (h2_rate * 0.5, h2_rate * 2.0)
+    fs.extra_bounds["elec.water_in.F_H2O"] = (h2_rate * 0.5, h2_rate * 2.0)
+    fs.extra_bounds["elec.o2_out.F_O2"]    = (h2_rate * 0.25, h2_rate * 1.0)
+    fs.extra_bounds["elec.W_elec_kW"]      = (0.0, _k_elec * h2_rate * 2.0 + 10.0)
+
+    # Methanation bounds — set co2_in and h2_in tight so the bilinear
+    # X*F_CO2 Jacobian term is evaluated near the true feasible point
+    # (default [0,1e4] gives midpoint=5000, 2800× off from 1.764 → LP infeasible)
+    fs.extra_bounds["meth.co2_in.F_CO2"]      = (cap_rate * 0.5, cap_rate * 2.0)
+    fs.extra_bounds["meth.h2_in.F_H2"]        = (h2_rate  * 0.5, h2_rate  * 2.0)
+    fs.extra_bounds["meth.product_out.F_CH4"] = (0.0, cap_rate * 1.5)
+    fs.extra_bounds["meth.product_out.F_H2O"] = (0.0, 2.0 * cap_rate * 1.5)
+    fs.extra_bounds["meth.X_CO2"]             = (0.01, 0.9999)
+
+    fs.objective_kpi = "CH4_production_mol_s"
+    return fs
+
+
 # ── Loader dispatch maps ──────────────────────────────────────────────────────
 
 _LOADER_MAP: Dict[str, Callable] = {
@@ -815,6 +981,7 @@ _LOADER_MAP: Dict[str, Callable] = {
     "small.mixer_settler":                     _load_mixer_settler,
     "small.distillation":                      _load_distillation,
     "biomass.gasification_to_hydrogen":        _load_biomass_gasification_to_h2,
+    "dac.power_to_methane":                    _load_dacu_power_to_methane,
 }
 
 _MILP_LOADER_MAP: Dict[str, Callable] = {

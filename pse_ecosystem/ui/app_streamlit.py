@@ -253,8 +253,120 @@ def _page_flowsheet_builder():
                     st.session_state["template_params"] = updated
                     st.success(
                         f"Template **{spec.display_name}** selected. "
-                        "Go to **Solver Monitor** to run."
+                        "Go to **Solver Monitor** to run, or use the sweep below."
                     )
+
+        st.divider()
+        with st.expander("1D Parameter Sensitivity Sweep", expanded=False):
+            _section_sensitivity_sweep(st, chosen_key, spec)
+
+
+# ── Sensitivity sweep ────────────────────────────────────────────────────────
+
+def _section_sensitivity_sweep(st, chosen_key: str, spec) -> None:
+    """Render a 1D parameter sweep with live Plotly visualisation."""
+    from pse_ecosystem.ui.flowsheet_service import load_template
+
+    defaults = dict(spec.default_params)
+    numeric_params = {
+        k: v for k, v in defaults.items()
+        if isinstance(v, (int, float)) and v != 0
+    }
+    if not numeric_params:
+        st.info("No numeric parameters available for sweep.")
+        return
+
+    st.subheader("1D Parameter Sweep")
+    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+    with col_s1:
+        sweep_param = st.selectbox(
+            "Sweep parameter", list(numeric_params.keys()),
+            key=f"sweep_param_{chosen_key}",
+        )
+    default_val = float(numeric_params[sweep_param])
+    with col_s2:
+        sweep_min = st.number_input(
+            "Min value", value=default_val * 0.5, format="%.4g",
+            key=f"sweep_min_{chosen_key}",
+        )
+    with col_s3:
+        sweep_max = st.number_input(
+            "Max value", value=default_val * 1.5, format="%.4g",
+            key=f"sweep_max_{chosen_key}",
+        )
+    with col_s4:
+        n_points = int(st.number_input(
+            "Points", min_value=3, max_value=30, value=8, step=1,
+            key=f"sweep_n_{chosen_key}",
+        ))
+
+    if st.button("Run Sweep", key=f"run_sweep_{chosen_key}"):
+        import numpy as np
+        import pandas as pd
+
+        sweep_values = list(np.linspace(sweep_min, sweep_max, n_points))
+        base_params = dict(st.session_state.get("template_params", defaults))
+
+        results_rows = []
+        sweep_bar = st.progress(0, text="Sweeping…")
+
+        try:
+            from pse_ecosystem.solvers.orchestrator import Orchestrator
+            from pse_ecosystem.solvers.slp import SLPConfig
+            from pse_ecosystem.core.contracts import SolveMode
+
+            for idx, val in enumerate(sweep_values):
+                p = dict(base_params)
+                p[sweep_param] = val
+                try:
+                    fs = load_template(chosen_key, p)
+                    cfg = SLPConfig(max_iter=40, verbose=False)
+                    orch = Orchestrator(flowsheet=fs, mode=SolveMode.FIXED_LP, slp_config=cfg)
+                    res = orch.solve()
+                    row = {sweep_param: val, "converged": res.converged}
+                    row.update(res.kpis)
+                except Exception:
+                    row = {sweep_param: val, "converged": False}
+                results_rows.append(row)
+                sweep_bar.progress((idx + 1) / n_points, text=f"Point {idx+1}/{n_points}")
+
+            sweep_bar.empty()
+            df_sweep = pd.DataFrame(results_rows)
+
+            # Plot all numeric KPI columns
+            kpi_cols = [
+                c for c in df_sweep.columns
+                if c not in (sweep_param, "converged")
+                and df_sweep[c].dtype in (float, int)
+            ]
+            if kpi_cols:
+                import plotly.graph_objects as go
+                fig_sw = go.Figure()
+                for col in kpi_cols:
+                    fig_sw.add_trace(go.Scatter(
+                        x=df_sweep[sweep_param].tolist(),
+                        y=df_sweep[col].tolist(),
+                        mode="lines+markers",
+                        name=col,
+                    ))
+                fig_sw.update_layout(
+                    title=f"Sensitivity: KPIs vs {sweep_param}",
+                    xaxis_title=sweep_param,
+                    yaxis_title="KPI value",
+                    height=420,
+                    legend=dict(orientation="h", y=-0.25),
+                )
+                st.plotly_chart(fig_sw, use_container_width=True)
+
+            st.dataframe(
+                df_sweep.style.format({
+                    c: "{:.4g}" for c in df_sweep.columns if df_sweep[c].dtype in (float,)
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
+        except Exception as exc:
+            st.error(f"Sweep failed: {exc}")
 
 
 # ── Custom flowsheet assembler ────────────────────────────────────────────────
@@ -309,233 +421,19 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
             st.error(f"Build failed: {exc}")
 
 
-# ── Page 3: Case Study — Biomass → H2 ───────────────────────────────────────
+# ── Page 3 (removed): Biomass Case Study migrated to Template Library ─────────
+# The Biomass → H2 flowsheet is now loaded via the Template Library using key
+# "biomass.gasification_to_hydrogen". Use the Flowsheet Builder page instead.
+
 
 def _page_case_study():
+    """Stub retained for import-compatibility; page removed from navigation."""
     st = _require_streamlit()
-    _init_state(st)
-
-    st.title("Case Study: Biomass → H₂ (Gasification)")
-    st.caption(
-        "Full B-HYPSYS flowsheet: drying → thermochemical gasification "
-        "→ WGS reactor → PSA separation. "
-        "Physics corrected from B-HYPSYS audit (16 defects fixed)."
+    st.info(
+        "The Biomass → H₂ case study has moved to the **Flowsheet Builder**. "
+        "Select the 'Biomass → H₂ (Gasification)' template there."
     )
 
-    # ── Inputs ───────────────────────────────────────────────────────────────
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("Process Inputs")
-        from pse_ecosystem.models.biomass.biomass_database import BIOMASS_DB
-        biomass_type = st.selectbox("Biomass Type", list(BIOMASS_DB.keys()))
-        agent = st.radio("Gasifying Agent", ["Steam", "Air"])
-        feed_kg_s = st.number_input(
-            "Biomass Feed Rate (kg/s wet)", min_value=0.1, max_value=20.0,
-            value=1.0, step=0.1, format="%.2f",
-        )
-        sb_ratio = st.number_input(
-            "Steam-to-Biomass Ratio (kg/kg dry)", min_value=0.1, max_value=3.0,
-            value=1.0, step=0.1, format="%.2f",
-        )
-        T_gas = st.slider("Gasifier Temperature (°C)", 600, 900, 800, step=10)
-        T_wgs = st.slider("WGS Temperature (°C)", 250, 500, 400, step=10)
-        H2_rec = st.slider("H2 PSA Recovery (%)", 60, 97, 85) / 100.0
-
-    with col2:
-        st.subheader("Economic Parameters")
-        plant_life = st.number_input(
-            "Plant Life (years)", min_value=5, max_value=40, value=20, step=1,
-        )
-        interest = st.slider("Interest Rate (%)", 2, 20, 8) / 100.0
-
-        from pse_ecosystem.models.costing.economic_engine import CEPCI
-        cepci_years = sorted(CEPCI.keys())
-        target_year = st.selectbox(
-            "Cost Year (CEPCI)", cepci_years, index=cepci_years.index(2024),
-        )
-
-        st.subheader("Biomass Properties")
-        b = BIOMASS_DB[biomass_type]
-        props_col1, props_col2 = st.columns(2)
-        props_col1.metric("Moisture Content", f"{b['MC']*100:.0f}%")
-        props_col1.metric("LHV (dry)", f"{b['LHV_MJ_kg']:.1f} MJ/kg")
-        props_col2.metric("C content (dry)", f"{b['C']*100:.1f}%")
-        props_col2.metric("H content (dry)", f"{b['H']*100:.1f}%")
-
-    st.divider()
-
-    # ── Run button ────────────────────────────────────────────────────────────
-    if st.button("Run Case Study", type="primary"):
-        try:
-            from pse_ecosystem.ui.flowsheet_service import load_template
-            from pse_ecosystem.solvers.orchestrator import Orchestrator
-            from pse_ecosystem.solvers.slp import SLPConfig
-            from pse_ecosystem.core.contracts import SolveMode
-            from pse_ecosystem.models.costing.economic_engine import EconomicEngine
-
-            params = {
-                "biomass_type": biomass_type,
-                "gasifying_agent": agent,
-                "biomass_feed_kg_s": feed_kg_s,
-                "steam_to_biomass_ratio": sb_ratio,
-                "T_gasifier_C": float(T_gas),
-                "T_wgs_C": float(T_wgs),
-                "H2_recovery": H2_rec,
-                "plant_life_yr": plant_life,
-                "interest_rate": interest,
-                "target_year": target_year,
-            }
-
-            progress = st.progress(0, text="Building flowsheet…")
-
-            with st.spinner("Solving Biomass → H₂ flowsheet…"):
-                fs = load_template("biomass.gasification_to_hydrogen", params)
-
-                _cs_history: list = []
-
-                def _on_iter(k: int, obj: float, resid: float) -> None:
-                    _cs_history.append(k)
-                    progress.progress(
-                        min((k + 1) / 50, 1.0),
-                        text=f"SLP iteration {k+1}  |  ‖f‖ = {resid:.3g}",
-                    )
-
-                cfg = SLPConfig(
-                    max_iter=60,
-                    eps_x=1e-4,
-                    eps_f=1e-4,
-                    use_trust_region=True,
-                    trust_region_init=0.5,
-                    verbose=False,
-                    iteration_callback=_on_iter,
-                )
-                orch = Orchestrator(flowsheet=fs, mode=SolveMode.FIXED_LP, slp_config=cfg)
-                result = orch.solve()
-
-            progress.empty()
-
-        except Exception as exc:
-            st.error(f"Solve failed: {exc}")
-            import traceback
-            with st.expander("Traceback"):
-                st.code(traceback.format_exc())
-            return
-
-        # ── Results ───────────────────────────────────────────────────────────
-        if result.converged:
-            st.success(f"Converged in {result.iterations} iteration(s).")
-        else:
-            st.warning(
-                f"Solver status: {str(result.status).split('.')[-1]}  |  "
-                f"{result.message}"
-            )
-
-        kpis = result.kpis
-
-        # Compute economics
-        eco = EconomicEngine(
-            target_year=int(target_year),
-            plant_life_yr=int(plant_life),
-            interest_rate=float(interest),
-        )
-
-        h2_kg_s = kpis.get("psa.H2_production_kg_s", 0.0)
-        capex_est_USD = sum(
-            u.capex(result.x) for u in fs.units
-            if hasattr(u, "capex")
-        )
-        capex_annual = eco.annualized_capex(capex_est_USD)
-        biomass_cost_per_year = (
-            feed_kg_s * 3600 * eco.operating_hours_per_year *
-            float(params.get("biomass_cost_USD_per_kg", 0.05))
-        )
-        opex_annual = biomass_cost_per_year + kpis.get("storage.Q_drying_kW", 0.0) * 0.05 * 8000 * 3600
-        lcoh = eco.lcoh(capex_annual, opex_annual, h2_kg_s)
-
-        # Key metric cards
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("LCOH", f"${lcoh:.2f} / kg H₂" if lcoh < 1e6 else "N/A")
-        m2.metric(
-            "Cold Gas Efficiency",
-            f"{kpis.get('gasifier.CGE_percent', 0.0):.1f}%",
-        )
-        m3.metric(
-            "H₂ Production",
-            f"{kpis.get('psa.H2_production_kg_h', 0.0):.1f} kg/h",
-        )
-        m4.metric(
-            "H₂ in Syngas (gasifier)",
-            f"{kpis.get('gasifier.H2_pct_vol', 0.0):.1f} vol%",
-        )
-
-        # Additional KPIs
-        st.subheader("Unit KPIs")
-        import pandas as pd
-        kpi_rows = [
-            {"Unit": k.split(".")[0], "KPI": k.split(".", 1)[1], "Value": f"{v:.4g}"}
-            for k, v in kpis.items()
-        ]
-        if kpi_rows:
-            st.dataframe(
-                pd.DataFrame(kpi_rows),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-        # LCOH breakdown
-        if lcoh < 1e6:
-            st.subheader("LCOH Breakdown")
-            import plotly.graph_objects as go
-            fig = go.Figure(go.Bar(
-                x=["CAPEX (annualised)", "OPEX (annual)", "Total LCOH × 100 kg/yr"],
-                y=[capex_annual / max(h2_kg_s * 8000 * 3600, 1),
-                   opex_annual / max(h2_kg_s * 8000 * 3600, 1),
-                   lcoh],
-                marker_color=["#3498db", "#e67e22", "#2ecc71"],
-                text=[f"${capex_annual/max(h2_kg_s*8000*3600,1):.2f}/kg",
-                      f"${opex_annual/max(h2_kg_s*8000*3600,1):.2f}/kg",
-                      f"${lcoh:.2f}/kg"],
-                textposition="auto",
-            ))
-            fig.update_layout(
-                title="LCOH Cost Breakdown [$/kg H₂]",
-                yaxis_title="$/kg H₂",
-                height=350,
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        # Syngas composition at gasifier outlet
-        st.subheader("Syngas Composition (Gasifier Outlet)")
-        syngas_vars = {
-            "H2": result.x.get("gasifier.syngas_out.F_H2", 0),
-            "CO": result.x.get("gasifier.syngas_out.F_CO", 0),
-            "CO2": result.x.get("gasifier.syngas_out.F_CO2", 0),
-            "H2O": result.x.get("gasifier.syngas_out.F_H2O", 0),
-            "CH4": result.x.get("gasifier.syngas_out.F_CH4", 0),
-            "N2": result.x.get("gasifier.syngas_out.F_N2", 0),
-        }
-        n_total = sum(syngas_vars.values())
-        if n_total > 1e-9:
-            import plotly.graph_objects as go
-            fig2 = go.Figure(go.Pie(
-                labels=list(syngas_vars.keys()),
-                values=[v / n_total * 100 for v in syngas_vars.values()],
-                hole=0.35,
-            ))
-            fig2.update_layout(title="Syngas Mole % (dry + wet)", height=320)
-            st.plotly_chart(fig2, use_container_width=True)
-
-        # Full solution table
-        with st.expander("Full Solution Variables"):
-            df_x = pd.DataFrame(
-                {"Variable": list(result.x.keys()), "Value": list(result.x.values())}
-            )
-            st.dataframe(
-                df_x.style.format({"Value": "{:.6g}"}),
-                use_container_width=True,
-                hide_index=True,
-            )
 
 
 # ── Page 4: GPS Weather ───────────────────────────────────────────────────────
@@ -660,15 +558,25 @@ def _page_solver_monitor():
             eps_x    = st.number_input("Step tolerance (eps_x)", value=1e-4,
                                         format="%.2e", min_value=1e-10, max_value=1.0)
         with col_b:
+            _solver_options = ["SLP (fast, LP-based)"]
             if spec.supports_milp:
-                mode_choice = st.radio(
-                    "Solve Mode",
-                    ["Mode 1 — Fixed LP", "Mode 2 — Flexible MILP"],
-                )
-            else:
-                mode_choice = "Mode 1 — Fixed LP"
-                st.info("Mode 1 (Fixed LP) — this template does not support MILP.")
+                _solver_options.append("MILP → SLP (technology selection)")
+            _solver_options += [
+                "NLP (scipy L-BFGS-B, full residual)",
+                "Trust-Region Filter (robust, filter globalization)",
+                "Adaptive (SLP → NLP → Trust-Region cascade)",
+            ]
+            _mode_label = st.radio("Solver Mode", _solver_options)
             verbose = st.checkbox("Verbose solver output", value=False)
+
+        _MODE_MAP = {
+            "SLP (fast, LP-based)":                            "FIXED_LP",
+            "MILP → SLP (technology selection)":              "FLEXIBLE_MILP",
+            "NLP (scipy L-BFGS-B, full residual)":            "NLP_IPOPT",
+            "Trust-Region Filter (robust, filter globalization)": "TRUST_REGION",
+            "Adaptive (SLP → NLP → Trust-Region cascade)":    "ADAPTIVE",
+        }
+        _solve_mode_name = _MODE_MAP.get(_mode_label, "FIXED_LP")
 
     # ── Run button ───────────────────────────────────────────────────────────
     if st.button("Run Solve", type="primary"):
@@ -678,7 +586,14 @@ def _page_solver_monitor():
             from pse_ecosystem.solvers.slp import SLPConfig
             from pse_ecosystem.core.contracts import SolveMode, SolverStatus
 
-            mode = SolveMode.FIXED_LP if "1" in mode_choice else SolveMode.FLEXIBLE_MILP
+            _mode_enum_map = {
+                "FIXED_LP":     SolveMode.FIXED_LP,
+                "FLEXIBLE_MILP": SolveMode.FLEXIBLE_MILP,
+                "NLP_IPOPT":    SolveMode.NLP_IPOPT,
+                "TRUST_REGION": SolveMode.TRUST_REGION,
+                "ADAPTIVE":     SolveMode.ADAPTIVE,
+            }
+            mode = _mode_enum_map.get(_solve_mode_name, SolveMode.FIXED_LP)
             params = st.session_state.get("template_params", {})
 
             # ── Live convergence containers ──────────────────────────────────
@@ -891,11 +806,10 @@ def main() -> None:
     )
 
     pages = [
-        st.Page(_page_dashboard,         title="Dashboard",              icon="🏠"),
-        st.Page(_page_flowsheet_builder,  title="Flowsheet Builder",      icon="🔧"),
-        st.Page(_page_case_study,         title="Case Study: Biomass→H2", icon="🌿"),
-        st.Page(_page_gps_weather,        title="GPS Weather",            icon="🌍"),
-        st.Page(_page_solver_monitor,     title="Solver Monitor",         icon="📊"),
+        st.Page(_page_dashboard,         title="Dashboard",         icon="🏠"),
+        st.Page(_page_flowsheet_builder,  title="Flowsheet Builder", icon="🔧"),
+        st.Page(_page_gps_weather,        title="GPS Weather",       icon="🌍"),
+        st.Page(_page_solver_monitor,     title="Solver Monitor",    icon="📊"),
     ]
     pg = st.navigation(pages)
     pg.run()

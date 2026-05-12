@@ -88,6 +88,12 @@ class Orchestrator:
             return self._solve_fixed()
         if self.mode == SolveMode.FLEXIBLE_MILP:
             return self._solve_flexible()
+        if self.mode == SolveMode.NLP_IPOPT:
+            return self._solve_nlp()
+        if self.mode == SolveMode.TRUST_REGION:
+            return self._solve_trust_region()
+        if self.mode == SolveMode.ADAPTIVE:
+            return self._solve_adaptive()
         raise ValueError(f"Unknown mode {self.mode!r}")
 
     # ── Mode 1: Fixed topology ─────────────────────────────────────────────
@@ -154,6 +160,70 @@ class Orchestrator:
                 "convergence on the fixed topology."
             )
         return slp_result
+
+    # ── Mode 3: Full NLP via scipy (exposed as NLP_IPOPT) ─────────────────
+
+    def _solve_nlp(self) -> SolveResult:
+        from pse_ecosystem.solvers.ipopt_driver import NLPDriver
+
+        driver = NLPDriver(self.flowsheet, config=self.slp_config)
+        return driver.run()
+
+    # ── Mode 4: Trust-Region Filter/Funnel ────────────────────────────────
+
+    def _solve_trust_region(self) -> SolveResult:
+        from pse_ecosystem.solvers.trust_region_driver import TrustRegionDriver, TRFConfig
+
+        cfg = TRFConfig(
+            max_iter=self.slp_config.max_iter,
+            eps_x=self.slp_config.eps_x,
+            eps_f=self.slp_config.eps_f,
+            eps_kpi=self.slp_config.eps_kpi,
+            verbose=self.slp_config.verbose,
+            solver_name=self.slp_config.solver_name,
+        )
+        driver = TrustRegionDriver(self.flowsheet, config=cfg, slp_config=self.slp_config)
+        return driver.run()
+
+    # ── Mode adaptive: SLP → NLP → TRF cascade ────────────────────────────
+
+    def _solve_adaptive(self) -> SolveResult:
+        # Stage 1: SLP (fast, LP-based)
+        slp_result = self._solve_fixed()
+        if slp_result.converged:
+            return slp_result
+
+        # Stage 2: NLP (scipy L-BFGS-B; warm-starts from SLP solution)
+        try:
+            from pse_ecosystem.solvers.ipopt_driver import NLPDriver
+
+            driver = NLPDriver(self.flowsheet, config=self.slp_config)
+            x_warm = slp_result.x if slp_result.x else None
+            nlp_result = driver.run(x0=x_warm)
+            nlp_result.message = f"[ADAPTIVE stage 2/3] {nlp_result.message}"
+            if nlp_result.converged:
+                return nlp_result
+        except Exception:  # noqa: BLE001
+            pass  # NLP unavailable — proceed directly to TRF
+
+        # Stage 3: Trust-Region (most robust — uses filter globalization)
+        from pse_ecosystem.solvers.trust_region_driver import TrustRegionDriver, TRFConfig
+
+        cfg = TRFConfig(
+            max_iter=self.slp_config.max_iter,
+            eps_x=self.slp_config.eps_x,
+            eps_f=self.slp_config.eps_f,
+            eps_kpi=self.slp_config.eps_kpi,
+            verbose=self.slp_config.verbose,
+            solver_name=self.slp_config.solver_name,
+        )
+        x_warm = slp_result.x if slp_result.x else None
+        trf_driver = TrustRegionDriver(
+            self.flowsheet, config=cfg, slp_config=self.slp_config
+        )
+        trf_result = trf_driver.run(x0=x_warm)
+        trf_result.message = f"[ADAPTIVE stage 3/3] {trf_result.message}"
+        return trf_result
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 

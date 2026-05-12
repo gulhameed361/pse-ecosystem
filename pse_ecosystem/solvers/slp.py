@@ -155,6 +155,8 @@ class SLPDriver:
         prev_kpi = float("inf")
         last_lp_obj: Optional[float] = None
         last_objective: float = float("nan")
+        _restart_count: int = 0
+        _max_restarts: int = 3
 
         for k in range(self.config.max_iter):
             # ── Layer-3 round: linearise around x_k ───────────────────────
@@ -185,8 +187,28 @@ class SLPDriver:
                 # Trust region likely too tight — shrink and retry.
                 delta = max(delta * 0.5, self.config.trust_region_min)
                 if self.config.verbose:
-                    print(f"[SLP] iter {k}: LP infeasible, shrinking Δ → {delta:.3g}")
+                    print(f"[SLP] iter {k}: LP infeasible, shrinking TR -> {delta:.3g}")
                 if delta <= self.config.trust_region_min + 1e-15:
+                    if _restart_count < _max_restarts:
+                        # Perturb x_k and reset trust region (warm-start restart)
+                        _restart_count += 1
+                        agg_bounds = self.flowsheet.aggregated_bounds()
+                        rng = np.random.default_rng(seed=_restart_count)
+                        for v in list(x_k):
+                            lo, hi = agg_bounds.get(v, (-1e18, 1e18))
+                            lo = max(lo, -1e18)
+                            hi = min(hi, 1e18)
+                            span = hi - lo if hi < 1e18 and lo > -1e18 else 1.0
+                            x_k[v] += float(rng.uniform(-0.05 * span, 0.05 * span))
+                            x_k[v] = float(np.clip(x_k[v], lo if lo > -1e18 else -1e18,
+                                                    hi if hi < 1e18 else 1e18))
+                        delta = self.config.trust_region_init
+                        if self.config.verbose:
+                            print(
+                                f"[SLP] iter {k}: warm-start restart "
+                                f"{_restart_count}/{_max_restarts}, resetting TR."
+                            )
+                        continue
                     return SolveResult(
                         status=SolverStatus.INFEASIBLE,
                         mode=SolveMode.FIXED_LP,
@@ -195,7 +217,10 @@ class SLPDriver:
                         iterations=k,
                         objective=last_objective,
                         history=[h for h in history],
-                        message="LP infeasible at minimum trust-region radius.",
+                        message=(
+                            f"LP infeasible at minimum trust-region radius "
+                            f"after {_restart_count} warm-start restart(s)."
+                        ),
                     )
                 continue
             elif term != SolverStatus.CONVERGED:
@@ -252,7 +277,7 @@ class SLPDriver:
             if self.config.verbose:
                 print(
                     f"[SLP] iter {k}: obj={lp_obj:.6g} step={step:.3g} "
-                    f"‖f‖={res_norm:.3g} Δ={delta:.3g}"
+                    f"|f|={res_norm:.3g} TR={delta:.3g}"
                 )
             if self.config.iteration_callback is not None:
                 self.config.iteration_callback(k, lp_obj, res_norm)

@@ -1,4 +1,4 @@
-# PSE Ecosystem — UI Guide (v1.0)
+# PSE Ecosystem — UI Guide (v1.2.0)
 
 **Private — University of Surrey**
 
@@ -24,10 +24,10 @@ pip install highspy
 
 | Step | Page | Action |
 |---|---|---|
-| 1 | **Dashboard** | Check LP Solver = "Available". Browse the template gallery. |
-| 2 | **Flowsheet Builder** | Pick category → template → configure parameters → **Apply & Select**. |
+| 1 | **Dashboard** | Check LP Solver = "Available". Browse the 13-template gallery. |
+| 2 | **Flowsheet Builder** | Pick category → template → configure parameters → **Apply & Select**. Optionally run a 1D Sensitivity Sweep directly on this page. |
 | 3 | **GPS Weather** | Enter lat/lon → **Fetch Profiles** → view solar GHI and wind charts. |
-| 4 | **Solver Monitor** | Set max iterations → **Run Solve** → watch live convergence + KPIs. |
+| 4 | **Solver Monitor** | Choose solver mode (SLP / NLP / Trust-Region / Adaptive) → **Run Solve** → watch live convergence + KPIs. |
 
 ---
 
@@ -109,9 +109,22 @@ pip install highspy
 2. **Select Template** — description appears below the list.
 3. **View Topology** — Mermaid diagram renders the flowsheet. Toggle "Use simple Graphviz diagram" for offline environments.
 4. **Configure Parameters** — grouped by unit in collapsible expanders.
-5. **Apply & Select** → navigate to **Solver Monitor** to run.
+5. **Apply & Select** → navigate to **Solver Monitor** to run, or use the Sensitivity Sweep (see §5a).
 
 For the **Custom Flowsheet** option see §6 below.
+
+### §5a. 1D Sensitivity Sweep (new in v1.2.0)
+
+Expand **"1D Parameter Sensitivity Sweep"** at the bottom of the Flowsheet Builder page (below the parameter form). This does NOT require navigating to the Solver Monitor.
+
+| Control | Description |
+|---|---|
+| Sweep parameter | Numeric template parameter to vary (auto-populated from the template) |
+| Min / Max value | Range of the sweep |
+| Points | Number of solve calls (3–30) |
+| **Run Sweep** | Runs N × `SolveMode.FIXED_LP` solves; plots all KPIs vs the swept parameter |
+
+Results appear as a live Plotly multi-trace chart and a data table. Useful for CO₂ capture efficiency sensitivity, reactor temperature sweeps, etc.
 
 ---
 
@@ -150,7 +163,11 @@ Profiles are stored in session state and persist while the browser tab is open.
 │  ▼ Solver Settings                                                   │
 │    Max iterations  [=============================·····] 50          │
 │    Step tolerance  [ 1.00e-04 ]                                      │
-│    ● Mode 1 — Fixed LP                                               │
+│    Solver Mode                                                       │
+│    ● SLP (fast, LP-based)                                            │
+│    ○ NLP (scipy L-BFGS-B, full residual)                             │
+│    ○ Trust-Region Filter (robust, filter globalization)              │
+│    ○ Adaptive (SLP → NLP → Trust-Region cascade)                     │
 │    ☐ Verbose solver output                                           │
 │                          [ Run Solve ]                               │
 ├─────────────────────────────────────────────────────────────────────┤
@@ -190,21 +207,23 @@ Profiles are stored in session state and persist while the browser tab is open.
 
 ---
 
-## 4. Template Reference
+## 4. Template Reference (13 templates)
 
-| Key | Name | Category | Units | Mode |
+| Key | Name | Category | Units | Solver |
 |---|---|---|---|---|
-| `hydrogen.electrolysis_only` | PEM Electrolysis | Hydrogen | PEMToy | LP |
+| `hydrogen.electrolysis_only` | PEM Electrolysis | Hydrogen | PEMToy | LP (linear) |
 | `hydrogen.electrolysis_or_gasification` | PEM + Gasifier | Hydrogen | PEMToy, GasifierToy | MILP |
 | `industrial.green_hydrogen` | Green Hydrogen Hub | Industrial | PEMToy, MixerHF | LP |
 | `industrial.power_to_methanol` | Power-to-Methanol | Industrial | StoichiometricReactor, SeparatorHF | LP |
 | `industrial.gasification_to_power` | Gasification to Power | Industrial | StoichiometricReactor, Compressor | LP |
 | `industrial.syngas_production` | Syngas Production | Industrial | GasifierToy, SeparatorHF | LP |
+| `biomass.gasification_to_hydrogen` | Biomass → H₂ (B-HYPSYS) | Hydrogen | BiomassStorageHF, BiomassGasifierHF, WGSReactorHF, H2SeparatorPSA | SLP (3–10 iters) |
+| **`dac.power_to_methane`** | **Direct Air Capture → Methane** | **Industrial** | **TVSAContactor, ElectrolyserHF, MethanationReactor** | **SLP (2 iters)** |
 | `custom.user_flowsheet` | Custom Flowsheet | Custom | User-defined (1–4 units) | LP |
-| `small.cstr_flash` | CSTR + Flash | Small | CSTRHF, FlashVLHF | LP |
+| `small.cstr_flash` | CSTR + Flash | Small | CSTRHF, FlashVLHF | SLP |
 | `small.compression_train` | Compression Train | Small | Compressor, ShellTubeHX, Valve | LP |
 | `small.mixer_settler` | Mixer + Settler | Small | MixerHF, SeparatorHF | LP |
-| `small.distillation` | Distillation Column | Small | DistillationHF | LP |
+| `small.distillation` | Distillation Column | Small | DistillationHF | SLP |
 
 ---
 
@@ -230,6 +249,10 @@ All editable parameters. Adjusted in the **Flowsheet Builder** parameter form.
 | Compression | `comp.eta_isentropic` | 0.75 | — | Compressor efficiency |
 | Compression | `hx.U_W_per_m2_K` | 500 | W/m²K | HX overall heat transfer coeff. |
 | Compression | `hx.A_m2` | 10 | m² | HX heat transfer area |
+| **DAC (Power-to-Methane)** | `F_air_mol_s` | 10 000 | mol/s | Ambient air feed flow |
+| DAC | `eta_cap` | 0.85 | — | CO₂ capture efficiency (0–1) |
+| DAC | `eta_elec` | 0.70 | — | Electrolyser efficiency (HHV basis) |
+| DAC | `T_rx_K` | 673 | K | Methanation reactor temperature (400 °C default) |
 
 **Note:** Cp and K-values are computed from NIST Shomate / Antoine correlations — not user-settable via the UI. See §9 for code-level overrides.
 
@@ -264,20 +287,24 @@ Typical values:
 5. Click **Build & Select** — the flowsheet is stored in session state.
 6. Go to **Solver Monitor** → **Run Solve**.
 
-**Available unit types:**
+**Available unit types** (grouped by process category):
 
-| Type | Linear? | Key KPIs |
-|---|---|---|
-| `PEMToy` | Yes | LCOH, Carbon Intensity |
-| `GasifierToy` | No | LCOH, Carbon Intensity |
-| `StoichiometricReactor` | Yes | — |
-| `MixerHF` | No | — |
-| `SeparatorHF` | Yes | — |
-| `Compressor` | No | W_shaft, capex |
-| `HeatExchangerNTU` | No | Q, effectiveness |
+| Category | Type | Linear? | Key KPIs |
+|---|---|---|---|
+| Feed/Product | `PEMToy` | Yes | LCOH, Carbon Intensity |
+| Feed/Product | `GasifierToy` | No | LCOH, Carbon Intensity |
+| Reactors | `StoichiometricReactor` | Yes | — |
+| Reactors | `MethanationReactor` | No | CH4_yield_pct, heat_released_kW |
+| Separation/DAC | `SeparatorHF` | Yes | — |
+| Separation/DAC | `TVSAContactor` | **Yes** | co2_capture_rate_tonne_per_day, specific_energy_kWh_per_tCO2 |
+| Heat Exchange | `HeatExchangerNTU` | No | Q, effectiveness |
+| Power/CHP | `ElectrolyserHF` | **Yes** | H2_production_kg_h, efficiency_pct |
+| Power/CHP | `CHPUnit` | **Yes** | W_elec_kW, Q_process_kW, power_to_heat_ratio |
+| Mixing | `MixerHF` | No | — |
+| Pressure Changers | `Compressor` | No | W_shaft, capex |
 
 **Tips:**
-- Connections only work when both ports share the same component list.
+- Port phase and species must match — `BaseUnit.validate_connection()` raises `PortCompatibilityError` at `connect()` time, not at solve time.
 - For complex topologies, build a factory function in `flowsheets/` and register it (see §11).
 
 ---
@@ -297,12 +324,10 @@ Output: `dist/pse_ecosystem_ui/` folder — copy to target machine and run. See 
 ## 9. Running All Tests
 
 ```powershell
-python tests/ui_backend_sync.py    # 8 math accuracy checks
+pytest tests\ -q                   # 107 pytest unit tests
 python tests/ui_audit.py           # 15 service + layer checks
 python tests/system_audit.py       # 17 system checks
 python tests/industrial_audit.py   # 11 physics checks
-pytest tests\ -q                   # 107 unit tests
-# Total: 158 checks
 ```
 
 ---
