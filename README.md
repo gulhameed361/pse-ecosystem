@@ -1,4 +1,4 @@
-# PSE Ecosystem (v1.2.1)
+# PSE Ecosystem (v1.3.0)
 
 Application-centric Knowledge Ecosystem for Process Systems Engineering.  
 **Private — University of Surrey.**
@@ -23,7 +23,7 @@ Three strictly separated layers:
 | **2 — Solver** | `pse_ecosystem/solvers/` | SLP / NLP / Trust-Region drivers; adaptive cascade orchestration |
 | **3 — Knowledge** | `pse_ecosystem/models/` + `flowsheets/` | Unit models supplying residuals + analytical Jacobians via the Handshake Protocol |
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full blueprint and L2↔L3 contract.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full blueprint, Handshake Protocol, and hybrid-connection logic.
 
 ---
 
@@ -44,7 +44,7 @@ python -m venv $HOME\.venvs\pse_ecosystem
 pip install -e ".[dev,solvers,gui,weather]"
 
 # Run tests
-pytest tests\ -q                       # 107 unit tests
+pytest tests\ -q                       # 128 unit tests
 
 # Launch the Streamlit UI
 streamlit run pse_ecosystem/ui/app_streamlit.py
@@ -70,14 +70,14 @@ Four pages:
 
 | Page | What it does |
 |---|---|
-| **Dashboard** | Solver status, template gallery (13 templates), last solve result |
-| **Flowsheet Builder** | Category filter → template → Mermaid topology → parameter form → **Apply & Select**. 1D Sensitivity Sweep. Custom flowsheet assembler (1–8 units, shared component set, composite super-unit option). |
+| **Dashboard** | Solver status, template gallery (14 templates), last solve result |
+| **Flowsheet Builder** | Category filter → template → Mermaid topology → parameter form → **Apply & Select**. 1D Sensitivity Sweep. Custom flowsheet assembler (1–10 units, shared component set, composite super-unit option). |
 | **GPS Weather** | pvlib clearsky solar GHI + Weibull wind profiles for any lat/lon/year |
 | **Solver Monitor** | Solver mode selector (SLP / NLP / Trust-Region / Adaptive) → **Run Solve** → live convergence chart → KPI cards + solution table |
 
 ---
 
-## Flowsheet Templates (v1.2.1)
+## Flowsheet Templates (v1.3.0 — 14 templates)
 
 | Key | Name | Category | Solver |
 |---|---|---|---|
@@ -87,19 +87,29 @@ Four pages:
 | `industrial.power_to_methanol` | Power-to-Methanol | Industrial | LP |
 | `industrial.gasification_to_power` | Gasification to Power | Industrial | LP |
 | `industrial.syngas_production` | Syngas Production | Industrial | LP |
+| **`industrial.grand_challenge_10unit`** | **Biomass → H₂ (10-Unit Grand Challenge)** | **Industrial** | **SLP** |
 | `biomass.gasification_to_hydrogen` | Biomass → H₂ (B-HYPSYS) | Hydrogen | SLP (3–10 iters) |
-| **`dac.power_to_methane`** | **Direct Air Capture → Methane** | **Industrial** | **SLP (2 iters)** |
+| `dac.power_to_methane` | Direct Air Capture → Methane | Industrial | SLP (2 iters) |
 | `custom.user_flowsheet` | Custom Flowsheet | Custom | LP |
 | `small.cstr_flash` | CSTR + Flash | Small | SLP |
 | `small.compression_train` | Compression Train | Small | LP |
 | `small.mixer_settler` | Mixer + Settler | Small | LP |
 | `small.distillation` | Distillation Column | Small | SLP |
 
+### Grand Challenge — 10-Unit Biomass → H₂ (v1.3.0 new)
+
+```
+BiomassStorage → Gasifier → Cyclone → HTS-WGS → LTS-WGS →
+MoistureSep → CO2Scrubber → PSA → Compressor → H2Polisher
+```
+
+Basis: 1 kg/s wet Pine Wood (800 °C gasifier, dual-stage WGS at 400 °C / 220 °C, 94 % PSA recovery, 50 bar product compression). Analytical mass-balance derivation in [`docs/THEORY_REFERENCE.md §10`](docs/THEORY_REFERENCE.md).
+
 ---
 
 ## Unit Model Library (Layer 3)
 
-### DAC / Power (v1.2.0 — new)
+### DAC / Power (v1.2.0)
 
 | Class | `is_linear` | Jacobian | Purpose |
 |---|---|---|---|
@@ -141,7 +151,7 @@ Four pages:
 
 **Infeasibility recovery (SLP):** trust-region shrink → warm-start restart (±5 % bound perturbation, up to 3 attempts) → Adaptive cascade.
 
-**Port validation:** `BaseUnit.validate_connection()` is called at `BaseFlowsheet.connect()` build time — phase / species mismatches raise `PortCompatibilityError` immediately, not at solve time.
+**Port validation (v1.3.0):** `build_custom_flowsheet()` resolves ports via a prioritised candidate list (`_primary_outlet` / `_primary_inlet`) — any unit pair can be connected regardless of port naming convention. `BaseUnit.validate_connection()` enforces phase / species compatibility at build time.
 
 ---
 
@@ -155,21 +165,19 @@ CEPCI data (2001–2024) and costing defaults live in `data/economics.json` and 
 
 | File | Contents |
 |---|---|
-| [`docs/UI_GUIDE.md`](docs/UI_GUIDE.md) | Full UI reference: page walkthrough, template catalogue, parameter table, custom flowsheet, sensitivity sweep, solver modes |
-| [`docs/SHOWCASE_WALKTHROUGH.md`](docs/SHOWCASE_WALKTHROUGH.md) | **Investor showcase script:** 3-stage demo (Academic Proof / Industrial Power / Decision Tool), Q&A prep, key equations |
-| [`docs/TUTORIAL_WALKTHROUGH.md`](docs/TUTORIAL_WALKTHROUGH.md) | Step-by-step tutorial: Case A (3-unit SLP convergence proof), Case B (DACU sensitivity analysis), Solver Guide |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 3-layer split, Handshake Protocol, layer boundary enforcement |
-| [`docs/USER_MANUAL.md`](docs/USER_MANUAL.md) | Installation, API examples, unit catalogue, solver configuration |
+| [`docs/USER_MANUAL.md`](docs/USER_MANUAL.md) | **Single funder-ready manual** — Part 1 (Basics), Part 2 (Intermediate: 3-unit chain proof + DACU sensitivity), Part 3 (Advanced Showcase: investor walkthrough, Grand Challenge 10-unit validation, Q&A, key equations) |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 3-layer split, Handshake Protocol, hybrid-connection logic (v1.3.0), layer boundary enforcement |
+| [`docs/THEORY_REFERENCE.md`](docs/THEORY_REFERENCE.md) | VLE, Rachford-Rice, SLP / Trust-Region theory, §10 Grand Challenge analytical derivation |
+| [`docs/UI_GUIDE.md`](docs/UI_GUIDE.md) | Full UI reference: page walkthrough, template catalogue, parameter table, custom flowsheet, sensitivity sweep |
 | [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md) | Adding units, flowsheets, testing patterns |
-| [`docs/THEORY_REFERENCE.md`](docs/THEORY_REFERENCE.md) | VLE, Rachford-Rice, SLP / Trust-Region theory, property correlations |
 | [`docs/SYSTEM_STATE.md`](docs/SYSTEM_STATE.md) | Source of truth: what exists, test counts, known limitations |
 
 ---
 
-## Test Suite (107 checks)
+## Test Suite (128 checks)
 
 ```powershell
-pytest tests\ -q                        # 107 pytest (all fast)
+pytest tests\ -q                        # 128 pytest (9 new Grand Challenge tests)
 python tests/ui_audit.py                # 15 service + layer checks
 python tests/system_audit.py            # 17 system checks
 python tests/industrial_audit.py        # 11 physics checks
