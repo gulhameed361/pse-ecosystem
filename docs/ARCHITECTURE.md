@@ -1,4 +1,4 @@
-# PSE Ecosystem — Architecture Blueprint (v0)
+# PSE Ecosystem — Architecture Blueprint (v1.2.1)
 
 > Status: load-bearing document. The Layer 2 ↔ Layer 3 contract described
 > here is the lever that lets us scale from toy LP flowsheets to MINLP /
@@ -209,11 +209,25 @@ re-tries. If Δ hits `Δ_min` while still infeasible, the driver returns
 
 ---
 
-## 4. Mode 1 vs Mode 2
+## 4. Solver Suite — Mode 1 through Adaptive
+
+All modes are dispatched by `pse_ecosystem.solvers.orchestrator.Orchestrator` via the `SolveMode` enum.
+
+| Mode | `SolveMode` | Algorithm | Notes |
+|---|---|---|---|
+| **SLP** | `FIXED_LP` | Successive Linearization (LP subproblems) | Default; linear flowsheets short-circuit to one LP |
+| **MILP** | `FLEXIBLE_MILP` | MILP outer → SLP refinement | Technology-selection binary decisions |
+| **NLP** | `NLP_IPOPT` | scipy L-BFGS-B with `linearize()` Jacobians | Full-NLP for poorly initialised problems |
+| **Trust-Region** | `TRUST_REGION` | Filter/Funnel globalisation (Eason & Biegler 2016) | Robust; avoids Maratos effect via filter |
+| **Adaptive** | `ADAPTIVE` | SLP → NLP → Trust-Region cascade | Auto-escalates on convergence failure |
+
+**Trust-Region Filter (v1.2.0):** Implemented in `pse_ecosystem/solvers/trf/`. The filter maintains a list of (objective, infeasibility) pairs and rejects steps that are dominated. The funnel variant uses a cone-shaped infeasibility envelope to guarantee global convergence. See `docs/THEORY_REFERENCE.md §5`.
+
+**SLP infeasibility recovery:** If the LP subproblem is infeasible (trust region too small), the driver shrinks Δ by 2×, perturbs bounds by ±5 % and retries up to 3 times before escalating to Adaptive.
 
 Both routes are dispatched by `pse_ecosystem.solvers.orchestrator.Orchestrator`.
 
-### 4.1 Mode 1 — `FIXED_LP`
+### 4.1 (Legacy detail) Mode 1 — `FIXED_LP`
 
 Fixed flowsheet topology, fixed technology choices. The Orchestrator hands
 the flowsheet directly to `SLPDriver`. If every unit is linear the

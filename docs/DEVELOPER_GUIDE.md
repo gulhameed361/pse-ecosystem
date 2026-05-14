@@ -19,22 +19,37 @@ pse_ecosystem/
 │   └── registry.py             #   ThemeSpec / ApplicationSpec registry
 ├── models/                     # ── LAYER 3 ── Knowledge / physics
 │   ├── base_unit.py            #   Abstract BaseUnit + finite-difference Jacobian
-│   ├── electrolysis/
-│   │   └── pem_toy.py          #   Linear toy PEM electrolyser (is_linear=True)
-│   └── gasification/
-│       └── gasifier_toy.py     #   Quadratic-yield toy gasifier (analytical Jacobian)
+│   ├── electrolysis/           #   PEMToy
+│   ├── gasification/           #   GasifierToy
+│   ├── reactors/               #   StoichiometricReactor, CSTRHF, PFRHF, EquilibriumReactor, GibbsReactor
+│   ├── separators/             #   FlashVLHF, FlashSL, DistillationHF, SeparatorHF
+│   ├── mixers/                 #   MixerHF
+│   ├── heat_exchangers/        #   HeatExchangerNTU, ShellTubeHX, HeatExchanger1D
+│   ├── pressure_changers/      #   Compressor, Pump, Valve
+│   ├── properties/             #   ideal_gas.py (Shomate Cp/H), vle.py (Antoine K-values)
+│   ├── costing/                #   sslw_costing.py, economic_engine.py
+│   ├── biomass/                #   BiomassStorageHF, BiomassGasifierHF, WGSReactorHF, H2SeparatorPSA
+│   ├── dac/                    #   TVSAContactor, ElectrolyserHF, MethanationReactor
+│   └── power/                  #   CHPUnit
 ├── flowsheets/                 # Topology containers (between L2 and L3)
-│   ├── base_flowsheet.py       #   BaseFlowsheet, Connection, extra_equalities
-│   └── hydrogen/
-│       └── electrolysis_grid.py#   Two factory functions for v0 demos
+│   ├── base_flowsheet.py       #   BaseFlowsheet, Connection, CompositeUnit (super-unit)
+│   ├── hydrogen/               #   electrolysis_grid.py
+│   ├── industrial/             #   green_hydrogen, power_to_methanol, gasification_to_power, syngas_production
+│   └── small/                  #   adiabatic_cstr_flash, compression_train, mixer_settler, distillation_column
 ├── solvers/                    # ── LAYER 2 ── Decision / optimisation
-│   ├── orchestrator.py         #   Mode 1 / Mode 2 dispatcher
-│   ├── slp.py                  #   SLPDriver + SLPConfig
+│   ├── orchestrator.py         #   SolveMode dispatcher (SLP/NLP/TRF/Adaptive)
+│   ├── slp.py                  #   SLPDriver + SLPConfig + TearStreamConfig
 │   ├── lp_builder.py           #   build_lp(), select_lp_solver()
-│   └── milp_builder.py         #   build_milp(), TechnologyChoice, select_milp_solver()
+│   ├── milp_builder.py         #   build_milp(), TechnologyChoice
+│   ├── nlp_builder.py          #   scipy L-BFGS-B full-NLP driver
+│   ├── trust_region_driver.py  #   Filter/Funnel Trust-Region driver
+│   ├── scaling.py              #   compute_scaling_factors()
+│   └── trf/                    #   filter.py, funnel.py, util.py
 ├── themes/                     # Theme metadata only
-│   └── hydrogen.py             #   Registers HYDROGEN_THEME on import
-└── ui/                         # ── LAYER 1 ── Application stub (v0)
+│   └── hydrogen.py
+└── ui/                         # ── LAYER 1 ── Streamlit application
+    ├── app_streamlit.py        #   4-page Streamlit UI
+    ├── flowsheet_service.py    #   Sole Layer-1 bridge to Layer-3 factories
     └── entry.py                #   CLI: pse-ecosystem ...
 ```
 
@@ -565,6 +580,47 @@ shrink-and-retry path still fires.
 Older Pyomo returns `TerminationCondition.infeasible`; both paths land
 on the same `SolverStatus.INFEASIBLE` enum value, so the rest of the
 driver doesn't care.
+
+---
+
+## 5b. CompositeUnit — Hierarchical Sub-Process Decomposition (v1.2.1)
+
+`CompositeUnit` (in `flowsheets/base_flowsheet.py`) wraps a `BaseFlowsheet` as a single `BaseUnit`. Use it when a sub-process should be solved internally while appearing as an atomic black-box to the parent flowsheet.
+
+### When to use
+
+- A heat-exchange network or gas-cleaning train that has its own internal degrees of freedom.
+- Any sub-process that is too non-linear for the parent SLP to handle simultaneously.
+- Hierarchical decomposition: solve the inner sub-problem at each outer SLP iteration.
+
+### Architectural note
+
+`CompositeUnit.residual()` calls `SLPDriver` from `solvers/slp.py`. This is the **only sanctioned cross-layer call** from Layer 3 to Layer 2. The import is deferred inside the method body to avoid circular imports. The direction is reversed from the normal flow (Layer 3 calling Layer 2 to solve an inner sub-problem), which is architecturally sound for hierarchical decomposition.
+
+### Usage pattern
+
+```python
+from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet, CompositeUnit
+from pse_ecosystem.solvers.slp import SLPConfig
+
+inner_fs = ...  # any BaseFlowsheet
+super_unit = CompositeUnit(
+    unit_id="sub_process",
+    inner_flowsheet=inner_fs,
+    exposed_inputs=["inner_unit.feed_var"],   # parent can drive these
+    exposed_outputs=["inner_unit.product_var"], # parent reads these
+    slp_config=SLPConfig(max_iter=30, verbose=False),
+)
+
+parent_fs = BaseFlowsheet("parent", units=[super_unit, ...])
+# Wire super_unit like any other unit
+```
+
+The inner SLP runs fully at each outer SLP iteration. If the inner solve fails to converge, `CompositeUnit.residual()` returns a large penalty vector (1e6) to signal infeasibility to the outer driver.
+
+### Registering in the UI
+
+Add the `CompositeUnit` wrapping logic to `flowsheet_service.build_composite_unit()` and it becomes available in the Custom Flowsheet assembler "super-unit" checkbox.
 
 ---
 

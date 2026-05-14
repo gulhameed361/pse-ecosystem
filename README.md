@@ -1,7 +1,15 @@
-# PSE Ecosystem (v1.2.0)
+# PSE Ecosystem (v1.2.1)
 
 Application-centric Knowledge Ecosystem for Process Systems Engineering.  
 **Private — University of Surrey.**
+
+---
+
+## Why PSE Ecosystem?
+
+- **Explainable physics.** Every unit model ships its exact algebraic residuals and analytical Jacobian. Regulators, auditors, and partners can inspect every equation — no black-box solver.
+- **Analytical Jacobians throughout.** The SLP solver linearises using exact ∂f/∂x, not finite differences. Faster convergence, provable gradient accuracy.
+- **3-layer separation.** UI / Solver / Knowledge are strictly decoupled via the Handshake Protocol. Swap the solver without touching the physics; swap the UI without touching the solver.
 
 ---
 
@@ -63,13 +71,13 @@ Four pages:
 | Page | What it does |
 |---|---|
 | **Dashboard** | Solver status, template gallery (13 templates), last solve result |
-| **Flowsheet Builder** | Category filter → template → Mermaid topology → parameter form → **Apply & Select**. 1D Sensitivity Sweep. Custom flowsheet assembler (1–4 units). |
+| **Flowsheet Builder** | Category filter → template → Mermaid topology → parameter form → **Apply & Select**. 1D Sensitivity Sweep. Custom flowsheet assembler (1–8 units, shared component set, composite super-unit option). |
 | **GPS Weather** | pvlib clearsky solar GHI + Weibull wind profiles for any lat/lon/year |
 | **Solver Monitor** | Solver mode selector (SLP / NLP / Trust-Region / Adaptive) → **Run Solve** → live convergence chart → KPI cards + solution table |
 
 ---
 
-## Flowsheet Templates (v1.2.0)
+## Flowsheet Templates (v1.2.1)
 
 | Key | Name | Category | Solver |
 |---|---|---|---|
@@ -148,6 +156,7 @@ CEPCI data (2001–2024) and costing defaults live in `data/economics.json` and 
 | File | Contents |
 |---|---|
 | [`docs/UI_GUIDE.md`](docs/UI_GUIDE.md) | Full UI reference: page walkthrough, template catalogue, parameter table, custom flowsheet, sensitivity sweep, solver modes |
+| [`docs/SHOWCASE_WALKTHROUGH.md`](docs/SHOWCASE_WALKTHROUGH.md) | **Investor showcase script:** 3-stage demo (Academic Proof / Industrial Power / Decision Tool), Q&A prep, key equations |
 | [`docs/TUTORIAL_WALKTHROUGH.md`](docs/TUTORIAL_WALKTHROUGH.md) | Step-by-step tutorial: Case A (3-unit SLP convergence proof), Case B (DACU sensitivity analysis), Solver Guide |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 3-layer split, Handshake Protocol, layer boundary enforcement |
 | [`docs/USER_MANUAL.md`](docs/USER_MANUAL.md) | Installation, API examples, unit catalogue, solver configuration |

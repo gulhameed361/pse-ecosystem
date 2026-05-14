@@ -57,7 +57,7 @@ def _page_dashboard():
     from pse_ecosystem.ui.flowsheet_service import list_templates
 
     st.title("PSE Ecosystem")
-    st.caption("v1.1.0  |  Private — University of Surrey")
+    st.caption("v1.2.1  |  Private — University of Surrey")
 
     # ── LP solver check ────────────────────────────────────────────────────
     try:
@@ -376,11 +376,19 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
     from pse_ecosystem.ui.flowsheet_service import AVAILABLE_UNITS, build_custom_flowsheet
 
     st.info(
-        "Pick up to 4 units, set their parameters, declare connections, "
+        "Pick up to 8 units, set their parameters, declare connections, "
         "then click **Build & Select**."
     )
 
-    n_units = st.number_input("Number of units", min_value=1, max_value=4, value=2, step=1)
+    raw_comps = st.text_input(
+        "Shared component set (comma-separated)",
+        value="H2, CO, CO2",
+        help="All port-based units will use this species list. "
+             "For VLE (FlashVLHF) use Antoine-supported species e.g. benzene, toluene.",
+    )
+    shared_components = [c.strip() for c in raw_comps.split(",") if c.strip()]
+
+    n_units = st.number_input("Number of units", min_value=1, max_value=8, value=2, step=1)
     unit_types = list(AVAILABLE_UNITS.keys())
 
     unit_configs = []
@@ -393,8 +401,53 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
                 help=AVAILABLE_UNITS.get(unit_types[min(i, len(unit_types)-1)], ""),
             )
             uid = st.text_input("Unit ID", value=f"u{i+1}", key=f"custom_unit_id_{i}")
-            unit_configs.append({"type": utype, "id": uid, "params": {}})
+            unit_configs.append({"type": utype, "id": uid, "params": {"components": shared_components}})
 
+    # ── Composite / super-unit option ────────────────────────────────────────
+    st.divider()
+    use_composite = st.checkbox(
+        "Add a built-in template as a super-unit",
+        value=False,
+        help="Wraps a complete built-in flowsheet as a single CompositeUnit. "
+             "Expose its internal variables as inputs/outputs to wire it into your custom chain.",
+    )
+    composite_unit_obj = None
+    comp_uid = "super_1"
+    if use_composite:
+        from pse_ecosystem.ui.flowsheet_service import list_templates, build_composite_unit
+        all_templates = [t for t in list_templates() if t.key != "custom.user_flowsheet"]
+        comp_name = st.selectbox(
+            "Template to wrap", [t.display_name for t in all_templates],
+            key="composite_template_name",
+        )
+        comp_key = next(t.key for t in all_templates if t.display_name == comp_name)
+        comp_uid = st.text_input("Super-unit ID", value="super_1", key="composite_uid")
+        comp_in_str  = st.text_input(
+            "Exposed inputs (comma-separated variable names)", value="",
+            key="composite_exposed_in",
+            help="Inner flowsheet variables the parent can drive (e.g. pem.electricity_price_per_kWh)",
+        )
+        comp_out_str = st.text_input(
+            "Exposed outputs (comma-separated variable names)", value="",
+            key="composite_exposed_out",
+            help="Inner flowsheet variables reported to the parent (e.g. pem.H2_kg_per_h)",
+        )
+        st.caption(
+            "The super-unit will be appended to the flowsheet after the units above. "
+            "Add a connection targeting its ID to wire it in."
+        )
+        if comp_uid:
+            comp_in_list  = [x.strip() for x in comp_in_str.split(",")  if x.strip()]
+            comp_out_list = [x.strip() for x in comp_out_str.split(",") if x.strip()]
+            try:
+                composite_unit_obj = build_composite_unit(
+                    comp_key, comp_uid, comp_in_list, comp_out_list
+                )
+                unit_configs.append({"type": "__composite__", "id": comp_uid, "params": {}})
+            except Exception as comp_exc:
+                st.warning(f"Super-unit preview failed (will retry on Build): {comp_exc}")
+
+    # ── Connections ───────────────────────────────────────────────────────────
     st.subheader("Connections")
     st.caption("Wire outlet → inlet between adjacent units (sequential by default).")
     ids = [u["id"] for u in unit_configs]
@@ -407,11 +460,17 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
 
     if st.button("Build & Select", type="primary"):
         try:
-            config = {"units": unit_configs, "connections": connections}
+            config = {
+                "units": unit_configs,
+                "connections": connections,
+                "__composites__": {comp_uid: composite_unit_obj} if composite_unit_obj else {},
+            }
             fs = build_custom_flowsheet(config)
             st.session_state["selected_template"] = chosen_key
             st.session_state["template_params"] = {}
             st.session_state["custom_flowsheet"] = fs
+            for w in getattr(fs, "_conn_warnings", []):
+                st.warning(f"Connection skipped: {w}")
             n_conn = len(fs.connections)
             st.success(
                 f"Custom flowsheet built: {len(fs.units)} units, "

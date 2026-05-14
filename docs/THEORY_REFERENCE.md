@@ -568,6 +568,62 @@ What it gains:
 
 ---
 
+## 8b. Trust-Region Filter / Funnel Globalisation (v1.2.0)
+
+Implemented in `pse_ecosystem/solvers/trf/` (filter.py, funnel.py, util.py) and called via `SolveMode.TRUST_REGION`. Based on Eason & Biegler (2016) and Hameed et al. (2021).
+
+### 8b.1 Motivation
+
+The basic SLP trust-region (§7.4) can suffer the **Maratos effect**: a trial step that improves the objective but increases infeasibility is rejected even though it is globally useful. The filter avoids this by maintaining a list of Pareto-non-dominated (objective, infeasibility) pairs and accepting any step that is not dominated.
+
+### 8b.2 Filter mechanism
+
+Define a pair `(f, h)` where:
+- `f` = current objective value
+- `h` = infeasibility measure: `h(x) = ‖f_nonlinear(x)‖₁` (sum of absolute residuals)
+
+The **filter** `F` is a set of such pairs. A trial point `(f_trial, h_trial)` is **acceptable** to the filter if it is not dominated:
+
+```
+∃ (f_i, h_i) ∈ F : f_trial ≥ f_i − δ AND h_trial ≥ h_i  →  reject
+```
+
+i.e., a point is rejected only if another filter entry is at least as good in both objective and infeasibility (with margin `δ`). The filter starts empty. Accepted points are added only if they introduce a new non-dominated trade-off.
+
+### 8b.3 Funnel variant
+
+The funnel replaces the filter with a **cone-shaped infeasibility envelope**:
+
+```
+h(x_{k+1}) ≤ κ_h · h(x_k)   (infeasibility must decrease by factor κ_h each iteration)
+```
+
+where `κ_h ∈ (0, 1)` (typically 0.9). This provides a tighter, monotone-decreasing infeasibility requirement — more conservative than the filter but with stronger convergence guarantees for well-scaled problems.
+
+### 8b.4 Step acceptance protocol
+
+At each Trust-Region iteration:
+
+1. Solve the linearised LP subproblem within the trust-region ball.
+2. Evaluate the true (non-linear) residual at the trial point.
+3. Compute the ratio `ρ = (f_k − f_trial) / (f_k − f_LP_trial)`.
+4. Apply the filter or funnel test.
+5. If accepted: update `x`, potentially expand TR. If rejected: shrink TR.
+
+The combination of filter acceptance + TR radius update gives convergence to KKT points of the non-linear equality-constrained problem, subject to regularity conditions (linear independence constraint qualification, second-order sufficiency).
+
+### 8b.5 Adaptive cascade (SolveMode.ADAPTIVE)
+
+When mode = `ADAPTIVE`, the Orchestrator runs:
+
+1. **SLP** (fast, LP-based) — up to `max_iter` iterations.
+2. If SLP fails (MAX_ITER or INFEASIBLE): **NLP** (scipy L-BFGS-B with Jacobians from `linearize()`).
+3. If NLP fails: **Trust-Region Filter** (full filter/funnel globalisation).
+
+The cascade exits at the first mode that converges. This policy trades speed for robustness automatically without manual mode selection.
+
+---
+
 ## 9. Notation Glossary
 
 | Symbol | Meaning | Typical units |
@@ -610,6 +666,8 @@ update as you accrete a working bibliography.)
   University Press, 1995.
 - Conn, A. R.; Gould, N. I. M.; Toint, P. L. *Trust-Region Methods.*
   SIAM, 2000. (For the trust-region update rules in §7.4.)
+- Eason, J. P.; Biegler, L. T. "A Trust Region Filter Method for Equation-Oriented Flowsheet Optimisation." *Computers & Chemical Engineering*, 86, 2016.
+- Hameed, A.; et al. "A Funnel-Based Trust-Region Filter for Flowsheet Optimisation." *AIChE J.*, 2021.
 - IEA. *Global Hydrogen Review.* (Various years — current edition for
   techno-economic baselines.)
 - IRENA. *Green Hydrogen Cost Reduction.* IRENA, 2020.

@@ -1,4 +1,4 @@
-# PSE Ecosystem — UI Guide (v1.2.0)
+# PSE Ecosystem — UI Guide (v1.2.1)
 
 **Private — University of Surrey**
 

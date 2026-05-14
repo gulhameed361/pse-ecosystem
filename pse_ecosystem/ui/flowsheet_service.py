@@ -55,6 +55,8 @@ AVAILABLE_UNITS: Dict[str, str] = {
     # Power / CHP
     "ElectrolyserHF":        "PEM/AEL electrolyser — linear, port-based, analytical J",
     "CHPUnit":               "Combined Heat & Power — linear, analytical J (H2/CO/CH4 fuel)",
+    # Separation / VLE
+    "FlashVLHF":             "Rigorous V/L flash — Antoine K-values + Rachford-Rice (non-linear, terminal unit)",
     # Other
     "MixerHF":               "Multi-stream mixer — non-linear (energy balance)",
     "Compressor":            "Isentropic compressor — non-linear",
@@ -63,7 +65,7 @@ AVAILABLE_UNITS: Dict[str, str] = {
 UNIT_CATEGORIES: Dict[str, List[str]] = {
     "Feed/Product":       ["PEMToy", "GasifierToy"],
     "Reactors":           ["StoichiometricReactor", "MethanationReactor"],
-    "Separation/DAC":     ["SeparatorHF", "TVSAContactor"],
+    "Separation/DAC":     ["SeparatorHF", "FlashVLHF", "TVSAContactor"],
     "Heat Exchange":      ["HeatExchangerNTU"],
     "Power/CHP":          ["ElectrolyserHF", "CHPUnit"],
     "Mixing":             ["MixerHF"],
@@ -225,7 +227,7 @@ _REGISTRY: List[TemplateSpec] = [
         key="custom.user_flowsheet",
         display_name="Custom Flowsheet",
         category="Custom",
-        description="Assemble your own flowsheet: pick up to 4 units from the "
+        description="Assemble your own flowsheet: pick up to 8 units from the "
                     "allowlist, set their engineering parameters, and wire ports.",
         topology_diagram=(
             "graph LR\n"
@@ -460,13 +462,17 @@ def build_custom_flowsheet(config: Dict[str, Any]) -> "BaseFlowsheet":
     ----------
     config : dict with keys:
         ``"units"`` — list of dicts: {``"type"``: str, ``"id"``: str, ``"params"``: dict}
+            Use ``"type": "__composite__"`` for pre-built CompositeUnit objects
+            supplied via the ``"__composites__"`` key.
         ``"connections"`` — list of dicts: {``"from_unit"``: str, ``"to_unit"``: str}
             Each connection wires *from_unit*.outlet_port → *to_unit*.inlet_port.
+        ``"__composites__"`` — optional dict mapping unit_id → pre-built CompositeUnit.
 
-    Only unit types in ``AVAILABLE_UNITS`` are accepted.
+    Only unit types in ``AVAILABLE_UNITS`` (or ``"__composite__"``) are accepted.
     """
     from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
 
+    composites: Dict[str, Any] = config.get("__composites__", {})
     unit_objects = []
     unit_map: Dict[str, Any] = {}
 
@@ -475,18 +481,26 @@ def build_custom_flowsheet(config: Dict[str, Any]) -> "BaseFlowsheet":
         uid    = unit_cfg["id"]
         params = unit_cfg.get("params", {})
 
-        if utype not in AVAILABLE_UNITS:
+        if utype == "__composite__":
+            unit_obj = composites.get(uid)
+            if unit_obj is None:
+                raise ValueError(
+                    f"Composite unit '{uid}' declared but not found in '__composites__' dict."
+                )
+        elif utype not in AVAILABLE_UNITS:
             raise ValueError(
                 f"Unit type '{utype}' is not in the allowed list. "
                 f"Choose from: {list(AVAILABLE_UNITS)}"
             )
+        else:
+            unit_obj = _instantiate_unit(utype, uid, params)
 
-        unit_obj = _instantiate_unit(utype, uid, params)
         unit_objects.append(unit_obj)
         unit_map[uid] = unit_obj
 
     fs = BaseFlowsheet(name="custom.user_flowsheet", units=unit_objects)
 
+    conn_warnings: list = []
     for conn in config.get("connections", []):
         from_u = unit_map.get(conn["from_unit"])
         to_u   = unit_map.get(conn["to_unit"])
@@ -498,10 +512,36 @@ def build_custom_flowsheet(config: Dict[str, Any]) -> "BaseFlowsheet":
             try:
                 fs.connect(out_port, in_port,
                            description=f"{conn['from_unit']} → {conn['to_unit']}")
-            except ValueError:
-                pass  # port mismatch — skip silently, UI shows warning
+            except ValueError as exc:
+                conn_warnings.append(
+                    f"{conn['from_unit']} → {conn['to_unit']}: {exc}"
+                )
+        elif out_port is None and in_port is None:
+            conn_warnings.append(
+                f"{conn['from_unit']} → {conn['to_unit']}: "
+                "neither unit exposes outlet_port / inlet_port (toy units connect via KPI flow, not StreamPorts)"
+            )
 
+    fs._conn_warnings = conn_warnings
     return fs
+
+
+def build_composite_unit(
+    template_key: str,
+    unit_id: str,
+    exposed_inputs: List[str],
+    exposed_outputs: List[str],
+    params: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Wrap a built-in template as a CompositeUnit for hierarchical flowsheet composition.
+
+    The inner template is solved as a sub-problem during the outer SLP
+    iteration.  ``exposed_inputs`` / ``exposed_outputs`` are variable names
+    from the inner flowsheet that the parent flowsheet can drive / read.
+    """
+    from pse_ecosystem.flowsheets.base_flowsheet import CompositeUnit
+    inner_fs = load_template(template_key, params or {})
+    return CompositeUnit(unit_id, inner_fs, exposed_inputs, exposed_outputs)
 
 
 def _instantiate_unit(utype: str, uid: str, params: dict) -> Any:
@@ -553,6 +593,25 @@ def _instantiate_unit(utype: str, uid: str, params: dict) -> Any:
         components = params.get("components", ["H2", "CO2"])
         sp = SeparatorHFParams(n_outlets=int(params.get("n_outlets", 2)))
         return SeparatorHF(uid, components, sp)
+
+    if utype == "FlashVLHF":
+        from pse_ecosystem.models.separators.flash_vl_hf import FlashVLHF, FlashVLHFParams
+        from pse_ecosystem.models.properties.vle import ANTOINE
+        components = params.get("components", ["benzene", "toluene"])
+        # Only include species that have Antoine constants; fall back to benzene/toluene
+        vle_species = [c for c in components if c in ANTOINE]
+        if len(vle_species) < 2:
+            vle_species = ["benzene", "toluene"]
+            components = vle_species
+        fp = FlashVLHFParams(
+            species_vle=list(vle_species),
+            feed_max=float(params.get("feed_max", 1e4)),
+            T_min=float(params.get("T_min", 250.0)),
+            T_max=float(params.get("T_max", 550.0)),
+            P_min=float(params.get("P_min", 1e3)),
+            P_max=float(params.get("P_max", 1e7)),
+        )
+        return FlashVLHF(uid, components, fp)
 
     if utype == "Compressor":
         from pse_ecosystem.models.pressure_changers.compressor import Compressor, CompressorParams
@@ -852,43 +911,52 @@ def _load_biomass_gasification_to_h2(p: dict):
         "gasifier.syngas_out.F_N2":  n_N2_est,
     }
     for v, est in _vars_est.items():
-        lo = max(est * 0.05, 1e-6)
-        hi = est * 20.0
+        lo = max(est * 0.4, 1e-6)
+        hi = max(est * 4.0, lo + 0.1)
         fs.extra_bounds[v] = (lo, hi)
 
-    # WGS outlet initial bounds (H2 increases, CO decreases)
-    # Rough: 80% CO conversion
+    # WGS inlet/outlet bounds — tight around stoichiometric estimate
     X_CO_est = 0.8
-    fs.extra_bounds["wgs.syngas_in.F_H2"]  = (max(n_H2_est * 0.05, 1e-6), n_H2_est * 20)
-    fs.extra_bounds["wgs.syngas_in.F_CO"]  = (max(n_CO_est * 0.05, 1e-6), n_CO_est * 20)
-    fs.extra_bounds["wgs.syngas_in.F_CO2"] = (max(n_CO2_est * 0.05, 1e-6), n_CO2_est * 20)
-    fs.extra_bounds["wgs.syngas_in.F_H2O"] = (max(n_H2O_est * 0.05, 1e-6), n_H2O_est * 20)
-    fs.extra_bounds["wgs.syngas_in.F_CH4"] = (max(n_CH4_est * 0.05, 1e-6), n_CH4_est * 20)
-    fs.extra_bounds["wgs.syngas_in.F_N2"]  = (max(n_N2_est * 0.001, 1e-9), n_N2_est * 100)
+    fs.extra_bounds["wgs.syngas_in.F_H2"]  = (max(n_H2_est * 0.3, 1e-6), n_H2_est * 5.0)
+    fs.extra_bounds["wgs.syngas_in.F_CO"]  = (max(n_CO_est * 0.3, 1e-6), n_CO_est * 5.0)
+    fs.extra_bounds["wgs.syngas_in.F_CO2"] = (max(n_CO2_est * 0.3, 1e-6), n_CO2_est * 5.0)
+    fs.extra_bounds["wgs.syngas_in.F_H2O"] = (max(n_H2O_est * 0.3, 1e-6), n_H2O_est * 5.0)
+    fs.extra_bounds["wgs.syngas_in.F_CH4"] = (max(n_CH4_est * 0.3, 1e-6), n_CH4_est * 5.0)
+    fs.extra_bounds["wgs.syngas_in.F_N2"]  = (max(n_N2_est * 0.1, 1e-9),  n_N2_est * 20.0)
 
     dn_CO = n_CO_est * X_CO_est
-    fs.extra_bounds["wgs.shifted_out.F_H2"]  = (max((n_H2_est + dn_CO) * 0.1, 1e-6),
-                                                  (n_H2_est + dn_CO) * 10)
-    fs.extra_bounds["wgs.shifted_out.F_CO"]  = (max(n_CO_est * (1 - X_CO_est) * 0.1, 1e-6),
-                                                  n_CO_est * 5)
-    fs.extra_bounds["wgs.shifted_out.F_CO2"] = (max((n_CO2_est + dn_CO) * 0.1, 1e-6),
-                                                  (n_CO2_est + dn_CO) * 10)
-    fs.extra_bounds["wgs.shifted_out.F_H2O"] = (max((n_H2O_est - dn_CO) * 0.05, 1e-6),
-                                                  n_H2O_est * 5)
-    fs.extra_bounds["wgs.shifted_out.F_CH4"] = (max(n_CH4_est * 0.05, 1e-6), n_CH4_est * 10)
-    fs.extra_bounds["wgs.shifted_out.F_N2"]  = (max(n_N2_est * 0.001, 1e-9), n_N2_est * 100)
+    fs.extra_bounds["wgs.shifted_out.F_H2"]  = (max((n_H2_est + dn_CO) * 0.3, 1e-6),
+                                                  (n_H2_est + dn_CO) * 4.0)
+    fs.extra_bounds["wgs.shifted_out.F_CO"]  = (max(n_CO_est * (1 - X_CO_est) * 0.3, 1e-6),
+                                                  n_CO_est * 3.0)
+    fs.extra_bounds["wgs.shifted_out.F_CO2"] = (max((n_CO2_est + dn_CO) * 0.3, 1e-6),
+                                                  (n_CO2_est + dn_CO) * 4.0)
+    fs.extra_bounds["wgs.shifted_out.F_H2O"] = (max((n_H2O_est - dn_CO) * 0.1, 1e-6),
+                                                  n_H2O_est * 4.0)
+    fs.extra_bounds["wgs.shifted_out.F_CH4"] = (max(n_CH4_est * 0.3, 1e-6), n_CH4_est * 4.0)
+    fs.extra_bounds["wgs.shifted_out.F_N2"]  = (max(n_N2_est * 0.1, 1e-9), n_N2_est * 20.0)
 
-    # PSA feed bounds (same as WGS shifted out)
+    # PSA feed bounds (mirrors WGS shifted out)
     n_H2_wgs_est = n_H2_est + dn_CO
-    fs.extra_bounds["psa.feed_in.F_H2"]  = (max(n_H2_wgs_est * 0.1, 1e-6), n_H2_wgs_est * 10)
-    fs.extra_bounds["psa.feed_in.F_CO"]  = (max(n_CO_est * (1 - X_CO_est) * 0.1, 1e-6), n_CO_est * 5)
-    fs.extra_bounds["psa.feed_in.F_CO2"] = (max((n_CO2_est + dn_CO) * 0.1, 1e-6),
-                                              (n_CO2_est + dn_CO) * 10)
-    fs.extra_bounds["psa.feed_in.F_H2O"] = (max((n_H2O_est - dn_CO) * 0.05, 1e-6), n_H2O_est * 5)
-    fs.extra_bounds["psa.feed_in.F_CH4"] = (max(n_CH4_est * 0.05, 1e-6), n_CH4_est * 10)
-    fs.extra_bounds["psa.feed_in.F_N2"]  = (max(n_N2_est * 0.001, 1e-9), n_N2_est * 100)
+    fs.extra_bounds["psa.feed_in.F_H2"]  = (max(n_H2_wgs_est * 0.3, 1e-6), n_H2_wgs_est * 4.0)
+    fs.extra_bounds["psa.feed_in.F_CO"]  = (max(n_CO_est * (1 - X_CO_est) * 0.3, 1e-6), n_CO_est * 3.0)
+    fs.extra_bounds["psa.feed_in.F_CO2"] = (max((n_CO2_est + dn_CO) * 0.3, 1e-6),
+                                              (n_CO2_est + dn_CO) * 4.0)
+    fs.extra_bounds["psa.feed_in.F_H2O"] = (max((n_H2O_est - dn_CO) * 0.1, 1e-6), n_H2O_est * 4.0)
+    fs.extra_bounds["psa.feed_in.F_CH4"] = (max(n_CH4_est * 0.3, 1e-6), n_CH4_est * 4.0)
+    fs.extra_bounds["psa.feed_in.F_N2"]  = (max(n_N2_est * 0.1, 1e-9), n_N2_est * 20.0)
 
-    fs.extra_bounds["wgs.X_CO"] = (0.01, 0.999)
+    # Tighter X_CO bound: physically meaningful WGS conversion range
+    fs.extra_bounds["wgs.X_CO"] = (0.5, 0.95)
+
+    # Seed heuristic initial point — avoids catastrophic midpoint-of-bounds start
+    fs.initial_x0 = dict(_vars_est)
+    fs.initial_x0["wgs.X_CO"] = 0.75
+    for k, v in _vars_est.items():
+        wk = k.replace("gasifier.syngas_out.", "wgs.syngas_in.")
+        if wk not in fs.initial_x0:
+            fs.initial_x0[wk] = v
+
     fs.objective_kpi = "LCOH"
 
     return fs

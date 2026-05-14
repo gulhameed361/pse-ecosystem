@@ -1,6 +1,6 @@
 # PSE Ecosystem — User Manual
 
-**Version:** 1.2.0 | **Date:** 2026-05-12
+**Version:** 1.2.1 | **Date:** 2026-05-14
 
 ---
 
@@ -16,7 +16,7 @@
 pip install -e ".[solvers,weather,gui,blackbox]"
 ```
 
-### Launching the Streamlit UI (v1.2.0)
+### Launching the Streamlit UI (v1.2.1)
 
 ```powershell
 streamlit run pse_ecosystem/ui/app_streamlit.py
@@ -91,7 +91,7 @@ print(result.technology_selection)   # {'pick_pem': True, 'pick_gasifier': False
 
 ---
 
-## 2b. Solver Modes (v1.2.0)
+## 2b. Solver Modes (v1.2.0+)
 
 ```python
 from pse_ecosystem.core.contracts import SolveMode
@@ -371,7 +371,31 @@ Override with an analytical version for performance.
 
 ---
 
-## 10. Layer Architecture
+## 10. CompositeUnit — Hierarchical Flowsheet Composition (v1.2.1)
+
+`CompositeUnit` wraps a `BaseFlowsheet` as a single `BaseUnit`, allowing hierarchical process decomposition. A sub-process (e.g. a gas-cleaning train) can be exposed to a parent flowsheet as an atomic unit.
+
+```python
+from pse_ecosystem.flowsheets.base_flowsheet import CompositeUnit
+from pse_ecosystem.ui.flowsheet_service import load_template
+
+# Wrap the DACU template as a sub-unit in a larger flowsheet
+inner_fs = load_template("dac.power_to_methane", {"F_air_mol_s": 5000.0})
+super_unit = CompositeUnit(
+    unit_id="dacu",
+    inner_flowsheet=inner_fs,
+    exposed_inputs=["tvsa.air_in.F_Air"],      # parent can drive this
+    exposed_outputs=["meth.product_out.F_CH4"], # parent reads this
+)
+```
+
+The parent SLP solves the outer problem; `CompositeUnit.residual()` runs an inner SLP to solve the sub-flowsheet at each outer iteration. The Adaptive solver cascade is recommended when using composite units.
+
+**In the UI:** Enable the "Add a built-in template as a super-unit" checkbox in the Custom Flowsheet assembler to wrap any registered template as a `CompositeUnit`.
+
+---
+
+## 11. Layer Architecture
 
 ```
 Layer 1 (UI)      themes/, ui/           — Streamlit app, flowsheet_service.py, CLI

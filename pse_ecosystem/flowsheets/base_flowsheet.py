@@ -123,7 +123,11 @@ class BaseFlowsheet:
     # ── Convenience for the SLP driver ──────────────────────────────────────
 
     def initial_guess(self) -> Dict[str, float]:
-        """Midpoint of bounds (with sane fallbacks for unbounded variables)."""
+        """Midpoint of bounds (with sane fallbacks for unbounded variables).
+
+        If ``self.initial_x0`` is set, those values override the midpoint for
+        the named variables, providing a heuristic warm-start.
+        """
         guess: Dict[str, float] = {}
         for v, (lo, hi) in self.aggregated_bounds().items():
             if lo > -1e18 and hi < 1e18:
@@ -136,6 +140,10 @@ class BaseFlowsheet:
                 guess[v] = 0.0
         for v in self.all_variables():
             guess.setdefault(v, 0.0)
+        if hasattr(self, "initial_x0"):
+            for v, val in self.initial_x0.items():
+                if v in guess:
+                    guess[v] = float(val)
         return guess
 
 

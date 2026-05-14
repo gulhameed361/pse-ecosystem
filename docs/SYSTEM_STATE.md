@@ -1,8 +1,37 @@
 # PSE Ecosystem — System State Ledger
 
-**Version:** 1.2.0
-**Date:** 2026-05-12
-**Status:** v1.2.0 "Industrial Ready" — 107 pytest + DACU end-to-end converges in 2 SLP iterations + all Layer 3 analytical Jacobians validated
+**Version:** 1.2.1
+**Date:** 2026-05-14
+**Status:** v1.2.1 "Showcase-Ready" — connections bug fixed, FlashVLHF in custom builder, Biomass convergence stabilised
+
+---
+
+## What's New in v1.2.1 — Investor Showcase Stabilization
+
+### Bugs Fixed
+- **`flowsheet_service.py` — "0 Connections" bug:** `except ValueError: pass` silently swallowed
+  `PortCompatibilityError` on every custom flowsheet connection. Custom flowsheets now accumulate
+  per-connection warnings in `fs._conn_warnings` and surface them as `st.warning()` in the UI.
+  Previously the bug was compounded by the UI passing `params={}` to every unit, causing all units
+  to use mismatched default component lists. The UI now provides a **Shared Component Set** text
+  input; all port-based units in a custom flowsheet use this single species list.
+- **`app_streamlit.py` — 4-unit hard cap:** `max_value=4` in `st.number_input` raised
+  `StreamlitAPIException` for 5+ unit flowsheets. Changed to `max_value=8`.
+
+### New Features
+- **FlashVLHF in custom flowsheet builder:** Added to `AVAILABLE_UNITS`, `UNIT_CATEGORIES`, and
+  `_instantiate_unit`. Species that lack Antoine constants are automatically excluded; falls back to
+  `["benzene", "toluene"]` if fewer than 2 VLE-capable species remain. FlashVLHF is a terminal unit
+  (accepts `inlet_port`, exposes `vapor_port` + `liquid_port`).
+- **Biomass→H₂ convergence improvement:** Heuristic bounds tightened from `(0.05×est, 20×est)` to
+  `(0.4×est, 4×est)` throughout `_load_biomass_gasification_to_h2`. `wgs.X_CO` constrained to
+  `(0.5, 0.95)`. Heuristic estimates now seeded as `fs.initial_x0`; `BaseFlowsheet.initial_guess()`
+  injects these values before the midpoint-of-bounds fallback.
+- **Composite / super-unit UI:** `build_composite_unit()` helper added to `flowsheet_service.py`.
+  Custom flowsheet assembler now has an optional "Add a built-in template as a super-unit" checkbox
+  that wraps any registered template as a `CompositeUnit` and appends it to the flowsheet.
+- **`docs/SHOWCASE_WALKTHROUGH.md`:** Investor-grade 3-stage demo script with equations,
+  talking points, Q&A preparation, and known limitations disclosure.
 
 ---
 
@@ -224,7 +253,7 @@ Update it whenever the system state changes.
 
 ---
 
-## Complete Package Structure (v1.0.0)
+## Complete Package Structure (v1.2.1)
 
 ```
 pse_ecosystem/
@@ -284,10 +313,18 @@ pse_ecosystem/
 │   ├── separator/       flash_toy.py, hda_flash.py
 │   └── distillation/    hda_column.py
 ├── solvers/
-│   ├── slp.py           SLPDriver, SLPConfig, TearStreamConfig
+│   ├── slp.py               SLPDriver, SLPConfig, TearStreamConfig
 │   ├── lp_builder.py
 │   ├── milp_builder.py
-│   └── orchestrator.py
+│   ├── nlp_builder.py       ← NEW v1.2.0: scipy L-BFGS-B full-NLP driver
+│   ├── trust_region_driver.py ← NEW v1.2.0: filter/funnel Trust-Region driver
+│   ├── scaling.py           ← NEW v1.2.0: auto-scaling factors
+│   ├── ipopt_driver.py
+│   ├── orchestrator.py
+│   └── trf/                 ← NEW v1.2.0: Trust-Region Filter/Funnel modules
+│       ├── filter.py
+│       ├── funnel.py
+│       └── util.py
 ├── themes/
 │   └── hydrogen.py
 └── ui/
@@ -299,7 +336,7 @@ pse_ecosystem/
 
 ---
 
-## Test Suite (v1.0.0)
+## Test Suite (v1.2.1)
 
 | File | Tests | Coverage |
 |---|---|---|
@@ -315,7 +352,14 @@ pse_ecosystem/
 | `tests/test_hf_units.py` | 38 pytest | All 16 HF units: residual shape, mass balance, capex |
 | `tests/test_costing.py` | 17 pytest | SSLW correlations, CEPCI escalation, Pyomo-free check |
 
-**Total: 107 pytest + 8 backend-sync + 15 UI audit + 17 system audit + 11 industrial audit = 158 checks**
+**v1.2.1 additions:**
+
+| File | Tests | Coverage |
+|---|---|---|
+| `tests/test_v121.py` | ~12 pytest | FlashVLHF (VLE residual, pressure equality, custom-builder context), CompositeUnit (industrial sub-flowsheet assembly) |
+| `tests/presentation_validation.py` | standalone | 3-unit chain (StoichRxr → CSTRHF → FlashVLHF): port connectivity, convergence, V_frac in expected range |
+
+**Total: ~119 pytest + 8 backend-sync + 15 UI audit + 17 system audit + 11 industrial audit = ~170 checks**
 
 Run all:
 ```powershell
@@ -323,6 +367,7 @@ python tests/ui_backend_sync.py
 python tests/ui_audit.py
 python tests/system_audit.py
 python tests/industrial_audit.py
+python tests/presentation_validation.py
 pytest tests/ -v
 ```
 
@@ -343,7 +388,7 @@ Enforced by `test_solvers_do_not_import_concrete_unit_modules`.
 
 ---
 
-## Known Limitations (v1.0.0)
+## Known Limitations (v1.2.1)
 
 | Item | Detail |
 |---|---|
@@ -379,15 +424,17 @@ Enforced by `test_solvers_do_not_import_concrete_unit_modules`.
 
 ---
 
-## Documentation Index (v1.0.0)
+## Documentation Index (v1.2.1)
 
 | File | Purpose |
 |---|---|
-| `docs/ARCHITECTURE.md` | Load-bearing architectural blueprint: 3-layer split, Handshake Protocol, layer boundary enforcement |
-| `docs/UI_GUIDE.md` | Single UI reference (v1.0): quick-start, ASCII mockups, template ref, parameter table, CI KPI, custom flowsheet, packaging, troubleshooting, developer guide, property overrides, flowsheet merging |
-| `docs/USER_MANUAL.md` | Installation, Streamlit launch, pre-built templates API, fs.connect() patterns, unit catalog, SLP config |
-| `docs/DEVELOPER_GUIDE.md` | Adding units, flowsheets, testing patterns, forbidden import rules |
-| `docs/THEORY_REFERENCE.md` | Physics: VLE, Rachford-Rice, ODE, property correlations, SLP theory |
+| `docs/ARCHITECTURE.md` | Load-bearing architectural blueprint: 3-layer split, Handshake Protocol, solver suite (SLP/NLP/TRF/Adaptive), layer boundary enforcement |
+| `docs/UI_GUIDE.md` | Full UI reference (v1.2.1): quick-start, page walkthrough, template catalogue, 1D Sensitivity Sweep, composite super-unit, solver mode selector |
+| `docs/USER_MANUAL.md` | Installation, Streamlit launch, pre-built templates API, `fs.connect()` patterns, unit catalogue, SLP/NLP/TRF config |
+| `docs/DEVELOPER_GUIDE.md` | Adding units, flowsheets, CompositeUnit, testing patterns, forbidden import rules |
+| `docs/THEORY_REFERENCE.md` | Physics: VLE, Rachford-Rice, SLP theory, Trust-Region Filter/Funnel globalisation |
+| `docs/SHOWCASE_WALKTHROUGH.md` | **Investor showcase script:** 3-stage demo (Engine Works / Real-World Scale / Decision Tool), Q&A prep, key equations |
+| `docs/TUTORIAL_WALKTHROUGH.md` | Step-by-step tutorial: Case A (3-unit SLP proof), Case B (DACU sensitivity), Solver Guide |
 | `docs/SYSTEM_STATE.md` | This file — source of truth for system state |
 
 ---
