@@ -1,5 +1,5 @@
 # PSE Ecosystem — Tutorial Walkthrough
-**Version:** v1.2.0  |  **Date:** 2026-05-12
+**Version:** v1.2.1  |  **Date:** 2026-05-14
 
 ---
 
@@ -22,79 +22,108 @@ streamlit run pse_ecosystem/ui/app_streamlit.py
 
 ---
 
-## 2. Case A: 3-Unit String — Heater → Reactor → Flash
+## 2. Case A: 3-Unit String — Heater → Reactor → Separator
+
+Chain: **feed pre-conditioner** (StoichiometricReactor, ξ=0) → **P2M synthesis reactor**
+(StoichiometricReactor, CO₂ + 3H₂ → MeOH + H₂O) → **separator** (SeparatorHF).
+
+This chain is verified end-to-end by `tests/presentation_validation.py` (run it with
+`pytest tests/presentation_validation.py -v` or as a standalone script).
+
+> **Why not HeatExchangerNTU + FlashVLHF?** `HeatExchangerNTU` is a 2-stream unit
+> (separate hot/cold components); it cannot be directly chained to a single-stream
+> reactor with the same component list. `FlashVLHF` with CO₂/H₂ at 700 K extrapolates
+> the Antoine equation far above the critical temperatures of both species (CO₂ Tc=304 K,
+> H₂ Tc=33 K), making the LP infeasible from a cold start. Both are documented known
+> limitations in `docs/SYSTEM_STATE.md`.
 
 ### 2.1 Setup
 
 ```python
-from pse_ecosystem.models.reactors.stoichiometric_reactor import StoichiometricReactor, StoichiometricParams
-from pse_ecosystem.models.heat_exchangers.heat_exchanger_ntu import HeatExchangerNTU, HeatExchangerNTUParams
-from pse_ecosystem.models.separators.flash_vl_hf import FlashVLHF, FlashVLHFParams
 from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
+from pse_ecosystem.models.reactors.stoichiometric_reactor import (
+    StoichiometricReactor, StoichiometricParams,
+)
+from pse_ecosystem.models.separators.separator_hf import SeparatorHF, SeparatorHFParams
 from pse_ecosystem.solvers.orchestrator import Orchestrator
 from pse_ecosystem.solvers.slp import SLPConfig
 from pse_ecosystem.core.contracts import SolveMode
 
-components = ["CO", "H2O", "CO2", "H2"]
+components = ["CO2", "H2", "methanol", "water"]
+p2m_stoich = {"CO2": [-1.0], "H2": [-3.0], "methanol": [1.0], "water": [1.0]}
 
-heater = HeatExchangerNTU("hx", components, components,
-                           HeatExchangerNTUParams(UA_W_per_K=5000.0))
-reactor = StoichiometricReactor("rxn", components,
-    StoichiometricParams(
-        stoichiometry={"CO": [-1.0], "H2O": [-1.0], "CO2": [1.0], "H2": [1.0]},
-    ))
-flash = FlashVLHF("flash", components,
-                  FlashVLHFParams(species_vle=["CO2", "H2"]))
+# Unit 1 — feed pre-conditioner ("Heater"): zero-extent pass-through at design T/P
+heater = StoichiometricReactor("heater", components,
+    StoichiometricParams(stoichiometry=p2m_stoich, feed_max=200.0))
 
-fs = BaseFlowsheet(name="tutorial_A", units=[heater, reactor, flash])
-fs.connect(heater.hot_out_port,   reactor.inlet_port,  "Heated feed → reactor")
-fs.connect(reactor.outlet_port,   flash.inlet_port,    "Products → flash")
+# Unit 2 — P2M synthesis reactor ("Reactor")
+reactor = StoichiometricReactor("reactor", components,
+    StoichiometricParams(stoichiometry=p2m_stoich, feed_max=200.0, xi_max=[50.0]))
 
-# Fix inlet conditions
-fs.extra_bounds["hx.hot_in.F_CO"]  = (10.0, 10.0)
-fs.extra_bounds["hx.hot_in.F_H2O"] = (10.0, 10.0)
-fs.extra_bounds["hx.hot_in.T"]     = (500.0, 500.0)
-fs.extra_bounds["hx.hot_in.P"]     = (101325.0, 101325.0)
-fs.extra_bounds["hx.cold_in.T"]    = (300.0, 300.0)
+# Unit 3 — liquid-gas separator ("Flash"): 95% MeOH, 98% H₂O to liquid outlet
+sep = SeparatorHF("sep", components, SeparatorHFParams(
+    n_outlets=2,
+    split_fractions=[[0.05, 0.95],   # CO2: 5% liq, 95% vap
+                     [0.02, 0.98],   # H2:  2% liq, 98% vap
+                     [0.95, 0.05],   # MeOH: 95% liq
+                     [0.98, 0.02]],  # H2O: 98% liq
+))
 
-cfg = SLPConfig(max_iter=50, verbose=True)
+fs = BaseFlowsheet(name="tutorial_A", units=[heater, reactor, sep])
+fs.connect(heater.outlet_port,  reactor.inlet_port, "Pre-conditioner -> reactor")
+fs.connect(reactor.outlet_port, sep.inlet_port,     "Reactor -> separator")
+
+# Fix feed (the "Heater" inlet): 10 mol/s CO2 + 30 mol/s H2, no products
+fs.extra_bounds["heater.inlet.F_CO2"]     = (10.0, 10.0)
+fs.extra_bounds["heater.inlet.F_H2"]      = (30.0, 30.0)
+fs.extra_bounds["heater.inlet.F_methanol"] = (0.0, 0.0)
+fs.extra_bounds["heater.inlet.F_water"]   = (0.0, 0.0)
+fs.extra_bounds["heater.inlet.T"]         = (500.0, 500.0)
+fs.extra_bounds["heater.inlet.P"]         = (3_000_000.0, 3_000_000.0)
+fs.extra_bounds["heater.xi_0"]            = (0.0, 0.0)   # pass-through
+
+cfg = SLPConfig(max_iter=5, verbose=True)
 result = Orchestrator(fs, SolveMode.FIXED_LP, slp_config=cfg).solve()
-print(result.status, result.kpis)
+print(result.status, result.iterations)   # CONVERGED, 1
 ```
 
 ### 2.2 Symbolic Analytical Proof
 
-**Heater energy balance:**  
-`Q = UA × (T_hot_in − T_cold_out) / ln((T_hot_in − T_cold_in)/(T_hot_out − T_cold_out))`
+**P2M stoichiometry** (CO₂ + 3H₂ → CH₃OH + H₂O, extent ξ mol/s):
 
-For the WGS stoichiometric reactor (CO + H₂O → CO₂ + H₂, extent ξ):
+| Species | Balance | Feed (mol/s) | Product (mol/s) |
+|---------|---------|-------------|-----------------|
+| CO₂     | F_CO₂_out = F_CO₂_in − ξ | 10 | 10 − ξ |
+| H₂      | F_H₂_out  = F_H₂_in  − 3ξ | 30 | 30 − 3ξ |
+| MeOH    | F_MeOH_out = 0 + ξ | 0 | ξ |
+| H₂O     | F_H₂O_out  = 0 + ξ | 0 | ξ |
 
-- `F_CO₂_out = F_CO_in − ξ`
-- `F_H₂_out  = F_H₂O_in − ξ`  ← note: this is an error in the tutorial — should be `F_CO_in + ξ`; the SLP solution catches it.
-
-The **SLP Jacobian** for `StoichiometricReactor` is exact (linear unit, `is_exact=True`):
+**Jacobian** for `StoichiometricReactor` is exact (`is_exact=True`, `is_linear=True`):
 
 ```
-J = [ ∂f_c/∂F_out_c  ∂f_c/∂F_in_c  ∂f_c/∂ξ ]
-  = [     +1              -1           -νc    ]
+J_row_c = [ ∂f_c/∂F_out_c   ∂f_c/∂F_in_c   ∂f_c/∂ξ ]
+         = [      +1               -1            -νc   ]
+
+where νc ∈ {−1, −3, +1, +1} for {CO₂, H₂, MeOH, H₂O}
 ```
 
-Because all residuals are linear, the SLP short-circuits to a **single LP solve**.  
-The LP solution satisfies `J·x = rhs` exactly → residual `‖f‖∞ = 0`.
+Because every residual is linear in the variables, the SLP short-circuits to a
+**single LP solve** (`is_exact=True` propagates to the driver). The LP solution
+satisfies `J·x = rhs` exactly — residual `‖f‖∞ = 0`.
 
-**Verification:** The numerical SLP solution should match the closed-form mass balance  
-within `eps_f = 1e-4` (the default tolerance).
+**Verification:** run `pytest tests/presentation_validation.py::test_3unit_chain_p2m_stoichiometry -v`
+which asserts `|F_CO₂_in − F_CO₂_out − ξ| < 1e-6` and `|F_MeOH_out − ξ| < 1e-6`.
 
 ### 2.3 Convergence Proof for Non-linear Units
 
-For a non-linear unit with residual `f(x)` and Jacobian `J(x)`:  
-The SLP update `x_{k+1} = x_k − J(x_k)⁻¹ f(x_k)` is a Newton step.  
-Near a solution, Newton's method converges **quadratically**:  
-`‖x_{k+1} − x*‖ ≤ C · ‖x_k − x*‖²`
+For a non-linear unit with residual `f(x)` and Jacobian `J(x)`, the SLP update
+`x_{k+1} = x_k − J(x_k)⁻¹ f(x_k)` is a Newton step. Near a solution, Newton's
+method converges **quadratically**: `‖x_{k+1} − x*‖ ≤ C · ‖x_k − x*‖²`
 
-For the trust-region variant with `Δ → ∞`, the SLP step is exactly the Newton  
-step and quadratic convergence is achieved.  
-With finite `Δ`, convergence is at least linear (worst-case `rho → 1.0`).
+With finite trust region Δ, convergence is at least linear (worst-case ρ → 1.0).
+For the Trust-Region Filter variant (SolveMode.TRUST_REGION), global convergence
+to a KKT point is guaranteed under LICQ + second-order sufficiency — see
+`docs/THEORY_REFERENCE.md §8b`.
 
 ---
 
@@ -164,12 +193,16 @@ small conversion fractions (dimensionless 0–1).
 
 ```
 Layer 1: UI (app_streamlit.py, flowsheet_service.py)
-    ↕ flowsheet_service bridge only
-Layer 3: Models (BaseUnit subclasses, StreamPort)
-    ↕ Handshake Protocol (PrimalGuess → LinearizedModel → UnitResponse)
-Layer 2: Solvers (Orchestrator → SLPDriver / NLPDriver / TrustRegionDriver)
-    ↕ contracts.py (shared enums + dataclasses)
+    | flowsheet_service is the sole L1 bridge to L3 factories
+    v
+Layer 2: Solvers (Orchestrator -> SLPDriver / NLPDriver / TrustRegionDriver)
+    | Handshake Protocol (PrimalGuess -> LinearizedModel -> UnitResponse)
+    v
+Layer 3: Models (BaseUnit subclasses, StreamPort, flowsheets/)
+    |
+    v
+core/contracts.py  (shared enums + dataclasses — imported by all layers)
 ```
 
-**Key rule:** Layer 2 never imports Layer 3 directly. All physics lives in Layer 3.  
+**Key rule:** Layer 2 never imports Layer 3 directly. All physics lives in Layer 3.
 Layer 2 only sees `LinearizedModel` and `UnitResponse` from `contracts.py`.
