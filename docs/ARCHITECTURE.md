@@ -377,3 +377,69 @@ streamlit run pse_ecosystem/ui/app_streamlit.py  # GUI stub
 The Streamlit app defers all imports inside `main()` so the module is
 importable without Streamlit installed. The CLI auto-discovers themes via
 the registry, so new themes appear without changing `entry.py`.
+
+---
+
+## Hybrid-Connection Logic (v1.3.0)
+
+`build_custom_flowsheet()` in `flowsheet_service.py` resolves a unit's primary
+outlet/inlet port by searching a prioritised candidate list rather than hard-coding
+a single attribute name. This enables wiring between any pair of units regardless
+of their port naming convention.
+
+### Port Resolution Order
+
+```python
+# Outlet candidates (tried in order; first non-None wins)
+_OUTLET_NAMED = (
+    "outlet_port",       # StoichiometricReactor, Compressor, Pump, Valve, MixerHF
+    "hot_outlet_port",   # HeatExchangerNTU (hot process side)
+    "syngas_out_port",   # BiomassGasifierHF
+    "shifted_out_port",  # WGSReactorHF
+    "h2_out_port",       # H2SeparatorPSA
+    "dry_out_port",      # BiomassStorageHF
+    "vapor_port",        # FlashVLHF (primary vapour outlet)
+)
+_OUTLET_LISTS = ("outlet_ports",)   # SeparatorHF — uses outlet_ports[0]
+
+# Inlet candidates
+_INLET_NAMED = (
+    "inlet_port",        # StoichiometricReactor, SeparatorHF, Compressor, FlashVLHF
+    "hot_inlet_port",    # HeatExchangerNTU
+    "syngas_in_port",    # WGSReactorHF
+    "feed_in_port",      # H2SeparatorPSA
+    "biomass_in_port",   # BiomassGasifierHF
+    "wet_in_port",       # BiomassStorageHF
+)
+_INLET_LISTS = ("inlet_ports",)     # MixerHF — uses inlet_ports[0]
+```
+
+### T/P Mismatch Handling
+
+`BaseFlowsheet.connect()` enforces **exact** variable-count match between ports. Units
+that track temperature and pressure (SeparatorHF, Compressor) have 8 variables per
+6-component stream (6 flows + T + P), while units that do not track T/P (WGSReactorHF,
+BiomassGasifierHF, H2SeparatorPSA) have 6 variables per stream.
+
+When connecting such pairs (e.g. WGS → SeparatorHF), the Grand Challenge flowsheet
+uses a `_link_flows()` helper that directly appends `Connection` objects for the flow
+variables only, bypassing `fs.connect()`:
+
+```python
+def _link_flows(port_a, port_b, desc=""):
+    a_flows = [v for v in port_a.variable_names() if ".F_" in v]
+    b_flows = [v for v in port_b.variable_names() if ".F_" in v]
+    for va, vb in zip(a_flows, b_flows):
+        fs.connections.append(Connection(var_a=va, var_b=vb, description=desc))
+```
+
+The T/P variables of the receiving unit remain unconstrained from the upstream unit's
+side; they are governed solely by the receiving unit's own residuals and `extra_bounds`.
+
+### Unit-to-Template Wiring
+
+A built-in template can be wrapped as a `CompositeUnit` and wired into a custom
+flowsheet. The parent SLP drives the `CompositeUnit` through its `exposed_inputs` and
+reads its `exposed_outputs`. The inner sub-flowsheet is solved via an inner SLP at
+each outer iteration. See `flowsheet_service.build_composite_unit()` and the
+`CompositeUnit` class in `flowsheets/base_flowsheet.py`.

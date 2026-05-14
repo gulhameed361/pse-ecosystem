@@ -388,7 +388,7 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
     )
     shared_components = [c.strip() for c in raw_comps.split(",") if c.strip()]
 
-    n_units = st.number_input("Number of units", min_value=1, max_value=8, value=2, step=1)
+    n_units = st.number_input("Number of units", min_value=1, max_value=10, value=2, step=1)
     unit_types = list(AVAILABLE_UNITS.keys())
 
     unit_configs = []

@@ -369,6 +369,69 @@ _REGISTRY: List[TemplateSpec] = [
     ),
 
     TemplateSpec(
+        key="industrial.grand_challenge_10unit",
+        display_name="Grand Challenge: Biomass → H2 (10-Unit)",
+        category="Industrial",
+        description=(
+            "Full 10-unit biomass-to-green-H2 flowsheet: drying → gasification → "
+            "cyclone → HTS-WGS → LTS-WGS → moisture separator → CO2 scrubber → "
+            "PSA → H2 compression → H2 polisher. "
+            "Grand-challenge validation case with analytical mass-balance verification."
+        ),
+        topology_diagram=(
+            "graph LR\n"
+            "    ST[1. Storage\nDrying] --> GAS[2. Gasifier\nEquilibrium]\n"
+            "    GAS -->|Syngas| CYC[3. Cyclone\nChar Removal]\n"
+            "    CYC -->|Clean Gas| HTS[4. HTS-WGS\n400°C]\n"
+            "    HTS -->|Shifted| LTS[5. LTS-WGS\n220°C]\n"
+            "    LTS -->|H2-rich| MSP[6. Moisture\nSeparator]\n"
+            "    MSP -->|Dry Gas| CO2[7. CO2\nScrubber]\n"
+            "    CO2 -->|H2-rich| PSA[8. PSA\nSeparator]\n"
+            "    PSA -->|Pure H2| CMP[9. Compressor]\n"
+            "    CMP -->|Compressed H2| POL[10. H2 Polisher]\n"
+            "    POL --> H2PROD([H2 Product])\n"
+            "    style ST fill:#8e44ad,color:#fff\n"
+            "    style GAS fill:#e67e22,color:#fff\n"
+            "    style HTS fill:#c0392b,color:#fff\n"
+            "    style LTS fill:#c0392b,color:#fff\n"
+            "    style PSA fill:#27ae60,color:#fff\n"
+            "    style CMP fill:#2980b9,color:#fff\n"
+            "    style POL fill:#16a085,color:#fff"
+        ),
+        unit_labels=[
+            "BiomassStorageHF", "BiomassGasifierHF", "SeparatorHF(cyclone)",
+            "WGSReactorHF(hts)", "WGSReactorHF(lts)", "SeparatorHF(moisture_sep)",
+            "SeparatorHF(co2_scrubber)", "H2SeparatorPSA", "Compressor", "SeparatorHF(h2_polisher)",
+        ],
+        default_params={
+            "biomass_type": "Pine Wood",
+            "gasifying_agent": "Steam",
+            "biomass_feed_kg_s": 1.0,
+            "steam_to_biomass_ratio": 1.0,
+            "T_gasifier_C": 800.0,
+            "T_hts_C": 400.0,
+            "T_lts_C": 220.0,
+            "H2_recovery": 0.94,
+            "P_out_Pa": 5_000_000.0,
+            "plant_life_yr": 20,
+            "interest_rate": 0.08,
+            "target_year": 2024,
+        },
+        supports_milp=False,
+        connections_human=[
+            ("Storage dry out", "Gasifier biomass in", "Dry biomass feed"),
+            ("Gasifier syngas out", "Cyclone inlet", "Raw syngas with char"),
+            ("Cyclone outlet 0", "HTS-WGS syngas in", "Clean syngas"),
+            ("HTS shifted out", "LTS-WGS syngas in", "HTS-shifted gas"),
+            ("LTS shifted out", "Moisture sep inlet", "H2-rich wet gas"),
+            ("Moisture sep outlet 0", "CO2 scrubber inlet", "Dry H2-rich gas"),
+            ("CO2 scrubber outlet 0", "PSA feed in", "H2/CO2 lean gas"),
+            ("PSA h2 out", "Compressor inlet", "Pure H2 product"),
+            ("Compressor outlet", "H2 polisher inlet", "Compressed H2"),
+        ],
+    ),
+
+    TemplateSpec(
         key="dac.power_to_methane",
         display_name="Direct Air Capture → Methane (DAC-U)",
         category="Industrial",
@@ -455,6 +518,58 @@ def load_template_with_choices(
     return loader(p)
 
 
+# ── Port-resolution helpers ───────────────────────────────────────────────────
+# Units use various port attribute names.  These helpers try candidates in
+# priority order so build_custom_flowsheet() works across all AVAILABLE_UNITS.
+
+_OUTLET_NAMED: tuple = (
+    "outlet_port",       # StoichiometricReactor, Compressor, Pump, Valve, MixerHF
+    "hot_outlet_port",   # HeatExchangerNTU (process hot side)
+    "syngas_out_port",   # BiomassGasifierHF
+    "shifted_out_port",  # WGSReactorHF
+    "h2_out_port",       # H2SeparatorPSA
+    "dry_out_port",      # BiomassStorageHF
+    "vapor_port",        # FlashVLHF (primary vapour outlet)
+)
+_OUTLET_LISTS: tuple = ("outlet_ports",)   # SeparatorHF
+
+_INLET_NAMED: tuple = (
+    "inlet_port",        # StoichiometricReactor, SeparatorHF, Compressor, FlashVLHF
+    "hot_inlet_port",    # HeatExchangerNTU
+    "syngas_in_port",    # WGSReactorHF
+    "feed_in_port",      # H2SeparatorPSA
+    "biomass_in_port",   # BiomassGasifierHF
+    "wet_in_port",       # BiomassStorageHF
+)
+_INLET_LISTS: tuple = ("inlet_ports",)     # MixerHF
+
+
+def _primary_outlet(unit: Any):
+    """Return the unit's primary outlet StreamPort, or None for flat-variable units."""
+    for name in _OUTLET_NAMED:
+        p = getattr(unit, name, None)
+        if p is not None:
+            return p
+    for name in _OUTLET_LISTS:
+        lst = getattr(unit, name, None)
+        if lst:
+            return lst[0]
+    return None
+
+
+def _primary_inlet(unit: Any):
+    """Return the unit's primary inlet StreamPort, or None for flat-variable units."""
+    for name in _INLET_NAMED:
+        p = getattr(unit, name, None)
+        if p is not None:
+            return p
+    for name in _INLET_LISTS:
+        lst = getattr(unit, name, None)
+        if lst:
+            return lst[0]
+    return None
+
+
 def build_custom_flowsheet(config: Dict[str, Any]) -> "BaseFlowsheet":
     """Assemble a BaseFlowsheet from a user-defined unit + connection config.
 
@@ -506,8 +621,8 @@ def build_custom_flowsheet(config: Dict[str, Any]) -> "BaseFlowsheet":
         to_u   = unit_map.get(conn["to_unit"])
         if from_u is None or to_u is None:
             continue
-        out_port = getattr(from_u, "outlet_port", None)
-        in_port  = getattr(to_u,   "inlet_port",  None)
+        out_port = _primary_outlet(from_u)
+        in_port  = _primary_inlet(to_u)
         if out_port is not None and in_port is not None:
             try:
                 fs.connect(out_port, in_port,
@@ -626,7 +741,8 @@ def _instantiate_unit(utype: str, uid: str, params: dict) -> Any:
         from pse_ecosystem.models.heat_exchangers.heat_exchanger_ntu import (
             HeatExchangerNTU, HeatExchangerNTUParams,
         )
-        hot  = params.get("hot_components",  ["H2", "CO"])
+        shared = params.get("components", [])
+        hot  = params.get("hot_components",  shared or ["H2", "CO"])
         cold = params.get("cold_components", ["H2O"])
         hp = HeatExchangerNTUParams(
             UA_W_per_K=float(params.get("UA_W_per_K", 5000.0)),
@@ -1034,6 +1150,245 @@ def _load_dacu_power_to_methane(p: dict):
     return fs
 
 
+def _load_grand_challenge_gasification(p: dict):
+    """10-unit Biomass → Green H2 Grand Challenge flowsheet.
+
+    Chain: Storage → Gasifier → Cyclone → HTS-WGS → LTS-WGS →
+           Moisture Sep → CO2 Scrubber → PSA → Compressor → H2 Polisher
+    """
+    from pse_ecosystem.models.biomass.biomass_database import get_biomass, element_feeds_mol_s
+    from pse_ecosystem.models.biomass.biomass_storage import BiomassStorageHF
+    from pse_ecosystem.models.biomass.biomass_gasifier import BiomassGasifierHF
+    from pse_ecosystem.models.biomass.wgs_reactor import WGSReactorHF
+    from pse_ecosystem.models.biomass.h2_separator import H2SeparatorPSA
+    from pse_ecosystem.models.separators.separator_hf import SeparatorHF, SeparatorHFParams
+    from pse_ecosystem.models.pressure_changers.compressor import Compressor, CompressorParams
+    from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet, Connection
+
+    def _link_flows(port_a, port_b, desc=""):
+        """Append flow-variable connections without T/P — handles T/P count mismatches."""
+        a_flows = [v for v in port_a.variable_names() if ".F_" in v]
+        b_flows = [v for v in port_b.variable_names() if ".F_" in v]
+        for va, vb in zip(a_flows, b_flows):
+            fs.connections.append(Connection(var_a=va, var_b=vb, description=desc))
+
+    _SYNGAS = ["H2", "CO", "CO2", "H2O", "CH4", "N2"]
+
+    biomass_type    = str(p.get("biomass_type", "Pine Wood"))
+    agent           = str(p.get("gasifying_agent", "Steam"))
+    feed_wet_kg_s   = float(p.get("biomass_feed_kg_s", 1.0))
+    sb_ratio        = float(p.get("steam_to_biomass_ratio", 1.0))
+    T_gas_C         = float(p.get("T_gasifier_C", 800.0))
+    T_hts_C         = float(p.get("T_hts_C", 400.0))
+    T_lts_C         = float(p.get("T_lts_C", 220.0))
+    H2_recovery     = float(p.get("H2_recovery", 0.94))
+    P_out_Pa        = float(p.get("P_out_Pa", 5_000_000.0))
+
+    b = get_biomass(biomass_type)
+    MC = b["MC"]
+    feed_dry_kg_s = feed_wet_kg_s * (1.0 - MC)
+
+    # ── Unit 1: Biomass Storage (drying) ─────────────────────────────────────
+    storage = BiomassStorageHF("storage", biomass_type=biomass_type)
+
+    # ── Unit 2: Gasifier ─────────────────────────────────────────────────────
+    gasifier = BiomassGasifierHF("gasifier", biomass_type=biomass_type,
+                                  T_gasifier_C=T_gas_C, gasifying_agent=agent)
+
+    # ── Unit 3: Cyclone — char/ash removal (99% efficiency) ──────────────────
+    # Outlet 0 = clean syngas, Outlet 1 = char/ash (not tracked further)
+    _char_sf = [[0.99, 0.01]] * len(_SYNGAS)   # all syngas species through outlet_0
+    cyclone = SeparatorHF("cyclone", _SYNGAS,
+                           SeparatorHFParams(n_outlets=2, split_fractions=_char_sf))
+
+    # ── Unit 4: High-Temperature WGS Reactor (HTS) ───────────────────────────
+    hts = WGSReactorHF("hts", T_wgs_C=T_hts_C)
+
+    # ── Unit 5: Low-Temperature WGS Reactor (LTS) ────────────────────────────
+    lts = WGSReactorHF("lts", T_wgs_C=T_lts_C)
+
+    # ── Unit 6: Moisture Separator (condensate knockout) ─────────────────────
+    # H2O: 30% to gas (outlet_0), 70% to condensate (outlet_1)
+    # Other species: 99% to gas, 1% to condensate
+    _mois_sf = []
+    for c in _SYNGAS:
+        _mois_sf.append([0.30, 0.70] if c == "H2O" else [0.99, 0.01])
+    moisture_sep = SeparatorHF("moisture_sep", _SYNGAS,
+                                SeparatorHFParams(n_outlets=2, split_fractions=_mois_sf))
+
+    # ── Unit 7: CO2 Scrubber (amine absorption simplified) ───────────────────
+    # CO2: 3% escapes to gas (outlet_0), 97% absorbed (outlet_1)
+    # H2O: 20% to gas, 80% to absorber sump
+    # Other species (H2, CO, CH4, N2): 97% to gas, 3% dissolved/lost
+    _co2_sf = []
+    for c in _SYNGAS:
+        if c == "CO2":
+            _co2_sf.append([0.03, 0.97])
+        elif c == "H2O":
+            _co2_sf.append([0.20, 0.80])
+        else:
+            _co2_sf.append([0.97, 0.03])
+    co2_scrubber = SeparatorHF("co2_scrubber", _SYNGAS,
+                                SeparatorHFParams(n_outlets=2, split_fractions=_co2_sf))
+
+    # ── Unit 8: PSA Separator ─────────────────────────────────────────────────
+    psa = H2SeparatorPSA("psa", H2_recovery=H2_recovery)
+
+    # ── Unit 9: H2 Compressor ─────────────────────────────────────────────────
+    cp = CompressorParams(eta_isentropic=0.78, P_out_Pa=P_out_Pa)
+    h2_comp = Compressor("h2_comp", ["H2"], cp)
+
+    # ── Unit 10: H2 Polisher (final trace-impurity removal) ──────────────────
+    _pol_sf = [[0.995, 0.005]]   # 99.5% product, 0.5% purge
+    h2_polisher = SeparatorHF("h2_polisher", ["H2"],
+                               SeparatorHFParams(n_outlets=2, split_fractions=_pol_sf))
+
+    fs = BaseFlowsheet(
+        name="industrial.grand_challenge_10unit",
+        units=[storage, gasifier, cyclone, hts, lts,
+               moisture_sep, co2_scrubber, psa, h2_comp, h2_polisher],
+    )
+
+    # ── Port connections ──────────────────────────────────────────────────────
+    # Exact-match pairs use fs.connect(); T/P-mismatched pairs use _link_flows().
+    fs.connect(storage.dry_out_port, gasifier.biomass_in_port,
+               description="Dry biomass → gasifier")                        # 1:1 no T/P
+    _link_flows(gasifier.syngas_out_port, cyclone.inlet_port,
+                desc="Raw syngas → cyclone")                                 # 6 vs 8 vars
+    _link_flows(cyclone.outlet_ports[0], hts.syngas_in_port,
+                desc="Clean syngas → HTS")                                  # 8 vs 6 vars
+    fs.connect(hts.shifted_out_port, lts.syngas_in_port,
+               description="HTS shifted gas → LTS")                         # 6:6 no T/P
+    _link_flows(lts.shifted_out_port, moisture_sep.inlet_port,
+                desc="LTS shifted gas → moisture sep")                       # 6 vs 8 vars
+    fs.connect(moisture_sep.outlet_ports[0], co2_scrubber.inlet_port,
+               description="Dry gas → CO2 scrubber")                        # 8:8 with T/P
+    _link_flows(co2_scrubber.outlet_ports[0], psa.feed_in_port,
+                desc="H2-rich gas → PSA")                                   # 8 vs 6 vars
+    _link_flows(psa.h2_out_port, h2_comp.inlet_port,
+                desc="Pure H2 → compressor")                                # 1 vs 3 vars
+    fs.connect(h2_comp.outlet_port, h2_polisher.inlet_port,
+               description="Compressed H2 → polisher")                      # 3:3 with T/P
+
+    # ── Design-basis fixed feeds ──────────────────────────────────────────────
+    fs.extra_bounds["storage.wet_in.F_Biomass"] = (feed_wet_kg_s, feed_wet_kg_s)
+    n_steam = feed_dry_kg_s * sb_ratio * 1000.0 / 18.015
+    fs.extra_bounds["gasifier.agent_in.F_H2O"]  = (n_steam, n_steam)
+
+    # ── Warm-start bounds (gasifier estimates) ────────────────────────────────
+    feeds = element_feeds_mol_s(biomass_type, feed_dry_kg_s)
+    n_C = feeds["C"]
+    n_H = feeds["H"] + 2.0 * n_steam
+    n_O = feeds["O"] + n_steam
+    n_CO_est  = max(0.60 * n_C, 0.01)
+    n_CO2_est = max(0.30 * n_C, 0.01)
+    n_CH4_est = max(0.10 * n_C, 0.01)
+    n_H2O_est = max(0.10 * n_O, 0.01)
+    n_H2_est  = max((n_H - 2.0 * n_H2O_est - 4.0 * n_CH4_est) / 2.0, 0.01)
+    n_N2_est  = max(feeds["N"] / 2.0, 0.001)
+
+    def _bnd(est, lo_f=0.4, hi_f=4.0):
+        lo = max(est * lo_f, 1e-6)
+        return (lo, max(est * hi_f, lo + 0.1))
+
+    for c, est in zip(_SYNGAS, [n_H2_est, n_CO_est, n_CO2_est, n_H2O_est, n_CH4_est, n_N2_est]):
+        fs.extra_bounds[f"gasifier.syngas_out.F_{c}"] = _bnd(est)
+        fs.extra_bounds[f"cyclone.inlet.F_{c}"]       = _bnd(est)
+        fs.extra_bounds[f"cyclone.outlet_0.F_{c}"]    = _bnd(est, 0.3, 3.0)
+
+    # HTS warm-start (75% CO conversion)
+    X_hts = 0.75
+    dn_hts = n_CO_est * X_hts
+    n_H2_hts  = n_H2_est + dn_hts
+    n_CO_hts  = n_CO_est * (1.0 - X_hts)
+    n_CO2_hts = n_CO2_est + dn_hts
+    n_H2O_hts = max(n_H2O_est - dn_hts, 0.001)
+    for uid in ("hts",):
+        for c, est in zip(_SYNGAS,
+                          [n_H2_est, n_CO_est, n_CO2_est, n_H2O_est, n_CH4_est, n_N2_est]):
+            fs.extra_bounds[f"{uid}.syngas_in.F_{c}"] = _bnd(est, 0.3, 5.0)
+        for c, est in zip(_SYNGAS,
+                          [n_H2_hts, n_CO_hts, n_CO2_hts, n_H2O_hts, n_CH4_est, n_N2_est]):
+            fs.extra_bounds[f"{uid}.shifted_out.F_{c}"] = _bnd(est, 0.3, 5.0)
+
+    # LTS warm-start (90% additional CO conversion)
+    X_lts = 0.90
+    dn_lts = n_CO_hts * X_lts
+    n_H2_lts  = n_H2_hts + dn_lts
+    n_CO_lts  = n_CO_hts * (1.0 - X_lts)
+    n_CO2_lts = n_CO2_hts + dn_lts
+    n_H2O_lts = max(n_H2O_hts - dn_lts, 0.001)
+    for uid in ("lts",):
+        for c, est in zip(_SYNGAS,
+                          [n_H2_hts, n_CO_hts, n_CO2_hts, n_H2O_hts, n_CH4_est, n_N2_est]):
+            fs.extra_bounds[f"{uid}.syngas_in.F_{c}"] = _bnd(est, 0.3, 5.0)
+        for c, est in zip(_SYNGAS,
+                          [n_H2_lts, n_CO_lts, n_CO2_lts, n_H2O_lts, n_CH4_est, n_N2_est]):
+            fs.extra_bounds[f"{uid}.shifted_out.F_{c}"] = _bnd(est, 0.3, 5.0)
+
+    # Moisture separator warm-start
+    for c, est in zip(_SYNGAS,
+                      [n_H2_lts, n_CO_lts, n_CO2_lts, n_H2O_lts, n_CH4_est, n_N2_est]):
+        fs.extra_bounds[f"moisture_sep.inlet.F_{c}"]    = _bnd(est, 0.3, 5.0)
+        sf0 = 0.30 if c == "H2O" else 0.99
+        fs.extra_bounds[f"moisture_sep.outlet_0.F_{c}"] = _bnd(est * sf0, 0.3, 5.0)
+
+    # CO2 scrubber warm-start
+    n_CO2_in_scrub = n_CO2_lts
+    for c, est in zip(_SYNGAS,
+                      [n_H2_lts, n_CO_lts, n_CO2_lts, n_H2O_lts * 0.99, n_CH4_est, n_N2_est]):
+        sf0 = 0.03 if c == "CO2" else (0.20 if c == "H2O" else 0.97)
+        fs.extra_bounds[f"co2_scrubber.inlet.F_{c}"]    = _bnd(est, 0.3, 5.0)
+        fs.extra_bounds[f"co2_scrubber.outlet_0.F_{c}"] = _bnd(est * sf0, 0.2, 6.0)
+
+    # PSA warm-start
+    n_H2_psa_in = n_H2_lts * 0.97
+    for c, est in zip(_SYNGAS,
+                      [n_H2_psa_in, n_CO_lts * 0.97, n_CO2_lts * 0.03,
+                       n_H2O_lts * 0.99 * 0.20, n_CH4_est * 0.97, n_N2_est * 0.97]):
+        fs.extra_bounds[f"psa.feed_in.F_{c}"] = _bnd(est, 0.2, 6.0)
+    n_H2_prod = n_H2_psa_in * H2_recovery
+    fs.extra_bounds["psa.h2_out.F_H2"] = _bnd(n_H2_prod, 0.3, 3.0)
+
+    # Compressor and polisher warm-start (flow variables)
+    fs.extra_bounds["h2_comp.inlet.F_H2"]        = _bnd(n_H2_prod, 0.3, 3.0)
+    fs.extra_bounds["h2_comp.outlet.F_H2"]       = _bnd(n_H2_prod, 0.3, 3.0)
+    fs.extra_bounds["h2_polisher.inlet.F_H2"]    = _bnd(n_H2_prod, 0.3, 3.0)
+    fs.extra_bounds["h2_polisher.outlet_0.F_H2"] = _bnd(n_H2_prod * 0.995, 0.3, 3.0)
+
+    # ── Temperature and pressure bounds for intermediate streams ──────────────
+    # The WGS and biomass units track no T/P, leaving T/P of the SeparatorHF
+    # units unconstrained.  Without bounds the LP can drive T to extreme values,
+    # which inflates Compressor work and causes LP infeasibility.
+    T_gas_K  = T_gas_C  + 273.15   # gasifier outlet ≈ 1073 K
+    T_hts_K  = T_hts_C  + 273.15   # HTS ≈ 673 K
+    T_lts_K  = T_lts_C  + 273.15   # LTS ≈ 493 K
+    T_amb_K  = 298.15               # near-ambient compression
+    P_lo, P_hi = 80_000.0, 600_000.0   # 0.8–6 bar (syngas train)
+
+    for tag in ("inlet", "outlet_0", "outlet_1"):
+        fs.extra_bounds[f"cyclone.{tag}.T"]      = (T_gas_K * 0.5,  T_gas_K * 1.2)
+        fs.extra_bounds[f"cyclone.{tag}.P"]      = (P_lo, P_hi)
+        fs.extra_bounds[f"moisture_sep.{tag}.T"] = (T_lts_K * 0.5,  T_hts_K * 1.2)
+        fs.extra_bounds[f"moisture_sep.{tag}.P"] = (P_lo, P_hi)
+        fs.extra_bounds[f"co2_scrubber.{tag}.T"] = (T_amb_K * 0.8,  T_lts_K * 1.2)
+        fs.extra_bounds[f"co2_scrubber.{tag}.P"] = (P_lo, P_hi)
+
+    # Compressor (H2 inlet near-ambient; outlet at target pressure)
+    fs.extra_bounds["h2_comp.inlet.T"]        = (T_amb_K * 0.8, T_amb_K * 1.5)
+    fs.extra_bounds["h2_comp.inlet.P"]        = (P_lo, P_hi)
+    fs.extra_bounds["h2_comp.outlet.T"]       = (T_amb_K,       T_amb_K * 5.0)
+    fs.extra_bounds["h2_comp.outlet.P"]       = (P_out_Pa * 0.5, P_out_Pa * 1.5)
+
+    # H2 polisher (post-compression)
+    for tag in ("inlet", "outlet_0", "outlet_1"):
+        fs.extra_bounds[f"h2_polisher.{tag}.T"] = (T_amb_K, T_amb_K * 5.0)
+        fs.extra_bounds[f"h2_polisher.{tag}.P"] = (P_out_Pa * 0.5, P_out_Pa * 1.5)
+
+    fs.objective_kpi = "H2_production_kg_h"
+    return fs
+
+
 # ── Loader dispatch maps ──────────────────────────────────────────────────────
 
 _LOADER_MAP: Dict[str, Callable] = {
@@ -1049,6 +1404,7 @@ _LOADER_MAP: Dict[str, Callable] = {
     "small.mixer_settler":                     _load_mixer_settler,
     "small.distillation":                      _load_distillation,
     "biomass.gasification_to_hydrogen":        _load_biomass_gasification_to_h2,
+    "industrial.grand_challenge_10unit":       _load_grand_challenge_gasification,
     "dac.power_to_methane":                    _load_dacu_power_to_methane,
 }
 

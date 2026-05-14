@@ -699,3 +699,124 @@ changes in `core/contracts.py`.
   capacity factor.
 - **Carbon accounting.** Emissions factors on every flow variable;
   carbon price as a configurable multiplier.
+
+---
+
+## §10 Grand Challenge: 10-Unit Biomass → H₂ Flowsheet
+
+This section provides the analytical mass-balance derivation for the
+`industrial.grand_challenge_10unit` template (v1.3.0).
+
+### §10.1 Basis Definition
+
+| Parameter | Symbol | Value |
+|---|---|---|
+| Wet biomass feed | Ḟ_wet | 1.0 kg/s |
+| Moisture content (Pine Wood) | MC | 0.17 (17 wt%) |
+| Dry feed | Ḟ_dry = Ḟ_wet (1 − MC) | 0.83 kg/s |
+| Steam-to-biomass ratio | S/B | 1.0 kg_steam/kg_dry |
+| Steam feed | ṅ_steam = Ḟ_dry × 1000 / 18.015 | 46.1 mol/s |
+| Gasifier temperature | T_gas | 800 °C = 1073 K |
+| HTS reactor temperature | T_HTS | 400 °C = 673 K |
+| LTS reactor temperature | T_LTS | 220 °C = 493 K |
+| PSA H₂ recovery | r_H₂ | 0.94 |
+| H₂ polisher recovery | r_pol | 0.995 |
+
+### §10.2 Elemental Feeds (Pine Wood Composition)
+
+Pine Wood dry elemental composition (mass fractions, NIST/ECN database):
+C = 47.1%, H = 6.3%, O = 44.2%, N = 0.5%
+
+$$\dot{n}_C = \frac{\dot{F}_{dry} \times 0.471}{M_C} = \frac{0.83 \times 0.471}{12.011} \times 10^3 \approx 32.5 \text{ mol/s}$$
+
+$$\dot{n}_{H,biomass} = \frac{0.83 \times 0.063}{1.008} \times 10^3 \approx 51.9 \text{ mol/s (H atoms)}$$
+
+Total hydrogen (biomass + steam):
+$$\dot{n}_{H,total} = \dot{n}_{H,biomass} + 2 \dot{n}_{steam} = 51.9 + 92.2 = 144.1 \text{ mol H/s}$$
+
+### §10.3 Gasifier Equilibrium (Unit 2)
+
+Two simultaneous equilibrium constraints at T = 1073 K:
+
+**WGS equilibrium:**
+$$K_{WGS}(T) = \exp\!\left(\frac{4300}{T} - 3.84\right) = \exp\!\left(\frac{4300}{1073} - 3.84\right) \approx 1.80$$
+
+$$K_{WGS} = \frac{n_{CO_2} \cdot n_{H_2}}{n_{CO} \cdot n_{H_2O}}$$
+
+**Methanation equilibrium:**
+$$K_{met}(T) = \exp\!\left(\frac{25000}{T} - 26.2\right) = \exp\!\left(\frac{25000}{1073} - 26.2\right) \approx 150$$
+
+$$K_{met} = \frac{n_{CH_4} \cdot n_{H_2O}}{n_{CO} \cdot n_{H_2}^3} \cdot \left(\frac{P}{n_{total}}\right)^{-2}$$
+
+**Element balances (4 equations, 6 unknowns):**
+
+$$n_{CO} + n_{CO_2} + n_{CH_4} = \dot{n}_C \quad \text{(carbon)}$$
+
+$$2n_{H_2} + 2n_{H_2O} + 4n_{CH_4} = \dot{n}_{H,total} \quad \text{(hydrogen)}$$
+
+$$n_{CO} + 2n_{CO_2} + n_{H_2O} = \dot{n}_{O,total} \quad \text{(oxygen)}$$
+
+$$2n_{N_2} = \dot{n}_N \quad \text{(nitrogen)}$$
+
+### §10.4 Cyclone (Unit 3) — Linear
+
+Split fraction 99%/1% applied uniformly to all 6 species:
+$$n_{c,out_0} = 0.99 \cdot n_{c,in}, \qquad n_{c,out_1} = 0.01 \cdot n_{c,in} \quad \forall c \in \{H_2, CO, CO_2, H_2O, CH_4, N_2\}$$
+
+### §10.5 Dual-Stage WGS (Units 4–5)
+
+**High-Temperature Shift (HTS, 400 °C):**
+
+$$K_{WGS}(673) = \exp\!\left(\frac{4300}{673} - 3.84\right) \approx 8.9$$
+
+At equilibrium with 6-component syngas, ~75% CO conversion expected analytically:
+$$X_{CO,HTS} = \frac{K_{WGS}(T_{HTS}) \cdot r}{1 + K_{WGS}(T_{HTS}) \cdot r}, \quad r = \frac{n_{H_2O,in}}{n_{CO,in}}$$
+
+**Low-Temperature Shift (LTS, 220 °C):**
+
+$$K_{WGS}(493) = \exp\!\left(\frac{4300}{493} - 3.84\right) \approx 86$$
+
+Additional ~90% conversion of HTS residual CO. WGSReactorHF enforces:
+$$f_{stoich}: \; n_{CO,out} = n_{CO,in}(1 - X_{CO}), \quad n_{H_2,out} = n_{H_2,in} + n_{CO,in} X_{CO}$$
+
+$$f_{equil}: \; K_{WGS}(T) \cdot n_{CO,out} \cdot n_{H_2O,out} - n_{CO_2,out} \cdot n_{H_2,out} = 0$$
+
+### §10.6 Separation Train (Units 6–7) — Linear
+
+**Moisture separator** (Unit 6): H₂O split 30%/70% (gas/liquid), all other species 99%/1%.
+
+**CO₂ scrubber** (Unit 7): CO₂ split 3%/97% (gas/absorbed), H₂O 20%/80%, other 97%/3%.
+
+### §10.7 PSA (Unit 8) — Linear
+
+$$n_{H_2,product} = r_{H_2} \cdot n_{H_2,feed} = 0.94 \cdot n_{H_2,feed}$$
+
+All non-H₂ species pass to tail gas. H₂ blowdown = (1 − 0.94) × n_H₂_feed (not tracked).
+
+PSA power (KPI): W_PSA ≈ 1.5 kWh/kg H₂ (literature value).
+
+### §10.8 Compressor (Unit 9) — Nonlinear
+
+Isentropic compression of pure H₂ (γ = 1.41, η = 0.78):
+
+$$W_{shaft} = \frac{\dot{n}_{H_2} \cdot c_{p,H_2} \cdot T_{in}}{\eta_{is}} \left[\left(\frac{P_{out}}{P_{in}}\right)^{(\gamma-1)/\gamma} - 1\right]$$
+
+At T_in = 298 K, P_out/P_in = 50 bar / 1 bar = 50, γ = 1.41:
+$$(P_{out}/P_{in})^{0.291} = 50^{0.291} \approx 3.32 \implies W/\dot{n} \approx 15.5 \text{ kJ/mol H}_2$$
+
+### §10.9 H₂ Polisher (Unit 10) — Linear
+
+$$n_{H_2,product} = 0.995 \cdot n_{H_2,comp\_outlet}$$
+
+### §10.10 Verification Table
+
+| KPI | Analytical Formula | Solver Verification |
+|---|---|---|
+| Carbon balance (gasifier) | n_CO + n_CO₂ + n_CH₄ = n_C_feed | `pytest test_grand_challenge::test_grand_challenge_mass_balance` |
+| HTS CO conversion | ~75% (K_WGS(673K) ≈ 8.9) | `hts.CO_conversion_pct` KPI |
+| LTS CO conversion | ~90% of HTS residual | `lts.CO_conversion_pct` KPI |
+| PSA H₂ recovery | exactly 94% (linear) | `psa.H2_recovery_pct` KPI |
+| Polisher H₂ recovery | exactly 99.5% (linear) | `h2_polisher.outlet_0.F_H2 / h2_comp.outlet.F_H2` |
+| H₂ product flow | > 0 mol/s | `psa.h2_out.F_H2 > 0` |
+
+All 9 structural tests in `tests/test_grand_challenge.py` pass on a clean install.
