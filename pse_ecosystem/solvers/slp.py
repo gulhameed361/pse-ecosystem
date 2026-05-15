@@ -111,6 +111,20 @@ class SLPConfig:
     """Wegstein-accelerated tear streams for recycle loops.  Leave empty
     (default) when the flowsheet has no recycle connections."""
 
+    progressive_tightening: bool = False
+    """When True the convergence tolerances are relaxed early in the run and
+    tightened progressively toward the config defaults as the iteration count
+    approaches max_iter.
+
+    Phase 1 (k < 20% of max_iter): eps_x × 100, eps_f × 100  — accept coarse steps
+    Phase 2 (k < 60% of max_iter): eps_x × 10,  eps_f × 10   — intermediate
+    Phase 3 (k ≥ 60% of max_iter): eps_x,        eps_f        — standard tight
+
+    Recommended for 7–10 unit non-linear chains where the SLP linearisation
+    is poor early on and the solver would otherwise declare convergence on an
+    insufficiently accurate iterate.
+    """
+
     iteration_callback: Optional[Callable[[int, float, float], None]] = None
     """Optional hook called at the end of each SLP iteration.
 
@@ -129,6 +143,22 @@ class _IterationLog:
     residual_norm: float
     kpi: float
     trust_region: float
+
+
+def _tighten(cfg: SLPConfig, k: int) -> tuple:
+    """Return (eps_x, eps_f, eps_kpi) for iteration k under progressive tightening.
+
+    The schedule is:
+      k < 20% max_iter  →  100× loose tolerances (accept coarse initial steps)
+      k < 60% max_iter  →  10× loose  (intermediate refinement)
+      k ≥ 60% max_iter  →  standard cfg defaults (enforce tight convergence)
+    """
+    frac = k / max(cfg.max_iter, 1)
+    if frac < 0.20:
+        return cfg.eps_x * 100.0, cfg.eps_f * 100.0, cfg.eps_kpi * 10.0
+    if frac < 0.60:
+        return cfg.eps_x * 10.0, cfg.eps_f * 10.0, cfg.eps_kpi * 3.0
+    return cfg.eps_x, cfg.eps_f, cfg.eps_kpi
 
 
 class SLPDriver:
@@ -283,10 +313,15 @@ class SLPDriver:
                 self.config.iteration_callback(k, lp_obj, res_norm)
 
             # ── Convergence test ─────────────────────────────────────────
+            _ex, _ef, _ekpi = (
+                _tighten(self.config, k)
+                if self.config.progressive_tightening
+                else (self.config.eps_x, self.config.eps_f, self.config.eps_kpi)
+            )
             if (
-                step < self.config.eps_x
-                and res_norm < self.config.eps_f
-                and dkpi < self.config.eps_kpi
+                step < _ex
+                and res_norm < _ef
+                and dkpi < _ekpi
             ):
                 return SolveResult(
                     status=SolverStatus.CONVERGED,

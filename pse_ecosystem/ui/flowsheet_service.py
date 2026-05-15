@@ -21,6 +21,103 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
+# ── ParamSpec — per-unit-type parameter descriptor for the Custom Flowsheet UI ─
+
+@dataclass
+class ParamSpec:
+    """Describes one editable parameter for a unit type in the Custom Flowsheet builder.
+
+    The UI uses this to render a pre-filled form instead of requiring users to
+    know parameter names and default values from memory.
+    """
+
+    name: str           # key in the params dict passed to _instantiate_unit
+    label: str          # human-readable UI label
+    dtype: str          # "float" | "int" | "select"
+    default: Any        # pre-filled value shown in the UI
+    options: List[str] = field(default_factory=list)   # for dtype="select"
+    unit: str = ""      # physical unit string shown in brackets, e.g. "°C"
+    help: str = ""      # tooltip shown in the UI
+
+
+UNIT_PARAM_SPECS: Dict[str, List[ParamSpec]] = {
+    "BiomassStorageHF": [
+        ParamSpec("biomass_type", "Biomass Type", "select", "Pine Wood",
+                  ["Pine Wood", "Miscanthus", "Wheat Straw"]),
+        ParamSpec("T_preheat_C", "Preheat Temperature", "float", 200.0,
+                  unit="°C", help="Target preheat temperature for dry biomass"),
+    ],
+    "BiomassGasifierHF": [
+        ParamSpec("T_gasifier_C", "Gasifier Temperature", "float", 800.0,
+                  unit="°C", help="Thermochemical equilibrium temperature"),
+        ParamSpec("gasifying_agent", "Gasifying Agent", "select", "Steam",
+                  ["Steam", "Air"], help="Steam gives higher H₂ yield; Air is cheaper"),
+        ParamSpec("P_atm", "Pressure", "float", 1.0,
+                  unit="atm", help="Operating pressure"),
+    ],
+    "WGSReactorHF": [
+        ParamSpec("T_wgs_C", "WGS Temperature", "float", 400.0,
+                  unit="°C", help="400 °C = High-Temperature Shift; 220 °C = Low-Temperature Shift"),
+    ],
+    "CoolerHF": [
+        ParamSpec("T_out_K", "Outlet Temperature", "float", 310.0,
+                  unit="K", help="Fixed outlet temperature (parameter, not solver variable)"),
+    ],
+    "SeparatorHF": [
+        ParamSpec("n_outlets", "Number of Outlets", "int", 2,
+                  help="Typically 2 for binary split; up to 4 supported"),
+    ],
+    "Compressor": [
+        ParamSpec("eta_isentropic", "Isentropic Efficiency", "float", 0.78,
+                  unit="—", help="0–1; typical industrial range 0.70–0.85"),
+        ParamSpec("P_out_Pa", "Outlet Pressure", "float", 500_000.0,
+                  unit="Pa", help="5e5 Pa = 5 bar; 5e6 Pa = 50 bar"),
+    ],
+    "HeatExchangerNTU": [
+        ParamSpec("UA_W_per_K", "UA Product", "float", 5000.0,
+                  unit="W/K", help="Overall heat transfer coefficient × area"),
+    ],
+    "MixerHF": [
+        ParamSpec("n_inlets", "Number of Inlets", "int", 2,
+                  help="Number of feed streams entering the mixer"),
+    ],
+    "FlashVLHF": [
+        ParamSpec("T_min", "T min", "float", 250.0, unit="K"),
+        ParamSpec("T_max", "T max", "float", 550.0, unit="K"),
+        ParamSpec("P_min", "P min", "float", 1e3,  unit="Pa"),
+        ParamSpec("P_max", "P max", "float", 1e7,  unit="Pa"),
+    ],
+    "StoichiometricReactor": [
+        ParamSpec("feed_max", "Max Feed Flow", "float", 50.0,
+                  unit="mol/s", help="Upper bound on inlet flow variables"),
+    ],
+    "MethanationReactor": [
+        ParamSpec("T_rx_K", "Reactor Temperature", "float", 673.0,
+                  unit="K", help="Sabatier reaction temperature (400 °C default)"),
+    ],
+    "TVSAContactor": [
+        ParamSpec("eta_cap", "CO₂ Capture Efficiency", "float", 0.85,
+                  unit="—", help="Fraction of inlet CO₂ captured (0–1)"),
+        ParamSpec("T_des_K", "Desorption Temperature", "float", 393.0,
+                  unit="K", help="120 °C default; higher = more regen energy"),
+    ],
+    "ElectrolyserHF": [
+        ParamSpec("eta_elec", "Electrolyser Efficiency", "float", 0.70,
+                  unit="—", help="HHV basis; typical PEM 0.65–0.75"),
+    ],
+    "CHPUnit": [
+        ParamSpec("eta_comb", "Combustion Efficiency", "float", 0.95, unit="—"),
+        ParamSpec("eta_isentropic", "Turbine Isentropic Efficiency", "float", 0.85, unit="—"),
+    ],
+    # Toy units and units with no tunable params default to empty list (components-only)
+}
+
+
+def get_unit_param_specs(utype: str) -> List[ParamSpec]:
+    """Return the list of ParamSpec descriptors for *utype*, or [] if none defined."""
+    return UNIT_PARAM_SPECS.get(utype, [])
+
+
 # ── TemplateSpec ─────────────────────────────────────────────────────────────
 
 @dataclass

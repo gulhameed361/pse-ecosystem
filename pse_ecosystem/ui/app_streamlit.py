@@ -57,7 +57,7 @@ def _page_dashboard():
     from pse_ecosystem.ui.flowsheet_service import list_templates
 
     st.title("PSE Ecosystem")
-    st.caption("v1.2.1  |  Private — University of Surrey")
+    st.caption("v1.3.0  |  Private — University of Surrey")
 
     # ── LP solver check ────────────────────────────────────────────────────
     try:
@@ -397,6 +397,10 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
     n_units = st.number_input("Number of units", min_value=1, max_value=10, value=2, step=1)
     unit_types = list(AVAILABLE_UNITS.keys())
 
+    from pse_ecosystem.ui.flowsheet_service import get_unit_param_specs
+
+    _auto_ids = [f"u{j+1}" for j in range(int(n_units))]
+
     unit_configs = []
     for i in range(int(n_units)):
         with st.expander(f"Unit {i + 1}", expanded=True):
@@ -406,8 +410,53 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
                 key=f"custom_unit_type_{i}",
                 help=AVAILABLE_UNITS.get(unit_types[min(i, len(unit_types)-1)], ""),
             )
-            uid = st.text_input("Unit ID", value=f"u{i+1}", key=f"custom_unit_id_{i}")
-            unit_configs.append({"type": utype, "id": uid, "params": {"components": shared_components}})
+
+            # Smart-select: dropdown of auto-generated IDs + free-form fallback
+            _id_options = _auto_ids + ["custom..."]
+            _id_sel = st.selectbox(
+                "Unit ID", _id_options,
+                index=min(i, len(_auto_ids) - 1),
+                key=f"custom_unit_id_sel_{i}",
+                help="Select an auto-generated ID or choose 'custom...' to type your own.",
+            )
+            if _id_sel == "custom...":
+                uid = st.text_input(
+                    "Custom ID", value=f"u{i+1}",
+                    key=f"custom_unit_id_txt_{i}",
+                )
+            else:
+                uid = _id_sel
+
+            # Dynamic parameter form — renders pre-filled inputs per unit type
+            unit_params: dict = {}
+            _specs = get_unit_param_specs(utype)
+            if _specs:
+                st.caption("Unit parameters (pre-filled with engineering defaults)")
+                for _ps in _specs:
+                    _key = f"param_{i}_{_ps.name}"
+                    _label = f"{_ps.label} [{_ps.unit}]" if _ps.unit else _ps.label
+                    if _ps.dtype == "float":
+                        unit_params[_ps.name] = st.number_input(
+                            _label, value=float(_ps.default),
+                            help=_ps.help, key=_key,
+                        )
+                    elif _ps.dtype == "int":
+                        unit_params[_ps.name] = int(st.number_input(
+                            _label, value=int(_ps.default),
+                            step=1, help=_ps.help, key=_key,
+                        ))
+                    elif _ps.dtype == "select":
+                        unit_params[_ps.name] = st.selectbox(
+                            _label, _ps.options,
+                            index=_ps.options.index(_ps.default) if _ps.default in _ps.options else 0,
+                            help=_ps.help, key=_key,
+                        )
+
+            unit_configs.append({
+                "type": utype,
+                "id": uid,
+                "params": {**unit_params, "components": shared_components},
+            })
 
     # ── Composite / super-unit option ────────────────────────────────────────
     st.divider()
@@ -619,7 +668,7 @@ def _page_solver_monitor():
     with st.expander("Solver Settings", expanded=True):
         col_a, col_b = st.columns(2)
         with col_a:
-            max_iter = st.slider("Max iterations", 5, 100, 50)
+            max_iter = st.slider("Max iterations", 5, 1000, 50)
             eps_x    = st.number_input("Step tolerance (eps_x)", value=1e-4,
                                         format="%.2e", min_value=1e-10, max_value=1.0)
         with col_b:
@@ -633,6 +682,23 @@ def _page_solver_monitor():
             ]
             _mode_label = st.radio("Solver Mode", _solver_options)
             verbose = st.checkbox("Verbose solver output", value=False)
+            prog_tighten = st.checkbox(
+                "Progressive tightening",
+                value=False,
+                help="Starts with loose convergence tolerances and tightens them as "
+                     "iterations progress. Recommended for 7–10 unit non-linear chains.",
+            )
+
+        with st.expander("Advanced solver settings", expanded=False):
+            tr_min_radius = st.number_input(
+                "Trust-Region minimum radius",
+                value=1e-2,
+                format="%.2e",
+                min_value=1e-8,
+                max_value=1.0,
+                help="Reduce for complex chains where the default 1e-2 causes early exit. "
+                     "Only active when Trust-Region or Adaptive solver is selected.",
+            )
 
         _MODE_MAP = {
             "SLP (fast, LP-based)":                            "FIXED_LP",
@@ -706,6 +772,8 @@ def _page_solver_monitor():
                 eps_x=float(eps_x),
                 verbose=verbose,
                 iteration_callback=_on_iter,
+                progressive_tightening=bool(prog_tighten),
+                trust_region_min=float(tr_min_radius),
             )
 
             with st.spinner(f"Solving {spec.display_name}…"):
@@ -846,6 +914,28 @@ def _page_solver_monitor():
             use_container_width=True,
             hide_index=True,
         )
+
+    # ── Excel download ───────────────────────────────────────────────────────
+    try:
+        import io
+        import pandas as _pd
+        _buf = io.BytesIO()
+        with _pd.ExcelWriter(_buf, engine="openpyxl") as _writer:
+            _pd.DataFrame(
+                [{"KPI": k, "Value": v} for k, v in result.kpis.items()]
+            ).to_excel(_writer, sheet_name="KPIs", index=False)
+            _pd.DataFrame(
+                [{"Variable": k, "Value": v} for k, v in result.x.items()]
+            ).to_excel(_writer, sheet_name="Solution Variables", index=False)
+        st.download_button(
+            label="⬇ Download Results (XLSX)",
+            data=_buf.getvalue(),
+            file_name="pse_results.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            help="Exports KPIs (Sheet 1) and all solution variables (Sheet 2) to Excel.",
+        )
+    except ImportError:
+        st.caption("Install `openpyxl` to enable Excel export: `pip install openpyxl`")
 
     # Technology selection (MILP only)
     if result.technology_selection:

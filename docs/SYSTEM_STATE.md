@@ -1,8 +1,38 @@
 # PSE Ecosystem — System State Ledger
 
-**Version:** 1.3.0-Phase6
+**Version:** 1.3.0-Phase7
 **Date:** 2026-05-15
-**Status:** v1.3.0 "Industrial Ready" — 6-sector template categorization, consolidated documentation (UI_GUIDE.md merged), DEVELOPER_GUIDE expanded
+**Status:** v1.3.0 "Industrial Ready" — UI ergonomics (dynamic param forms, smart-select IDs), Excel export, progressive solver tightening, iteration slider to 1000
+
+---
+
+## What's New in v1.3.0-Phase7 — UI Ergonomics, Solver Tuning & Excel Export
+
+### UI Specification & Ergonomics (`app_streamlit.py` + `flowsheet_service.py`)
+- **Dynamic parameter forms**: Custom Flowsheet assembler now renders a pre-filled parameter
+  form per unit type (T_gasifier_C, gasifying_agent, eta_isentropic, etc.). Users can edit
+  defaults before clicking Build — no more memory-only parameter entry.
+- **Smart-select Unit IDs**: Replaced plain `text_input` with a `selectbox` showing
+  auto-generated IDs (u1, u2, …) plus a "custom..." fallback for free-form entry.
+- **`UNIT_PARAM_SPECS` dict + `ParamSpec` dataclass**: 15 unit types covered with typed,
+  labelled, and help-annotated parameter descriptors in `flowsheet_service.py`.
+- **`get_unit_param_specs()` public function**: layer-1 accessor used by the UI.
+- **Excel download**: "⬇ Download Results (XLSX)" button in Solver Monitor — exports KPIs
+  (Sheet 1) and Solution Variables (Sheet 2) via `openpyxl`. Graceful fallback if not installed.
+
+### Solver Convergence & Iteration Limits (`slp.py` + `app_streamlit.py`)
+- **Max iterations slider expanded**: 100 → 1000 (sufficient for 10-unit non-linear chains).
+- **Progressive tightening** (`SLPConfig.progressive_tightening`): new field (default False).
+  When enabled: eps × 100 for first 20% of iterations, eps × 10 for next 40%, standard for
+  final 40%. Implemented via `_tighten()` module-level helper.
+- **Progressive tightening checkbox** in Solver Monitor UI (below solver mode radio).
+- **Advanced solver settings expander**: Trust-Region minimum radius control, editable in UI.
+- **Dashboard version corrected**: `v1.2.1` → `v1.3.0` (line 60 of `app_streamlit.py`).
+
+### Infrastructure
+- `pyproject.toml`: version bumped to 1.3.0, `openpyxl>=3.1` added to `[gui]` extras.
+- `tests/test_phase7_ui.py`: 8 new tests — ParamSpec coverage, dtype validation, progressive
+  tightening schedule. Full suite: 154 passed, 1 pre-existing skip.
 
 ---
 

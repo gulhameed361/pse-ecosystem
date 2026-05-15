@@ -10,8 +10,10 @@ Application-centric Knowledge Ecosystem for Process Systems Engineering.
 - **Explainable physics.** Every unit model ships its exact algebraic residuals and analytical Jacobian. Regulators, auditors, and partners can inspect every equation — no black-box solver.
 - **Analytical Jacobians throughout.** The SLP solver linearises using exact ∂f/∂x, not finite differences. Faster convergence, provable gradient accuracy.
 - **3-layer separation.** UI / Solver / Knowledge are strictly decoupled via the Handshake Protocol. Swap the solver without touching the physics; swap the UI without touching the solver.
-- **Modular Assembly Freedom.** Aspen-style Custom Flowsheet builder supports 16+ unit types including biomass-domain units (BiomassStorageHF, BiomassGasifierHF, WGSReactorHF, CoolerHF). Users assemble, configure, and connect any chain without writing templates.
-- **Analytical Verification.** Every unit exposes exact Jacobians; 7-unit workshop chain is validated via 146 automated tests.
+- **Modular Assembly Freedom.** Aspen-style Custom Flowsheet builder with dynamic parameter forms — pre-filled engineering defaults per unit type. 16+ unit types supported.
+- **Analytical Verification.** Every unit exposes exact Jacobians; 7-unit workshop chain validated via 154 automated tests.
+- **Excel Export.** Download KPIs and solution variables to `.xlsx` from the Solver Monitor.
+- **Progressive Solver Tightening.** New SLP strategy for complex chains; Max Iterations slider extended to 1000.
 
 ---
 

@@ -922,4 +922,43 @@ SLPConfig(
 
 ---
 
-*User Manual v1.3.0-Phase6 — PSE Ecosystem | Private — University of Surrey*
+## 2.9 Solve Benchmarks — 7-Unit Chain
+
+Use these benchmarks to choose solver settings for the workshop chain:
+
+| Solver Mode | Max Iter Setting | Progressive Tightening | Expected Status | Typical Iterations |
+|---|---|---|---|---|
+| **SLP** | 50 | Off | CONVERGED | 8–18 |
+| **SLP** | 50 | On | CONVERGED | 12–22 |
+| **NLP** | 200 | — | CONVERGED | 20–60 (L-BFGS-B steps) |
+| **Trust-Region** | 200 | — | CONVERGED | 15–40 |
+| **Adaptive** | 200 | — | CONVERGED | best-of-above |
+
+**Recommended:** SLP with 50 iterations (progressive tightening OFF) is sufficient for this chain.
+Enable progressive tightening only if SLP returns `MAX_ITER`.
+Increase Max Iterations (slider now goes to 1000) for chains with more non-linear units.
+
+### Per-Unit Property Defaults (used by the Dynamic Parameter Form)
+
+When you select a unit type in the Custom Flowsheet builder, the UI now auto-fills a
+parameter form. The defaults for each workshop unit are:
+
+| Step | Unit Type | Parameter | Default | UI Label |
+|---|---|---|---|---|
+| 1 | `BiomassStorageHF` | biomass_type | "Pine Wood" | Biomass Type |
+| 1 | `BiomassStorageHF` | T_preheat_C | 200 °C | Preheat Temperature |
+| 2 | `BiomassGasifierHF` | T_gasifier_C | 800 °C | Gasifier Temperature |
+| 2 | `BiomassGasifierHF` | gasifying_agent | "Steam" | Gasifying Agent |
+| 2 | `BiomassGasifierHF` | P_atm | 1.0 atm | Pressure |
+| 3 | `SeparatorHF` (Cyclone) | n_outlets | 2 | Number of Outlets |
+| 4 | `WGSReactorHF` | T_wgs_C | 400 °C | WGS Temperature |
+| 5 | `CoolerHF` | T_out_K | 310 K | Outlet Temperature |
+| 6 | `SeparatorHF` (PSA) | n_outlets | 2 | Number of Outlets |
+| 7 | `Compressor` | eta_isentropic | 0.78 | Isentropic Efficiency |
+| 7 | `Compressor` | P_out_Pa | 500 000 Pa | Outlet Pressure |
+
+You can edit any value directly in the form before clicking **Build & Select**.
+
+---
+
+*User Manual v1.3.0-Phase7 — PSE Ecosystem | Private — University of Surrey*
