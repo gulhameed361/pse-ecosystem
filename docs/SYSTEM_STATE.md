@@ -1,8 +1,31 @@
 # PSE Ecosystem — System State Ledger
 
-**Version:** 1.3.0-Phase5
+**Version:** 1.3.0-Phase6
 **Date:** 2026-05-15
-**Status:** v1.3.0 "Aspen-Style Assembly & Validation" — CoolerHF unit, biomass unit registry, flow-only fallback, workshop documentation
+**Status:** v1.3.0 "Industrial Ready" — 6-sector template categorization, consolidated documentation (UI_GUIDE.md merged), DEVELOPER_GUIDE expanded
+
+---
+
+## What's New in v1.3.0-Phase6 — Industrial Categorization & Documentation Consolidation
+
+### Template Library Refactor (`flowsheet_service.py` + `app_streamlit.py`)
+- **6-sector categorization** replaces the flat Hydrogen/Industrial/Small split:
+  1. Hydrogen Production (3 templates: PEM Electrolysis, PEM+Gasifier MILP, Green Hydrogen Hub)
+  2. Biomass Processing (2 templates: Grand Challenge 10-Unit, Biomass→H₂ B-HYPSYS)
+  3. Power Generation (1 template: Gasification to Power)
+  4. Petrochemicals (2 templates: Power-to-Methanol, Syngas Production)
+  5. Carbon Capture & Utilization (1 template: DAC→Methane)
+  6. Other Industrial Processes (4 templates: CSTR+Flash, Compression Train, Mixer+Settler, Distillation)
+  7. Custom (1 template: Custom Flowsheet — unchanged)
+- `app_streamlit.py` category selector updated with `_CAT_ORDER` list for deterministic ordering.
+
+### Documentation Consolidation
+- **`UI_GUIDE.md` merged into `USER_MANUAL.md`** and deleted (`git rm`).
+  New 4-part structure: Interface Basics | Manual Assembly Workshop | Industrial Template Library | Advanced Showcase.
+- **`DEVELOPER_GUIDE.md`** extended with 3 new sections:
+  - §12: Registering a new unit in an industrial category (5-step guide)
+  - §13: Updating the Shared Component Set for new chemical species (Shomate + Antoine + validation)
+  - §14: Trust-Region vs IPOPT solver toggle — decision tree + programmatic examples
 
 ---
 

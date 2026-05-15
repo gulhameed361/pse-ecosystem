@@ -840,3 +840,219 @@ should not require contract changes in `core/`.
   aggregate results.
 - **Stochastic / robust optimisation.** Scenario tree at the
   Orchestrator level, scenario probability weights in objective terms.
+
+---
+
+## 12. Registering a New Unit in an Industrial Category (v1.3.0)
+
+The Template Library uses 6 industrial sectors. When you add a new unit and want it to be
+available in the Custom Flowsheet builder, register it in **three places** in
+`pse_ecosystem/ui/flowsheet_service.py`:
+
+### Step 1 — Add to `AVAILABLE_UNITS`
+
+```python
+AVAILABLE_UNITS: Dict[str, str] = {
+    # ... existing entries ...
+    "MyNewUnit": "Brief description — linear/nonlinear, key physics",
+}
+```
+
+### Step 2 — Add to `UNIT_CATEGORIES`
+
+Choose the appropriate sector. The 6 sectors and their current members:
+
+| Sector | Current Unit Types |
+|---|---|
+| `"Biomass"` | `BiomassStorageHF`, `BiomassGasifierHF`, `WGSReactorHF` |
+| `"Cooling"` | `CoolerHF` |
+| `"Feed/Product"` | `PEMToy`, `GasifierToy` |
+| `"Reactors"` | `StoichiometricReactor`, `MethanationReactor` |
+| `"Separation/DAC"` | `SeparatorHF`, `FlashVLHF`, `TVSAContactor` |
+| `"Heat Exchange"` | `HeatExchangerNTU`, `CoolerHF` |
+| `"Power/CHP"` | `ElectrolyserHF`, `CHPUnit` |
+| `"Mixing"` | `MixerHF` |
+| `"Pressure Changers"` | `Compressor` |
+
+```python
+UNIT_CATEGORIES: Dict[str, List[str]] = {
+    # ... existing entries ...
+    "Reactors": ["StoichiometricReactor", "MethanationReactor", "MyNewUnit"],
+}
+```
+
+If adding a truly new process sector, create a new key:
+
+```python
+UNIT_CATEGORIES["Ammonia Synthesis"] = ["MyNewUnit"]
+```
+
+### Step 3 — Add to `_instantiate_unit()`
+
+```python
+def _instantiate_unit(utype: str, uid: str, params: dict) -> Any:
+    # ... existing blocks ...
+
+    if utype == "MyNewUnit":
+        from pse_ecosystem.models.my_module.my_new_unit import MyNewUnit, MyNewUnitParams
+        p = MyNewUnitParams(
+            key_param=float(params.get("key_param", default_value)),
+        )
+        return MyNewUnit(uid, params.get("components", ["H2", "CO2"]), p)
+
+    raise ValueError(f"Unknown unit type: {utype}")
+```
+
+### Step 4 — Add port names to resolution lists (if using non-standard names)
+
+If your unit's primary outlet/inlet attributes are not in the existing priority lists, add them:
+
+```python
+_OUTLET_NAMED = (
+    "outlet_port",        # standard
+    # ... existing ...
+    "my_new_outlet_port", # add here
+)
+_INLET_NAMED = (
+    "inlet_port",         # standard
+    # ... existing ...
+    "my_new_inlet_port",  # add here
+)
+```
+
+### Step 5 — Verify
+
+```powershell
+pytest tests/test_ui_assembly_logic.py -v
+python -c "from pse_ecosystem.ui.flowsheet_service import AVAILABLE_UNITS; print('MyNewUnit' in AVAILABLE_UNITS)"
+```
+
+---
+
+## 13. Updating the Shared Component Set for New Chemical Species
+
+The Shared Component Set is the species list users type into the Custom Flowsheet assembler
+(e.g. `H2,CO,CO2,H2O,CH4,N2`). Adding a new species requires updates in up to 3 places:
+
+### 13.1 Ideal-gas Cp / enthalpy (Shomate)
+
+Edit `pse_ecosystem/models/properties/ideal_gas.py`, add to `_SHOMATE`:
+
+```python
+_SHOMATE["ethanol"] = {
+    "A": 102.8,   "B": -46.69, "C": 9.0,   "D": -0.54,
+    "E": 0.0,     "F": -217.0, "G": 0.0,   "H": -168.6,
+    "T_range": (298.0, 1500.0),
+    "T_ref": 298.15,
+}
+```
+
+NIST Webbook format; units are J/(mol·K) for Cp, kJ/mol for H.
+The species is immediately available to any HF unit listing it in `components`.
+
+### 13.2 VLE K-values (Antoine, for flash/distillation units)
+
+Edit `pse_ecosystem/models/properties/vle.py`, add to `ANTOINE`:
+
+```python
+ANTOINE["ethanol"] = {"A": 8.04494, "B": 1554.3, "C": 222.65}  # log10(P/mmHg), T in °C
+```
+
+Used by `FlashVLHF`, `FlashSL`, `DistillationHF`, and `GibbsReactor`.
+
+### 13.3 Unit model `components` list
+
+When a unit's port uses a hard-coded component list (e.g. WGSReactorHF always uses 6 syngas
+components), adding a new species requires overriding the unit's `__init__` or creating a subclass.
+For flexible-component units like `SeparatorHF`, `CoolerHF`, and `StoichiometricReactor`,
+the user simply adds the new species to the Custom Flowsheet's Shared Component Set — no code change.
+
+**Species compatibility rule:** all ports wired together must share an identical component list
+(same strings, same order). `BaseFlowsheet.connect()` enforces this via `validate_connection()`.
+
+### 13.4 Verification
+
+```python
+from pse_ecosystem.models.properties.ideal_gas import cp_J_mol_K
+print(cp_J_mol_K("ethanol", 400.0))   # should return a positive float
+```
+
+```python
+from pse_ecosystem.models.properties.vle import K_value
+print(K_value("ethanol", 351.0, 101325.0))   # ~1.0 at ~78 °C normal boiling point
+```
+
+---
+
+## 14. Trust-Region vs IPOPT Solver Toggle — Decision Logic
+
+Choosing between solver modes is a runtime decision, not a code change. Here is the
+decision tree:
+
+```
+Is the flowsheet fully linear (all units is_linear=True)?
+├─ YES → SLP short-circuits to a single LP in iteration 0. No toggle needed.
+└─ NO ↓
+
+Does SLP converge in ≤ 50 iterations with ‖f‖ < 1e-4?
+├─ YES → Keep SLP. Fastest option.
+└─ NO ↓
+
+Is SLP stagnating (step norm < eps_x but ‖f‖ > eps_f)?
+├─ YES → The linearisation is stuck at a non-linear kink.
+│        Switch to NLP (SolveMode.NLP_IPOPT).
+│        NLP uses scipy L-BFGS-B with analytical Jacobians from linearize().
+│        Better at navigating non-convex regions.
+└─ NO (still oscillating / infeasible) ↓
+
+Is the Jacobian ill-conditioned? (condition number >> 1e6, or SLP oscillates)
+├─ YES → Switch to Trust-Region Filter (SolveMode.TRUST_REGION).
+│        The filter/funnel prevents the Maratos effect.
+│        Robust but slow — only use when both SLP and NLP fail.
+└─ Unsure → Use Adaptive (SolveMode.ADAPTIVE).
+             Auto-escalates SLP → NLP → Trust-Region on failure.
+```
+
+### Programmatic toggle (SLP → NLP)
+
+```python
+from pse_ecosystem.core.contracts import SolveMode
+from pse_ecosystem.solvers.orchestrator import Orchestrator
+from pse_ecosystem.solvers.slp import SLPConfig
+
+# Try SLP first
+result = Orchestrator(fs, SolveMode.FIXED_LP,
+                      slp_config=SLPConfig(max_iter=50)).solve()
+
+if result.status.name != "CONVERGED":
+    # Escalate to NLP
+    result = Orchestrator(fs, SolveMode.NLP_IPOPT).solve()
+
+if result.status.name != "CONVERGED":
+    # Last resort: Trust-Region
+    result = Orchestrator(fs, SolveMode.TRUST_REGION).solve()
+```
+
+### Per-unit trust-region hint
+
+Units can supply a `trust_region` radius in their `LinearizedModel` to limit how far
+the SLP driver steps in one iteration:
+
+```python
+class MyNonLinearUnit(BaseUnit):
+    def linearize(self, guess):
+        ...
+        return LinearizedModel(
+            ...,
+            trust_region=500.0,   # max step of 500 variable-units per SLP iteration
+        )
+```
+
+The SLP driver's scalar multiplier `Δ` is adapted via the ratio-of-actual-vs-predicted decrease ρ.
+See `THEORY_REFERENCE.md §7.4` for the full update formula.
+
+### When IPOPT is not available
+
+`SolveMode.NLP_IPOPT` uses `scipy.optimize.minimize(method='L-BFGS-B')` with analytical gradients
+from `unit.linearize()`. It does **not** require IPOPT or `idaes-pse` — the name is legacy.
+The actual solver is always scipy L-BFGS-B, which ships with the base `scipy` dependency.

@@ -1,101 +1,210 @@
 # PSE Ecosystem — User Manual
 
-**Version:** 1.3.0-Phase5 | **Date:** 2026-05-15
+**Version:** 1.3.0-Phase6 | **Date:** 2026-05-15 | **Status:** Industrial Ready
 
-This single document replaces `SHOWCASE_WALKTHROUGH.md` and `TUTORIAL_WALKTHROUGH.md`.
+> Single source of truth for PSE Ecosystem users. Replaces `UI_GUIDE.md` (merged here in Phase 6)
+> and `SHOWCASE_WALKTHROUGH.md` (merged in Phase 5). For architecture details see `ARCHITECTURE.md`;
+> for equation derivations see `THEORY_REFERENCE.md`; for code extensions see `DEVELOPER_GUIDE.md`.
 
 ---
 
-# Part 1 — Basics
+# Part 1 — Interface Basics
 
-## 1.1 Quick Start
+## 1.1 Install & Launch
 
 ```powershell
-# Activate the project venv (outside OneDrive)
-& C:\Users\gh00616\.venvs\pse_ecosystem\Scripts\Activate.ps1
+# One-time: create venv outside OneDrive to avoid sync churn
+python -m venv $HOME\.venvs\pse_ecosystem
 
-# Install in editable mode with all extras
-pip install -e ".[solvers,weather,gui,blackbox]"
+# Activate (every new shell)
+& $HOME\.venvs\pse_ecosystem\Scripts\Activate.ps1
 
-# Launch the Streamlit UI
-cd "C:\Users\gh00616\OneDrive - University of Surrey\Desktop\PhD Folder\IMP\PSE_ECOSYSTEM"
+# Install with all extras
+pip install -e ".[dev,solvers,gui,weather]"
+
+# Verify — all 146 tests must pass
+pytest tests\ -q
+
+# Launch
 streamlit run pse_ecosystem/ui/app_streamlit.py
 ```
 
-Open `http://localhost:8501`. The 4-page app:
-
-| Page | What it does |
-|---|---|
-| **Dashboard** | System status, LP solver check, template gallery |
-| **Flowsheet Builder** | Select template, view topology, configure parameters, 1D sensitivity sweep, custom assembler |
-| **GPS Weather** | Site-specific solar GHI + wind profiles via pvlib |
-| **Solver Monitor** | SLP / NLP / Trust-Region / Adaptive → live convergence → KPI cards |
-
-### Verify Installation
+Opens at **http://localhost:8501**. Requires at least one LP solver; install HiGHS if not present:
 
 ```powershell
-pytest tests/ -v   # 146 checks — all must pass
+pip install highspy
 ```
+
+macOS/Linux: replace `Activate.ps1` → `source ~/.venvs/pse_ecosystem/bin/activate`.
 
 ---
 
-## 1.2 Architecture Reference
+## 1.2 Five-Minute Tour
 
-```
-Layer 1 (UI)      ui/                 — Streamlit app, flowsheet_service.py
-Layer 2 (Solver)  solvers/            — SLPDriver, NLPDriver, TrustRegionDriver
-Layer 3 (Models)  models/, flowsheets/ — unit physics, port connectivity
-core/contracts.py                     — shared dataclasses (all layers import here)
-```
-
-**Layer-boundary rules:**
-- Layer 2 **never** imports concrete unit modules from Layer 3.
-- `ui/flowsheet_service.py` is the **sole** Layer-1 bridge to Layer-3 factories.
-- The test `test_solvers_do_not_import_concrete_unit_modules` enforces this automatically.
-
-**Cross-layer protocol** (Handshake):
-- L2 → L3: `PrimalGuess` (linearization request)
-- L3 → L2: `LinearizedModel` + `UnitResponse`
-- L1 → L3: `flowsheet_service.load_template()` only
+| Step | Page | Action |
+|---|---|---|
+| 1 | **Dashboard** | Check LP Solver = "Available". Browse the 14-template gallery. |
+| 2 | **Flowsheet Builder** | Pick sector → template → configure parameters → **Apply & Select**. Optionally run 1D Sensitivity Sweep directly here. |
+| 3 | **GPS Weather** | Enter lat/lon → **Fetch Profiles** → view solar GHI and wind charts. |
+| 4 | **Solver Monitor** | Choose solver mode (SLP / NLP / Trust-Region / Adaptive) → **Run Solve** → watch live convergence + KPI cards. |
 
 ---
 
-## 1.3 Pre-Built Templates (14 total in v1.3.0)
+## 1.3 Dashboard
 
-```python
-from pse_ecosystem.ui.flowsheet_service import load_template
-from pse_ecosystem.solvers.orchestrator import Orchestrator
-from pse_ecosystem.core.contracts import SolveMode
-
-fs = load_template("dac.power_to_methane", {"F_air_mol_s": 10000.0, "T_rx_K": 673.0})
-result = Orchestrator(fs, SolveMode.FIXED_LP).solve()
-print(result.status, result.kpis)
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  ⚗ PSE Ecosystem                                 v1.3.0             │
+│  Private — University of Surrey                                      │
+├──────────────┬──────────────┬──────────────┬───────────────────────┤
+│  Templates   │  Unit Models │  LP Solver   │  Last Solve           │
+│     14       │  16+ HF units│  Available   │  CONVERGED            │
+├──────────────┴──────────────┴──────────────┴───────────────────────┤
+│  ▼ Architecture Overview                                             │
+│    Layer 1: UI (Streamlit)          ← you are here                  │
+│        │  calls flowsheet_service.py                                 │
+│    Layer 2: Solvers (Pyomo LP/MILP) ← Orchestrator, SLPDriver       │
+│        │  calls LinearizedModel interface                            │
+│    Layer 3: Knowledge (Unit Models) ← Physics, VLE, costing         │
+├─────────────────────────────────────────────────────────────────────┤
+│  Template Gallery (grouped by industrial sector)                     │
+│  ┌──────────────────────────────┬──────────────────┬──────────────┐ │
+│  │ Name                         │ Sector           │ Solver       │ │
+│  ├──────────────────────────────┼──────────────────┼──────────────┤ │
+│  │ PEM Electrolysis             │ Hydrogen Prod.   │ LP (linear)  │ │
+│  │ Grand Challenge: Biomass→H₂  │ Biomass Process. │ SLP          │ │
+│  │ DAC → Methane                │ CCU              │ SLP          │ │
+│  │ CSTR + Flash                 │ Other Industrial │ SLP          │ │
+│  │ ...                          │ ...              │ ...          │ │
+│  └──────────────────────────────┴──────────────────┴──────────────┘ │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-| Template key | Process | Key units | Solver |
-|---|---|---|---|
-| `industrial.green_hydrogen` | PEM → H₂ buffer | PEMToy, MixerHF | LP |
-| `industrial.power_to_methanol` | CO₂ + 3H₂ → MeOH | StoichiometricReactor, SeparatorHF | LP |
-| `industrial.gasification_to_power` | Syngas + compression | StoichiometricReactor, Compressor | LP |
-| **`industrial.grand_challenge_10unit`** | **10-unit Biomass → H₂** | **10 units (see §Part 3.3)** | **SLP** |
-| `biomass.gasification_to_hydrogen` | Drying → gasification → WGS → PSA | 4 units | SLP |
-| `dac.power_to_methane` | TVSA + electrolysis + Sabatier | 3 units | SLP (2 iters) |
-
-MILP technology-selection:
-
-```python
-from pse_ecosystem.ui.flowsheet_service import load_template_with_choices
-
-fs, choices = load_template_with_choices(
-    "hydrogen.electrolysis_or_gasification", {"h2_demand_kg_per_h": 100.0}
-)
-result = Orchestrator(fs, SolveMode.FLEXIBLE_MILP, technology_choices=choices).solve()
-print(result.technology_selection)   # {'pick_pem': True, 'pick_gasifier': False}
-```
+| Card | Meaning |
+|---|---|
+| Templates | 14 registered flowsheet templates across 6 industrial sectors + Custom |
+| Unit Models | 16+ HF unit classes in Layer 3 |
+| LP Solver | "Available" if HiGHS/GLPK detected; shows install hint otherwise |
+| Last Solve | Status of the most recent solver run |
 
 ---
 
-## 1.4 Solver Guide
+## 1.4 Flowsheet Builder
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  🔧 Flowsheet Builder                                                │
+├──────────────────────┬──────────────────────────────────────────────┤
+│  Sector              │  Flowsheet Topology                          │
+│  [Petrochemicals  ▼] │                                              │
+│                      │   Feed([CO2+H2]) --> Rxr[Stoich. Reactor]    │
+│  Template            │   Rxr --> Sep[Separator]                     │
+│  [Power-to-Methanol▼]│   Sep --> Vap([Gas phase])                   │
+│                      │   Sep --> Liq([Liquid MeOH])                 │
+│  CO2+3H2→methanol    │                                              │
+│  +H2O. Linear.       │  Parameters                                  │
+│                      │  ┌──────────────────────────────────────┐   │
+│                      │  │ ▼ Flowsheet                          │   │
+│                      │  │   Extent Max   [  3.0            ]   │   │
+│                      │  │         [ Apply & Select ]           │   │
+│                      │  └──────────────────────────────────────┘   │
+│                      │  ✓ Template selected. Go to Solver Monitor.  │
+└──────────────────────┴──────────────────────────────────────────────┘
+```
+
+1. **Filter by Sector** — All / Hydrogen Production / Biomass Processing / Power Generation / Petrochemicals / Carbon Capture & Utilization / Other Industrial Processes / Custom.
+2. **Select Template** — description appears below the list.
+3. **View Topology** — Mermaid diagram. Toggle "Use simple Graphviz diagram" for offline environments.
+4. **Configure Parameters** — grouped by unit in collapsible expanders.
+5. **Apply & Select** → navigate to **Solver Monitor** to run, or use the Sensitivity Sweep (§1.4a below).
+
+### §1.4a 1D Sensitivity Sweep
+
+Expand **"1D Parameter Sensitivity Sweep"** at the bottom of the Flowsheet Builder page.
+
+| Control | Description |
+|---|---|
+| Sweep parameter | Numeric template parameter to vary (auto-populated) |
+| Min / Max value | Range of the sweep |
+| Points | Number of solve calls (3–30) |
+| **Run Sweep** | Runs N × `SolveMode.FIXED_LP` solves; plots all KPIs vs the swept parameter |
+
+Results appear as a live Plotly multi-trace chart and a data table. Useful for CO₂ capture efficiency sensitivity, reactor temperature sweeps, LCOH vs electricity price, etc.
+
+### §1.4b Custom Flowsheet Assembler
+
+Select sector **Custom** → **Custom Flowsheet** to access the Aspen-style unit assembler:
+1. Set **Shared Component Set** (e.g. `H2,CO,CO2,H2O,CH4,N2`).
+2. Set **Number of units** (1–10).
+3. For each unit: pick a **type** from the dropdown (16 types across 7 categories).
+4. Set unit IDs and parameters.
+5. In the **Connections** panel, wire outlet → inlet pairs.
+6. Click **Build & Select** — success banner shows "N units, M connections".
+7. Navigate to **Solver Monitor → Run Solve**.
+
+See **Part 2** for the complete 7-unit step-by-step workshop.
+
+---
+
+## 1.5 GPS Weather
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  🌍 GPS Weather                                                      │
+├─────────────────────┬──────────────────────┬────────────────────────┤
+│  Latitude (°N)      │  Longitude (°E)      │  Altitude (m)          │
+│  [ 51.2400        ] │  [ -0.5900         ] │  [ 68.0             ]  │
+├─────────────────────┴──────────────────────┴────────────────────────┤
+│  Timezone [ Europe/London ]    Year  [ 2023 ]                        │
+│                        [ Fetch Profiles ]                            │
+├──────────────────────────────────────────────────────────────────────┤
+│  Peak GHI (W/m²)  │  Mean Wind (m/s)  │  Solar Hours / Year         │
+│      833          │      7.11         │       4 380                 │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+Default site: University of Surrey, Guildford (51.24°N, −0.59°E, 68 m).
+Profiles stored in session state; persist across pages within the same browser tab.
+
+---
+
+## 1.6 Solver Monitor
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  📊 Solver Monitor                                                   │
+├─────────────────────────────────────────────────────────────────────┤
+│  ▼ Solver Settings                                                   │
+│    Max iterations  [═══════════════════════·····] 50                │
+│    Step tolerance  [ 1.00e-04 ]                                      │
+│    Solver Mode                                                       │
+│    ● SLP (fast, LP-based)                                            │
+│    ○ NLP (scipy L-BFGS-B, full residual)                             │
+│    ○ Trust-Region Filter (robust, filter globalisation)              │
+│    ○ Adaptive (SLP → NLP → Trust-Region cascade)                     │
+│    ☐ Verbose solver output                                           │
+│                          [ Run Solve ]                               │
+├─────────────────────────────────────────────────────────────────────┤
+│  [██████████████████░░░░░] Iteration 2/3 | Obj: 9.618e+05 | ‖f‖: 0.031
+│                                                                      │
+│  Convergence Chart (dual-axis: Objective + Residual norm)           │
+│  KPI Cards  |  KPI Bar Chart  |  Solution Variables Table           │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+| Section | Content |
+|---|---|
+| Progress bar | Iteration count, current objective, residual norm ‖f‖ |
+| Convergence plot | Dual-axis Objective (left) + Residual norm (right) vs. SLP iteration |
+| KPI cards | CI highlighted with EU green H₂ threshold (1.0 kg CO₂/kg H₂) |
+| KPI bar chart | All KPIs in one Plotly bar chart |
+| Solution Variables | Full `result.x` dict as scrollable table |
+
+**Linear templates** (PEM Electrolysis, P2M): single LP shot — progress bar jumps to 100% immediately.
+
+---
+
+## 1.7 Solver Guide
 
 | Mode | When to use | Speed | Robustness |
 |---|---|---|---|
@@ -113,14 +222,50 @@ cfg = SLPConfig(max_iter=50, eps_f=1e-3, use_trust_region=False)
 result = Orchestrator(fs, SolveMode.ADAPTIVE, slp_config=cfg).solve()
 ```
 
-**Infeasibility recovery (SLP):**
-1. Trust region shrinks: `Δ ← 0.5 × Δ`
-2. If `Δ ≤ Δ_min`, warm-start restart (perturb `x_k` ±5%)
-3. After 3 restarts → `INFEASIBLE` → use **Adaptive** mode
+**SLP vs NLP — when to toggle:**
+- Use **SLP** first; it is fast and works for ≥90% of templates.
+- Switch to **NLP** when SLP returns `MAX_ITER` with residual norm > 1e-2 (the non-linearity is sharp at the current point, and the FD-based L-BFGS-B step will navigate around it).
+- Switch to **Trust-Region** when both SLP and NLP return `MAX_ITER` (the problem is highly non-convex or the Jacobian is ill-conditioned near the optimum). The filter/funnel globalisation avoids the Maratos effect.
+- **Adaptive** automatically escalates SLP → NLP → Trust-Region on failure; use it when you are unsure.
 
 ---
 
-## 1.5 Unit Catalog
+## 1.8 Architecture Reference
+
+```
+Layer 1 (UI)      ui/                 — Streamlit app, flowsheet_service.py
+Layer 2 (Solver)  solvers/            — SLPDriver, NLPDriver, TrustRegionDriver
+Layer 3 (Models)  models/, flowsheets/ — unit physics, port connectivity
+core/contracts.py                     — shared dataclasses (all layers import here)
+```
+
+**Layer-boundary rules (enforced by tests):**
+- Layer 2 **never** imports concrete unit modules from Layer 3.
+- `ui/flowsheet_service.py` is the **sole** Layer-1 bridge to Layer-3 factories.
+- `test_solvers_do_not_import_concrete_unit_modules` enforces this automatically.
+
+---
+
+## 1.9 Unit Catalog
+
+### Biomass / Gas Cooling
+
+| Unit | is_linear | Physics |
+|---|---|---|
+| `BiomassStorageHF` | Yes | Drying mass balance (analytical J) |
+| `BiomassGasifierHF` | No | WGS + methanation equilibrium (van't Hoff) |
+| `WGSReactorHF` | No | CO-shift equilibrium Kp(T) |
+| `H2SeparatorPSA` | Yes | Recovery fraction (analytical J) |
+| `CoolerHF` | **Yes** | Single-stream gas cooler — fixed T_out (v1.3.0) |
+
+### DAC / Power
+
+| Unit | is_linear | Physics |
+|---|---|---|
+| `TVSAContactor` | Yes | TVSA DAC contactor (analytical J) |
+| `ElectrolyserHF` | Yes | PEM/AEL electrolyser (analytical J) |
+| `MethanationReactor` | No | Sabatier equilibrium, analytical J |
+| `CHPUnit` | Yes | Combined Heat & Power (analytical J) |
 
 ### Reactors
 
@@ -146,465 +291,78 @@ result = Orchestrator(fs, SolveMode.ADAPTIVE, slp_config=cfg).solve()
 |---|---|---|
 | `MixerHF` | No | Material + ideal-gas energy balance |
 | `HeatExchangerNTU` | No | Counter-flow NTU-effectiveness |
-| `CoolerHF` | **Yes** | Single-stream gas cooler — fixed T_out, flow-through (v1.3.0) |
+| `CoolerHF` | **Yes** | Single-stream gas cooler — fixed T_out |
 | `Compressor` | No | Isentropic + efficiency |
 | `Valve` | No | Isoenthalpic throttle |
 | `Pump` | No | Incompressible isentropic |
 
-### Biomass / DAC
-
-| Unit | is_linear | Physics |
-|---|---|---|
-| `BiomassStorageHF` | Yes | Drying mass balance (analytical J) |
-| `BiomassGasifierHF` | No | WGS + methanation equilibrium (van't Hoff) |
-| `WGSReactorHF` | No | CO-shift equilibrium Kp(T) |
-| `H2SeparatorPSA` | Yes | Recovery fraction (analytical J) |
-| `TVSAContactor` | Yes | Linear DAC contactor (analytical J) |
-| `ElectrolyserHF` | Yes | PEM/AEL linear efficiency (analytical J) |
-| `MethanationReactor` | No | Sabatier equilibrium (analytical J) |
-
 ---
 
----
+## 1.10 Troubleshooting
 
-# Part 2 — Intermediate
-
-## 2.1 Case A: 3-Unit Chain — Heater → Reactor → Separator
-
-Chain: **feed pre-conditioner** (StoichiometricReactor, ξ=0) → **P2M synthesis reactor**
-(CO₂ + 3H₂ → MeOH + H₂O) → **separator** (SeparatorHF).
-
-Verified end-to-end by `tests/presentation_validation.py`.
-
-```python
-from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
-from pse_ecosystem.models.reactors.stoichiometric_reactor import (
-    StoichiometricReactor, StoichiometricParams,
-)
-from pse_ecosystem.models.separators.separator_hf import SeparatorHF, SeparatorHFParams
-from pse_ecosystem.solvers.orchestrator import Orchestrator
-from pse_ecosystem.core.contracts import SolveMode
-
-components = ["CO2", "H2", "methanol", "water"]
-p2m_stoich = {"CO2": [-1.0], "H2": [-3.0], "methanol": [1.0], "water": [1.0]}
-
-heater  = StoichiometricReactor("heater",  components,
-            StoichiometricParams(stoichiometry=p2m_stoich, feed_max=200.0))
-reactor = StoichiometricReactor("reactor", components,
-            StoichiometricParams(stoichiometry=p2m_stoich, feed_max=200.0, xi_max=[50.0]))
-sep = SeparatorHF("sep", components, SeparatorHFParams(
-    n_outlets=2,
-    split_fractions=[[0.05, 0.95], [0.02, 0.98], [0.95, 0.05], [0.98, 0.02]],
-))
-
-fs = BaseFlowsheet(name="tutorial_A", units=[heater, reactor, sep])
-fs.connect(heater.outlet_port,  reactor.inlet_port)
-fs.connect(reactor.outlet_port, sep.inlet_port)
-
-fs.extra_bounds.update({
-    "heater.inlet.F_CO2": (10.0, 10.0), "heater.inlet.F_H2": (30.0, 30.0),
-    "heater.inlet.F_methanol": (0.0, 0.0), "heater.inlet.F_water": (0.0, 0.0),
-    "heater.inlet.T": (500.0, 500.0), "heater.inlet.P": (3_000_000.0, 3_000_000.0),
-    "heater.xi_0": (0.0, 0.0),
-})
-
-from pse_ecosystem.solvers.slp import SLPConfig
-result = Orchestrator(fs, SolveMode.FIXED_LP, slp_config=SLPConfig(max_iter=5)).solve()
-print(result.status, result.iterations)   # CONVERGED, 1 (linear — single LP)
-```
-
-### Symbolic Analytical Proof
-
-**P2M stoichiometry** (CO₂ + 3H₂ → CH₃OH + H₂O, extent ξ mol/s):
-
-| Species | Balance | Feed (mol/s) | Product (mol/s) |
-|---------|---------|-------------|-----------------|
-| CO₂     | F_CO₂_out = F_CO₂_in − ξ | 10 | 10 − ξ |
-| H₂      | F_H₂_out  = F_H₂_in  − 3ξ | 30 | 30 − 3ξ |
-| MeOH    | F_MeOH_out = 0 + ξ | 0 | ξ |
-| H₂O     | F_H₂O_out  = 0 + ξ | 0 | ξ |
-
-Because every residual is linear, the SLP short-circuits to a **single LP solve**. Residual `‖f‖∞ = 0` exactly.
-
-**Verification:** `pytest tests/presentation_validation.py::test_3unit_chain_p2m_stoichiometry -v`
-
----
-
-## 2.2 Case B: DACU Sensitivity — CO₂ Capture Efficiency vs Energy
-
-1. Flowsheet Builder → **"Direct Air Capture → Methane (DAC-U)"** → Apply & Select.
-2. Expand **1D Parameter Sensitivity Sweep**: parameter `eta_cap`, Min=0.6, Max=0.99, Points=10.
-3. Click **Run Sweep**.
-
-| η_cap | CO₂ captured (mol/s) | W_fan (kW) | Q_regen (kW) | Spec. energy (kWh/tCO₂) |
-|-------|---------------------|----------:|-------------:|------------------------:|
-| 0.60  | 2.49                | 63.1      | 174.3        | 455                     |
-| 0.85  | 3.53                | 63.1      | 247.1        | 420                     |
-| 0.99  | 4.11                | 63.1      | 287.7        | 411                     |
-
-W_fan is constant (fixed air flow); specific energy improves at higher η_cap because CO₂ output grows faster than the thermal penalty.
-
----
-
-## 2.3 Custom Flowsheet Builder (v1.3.0)
-
-The custom assembler in the Flowsheet Builder page supports up to **10 units** (raised from 8 in v1.2.1).
-
-Port resolution in v1.3.0 uses a candidate-list lookup so any unit can be wired to any other regardless of port naming convention:
-
-| Unit type | Primary outlet | Primary inlet |
-|---|---|---|
-| StoichiometricReactor, Compressor | `outlet_port` | `inlet_port` |
-| MixerHF | `outlet_port` | `inlet_ports[0]` |
-| SeparatorHF | `outlet_ports[0]` | `inlet_port` |
-| HeatExchangerNTU | `hot_outlet_port` | `hot_inlet_port` |
-| BiomassGasifierHF | `syngas_out_port` | `biomass_in_port` |
-| WGSReactorHF | `shifted_out_port` | `syngas_in_port` |
-| H2SeparatorPSA | `h2_out_port` | `feed_in_port` |
-
-The "Add a built-in template as a super-unit" checkbox wraps any registered template as a `CompositeUnit` — wire it into your custom chain using its unit ID.
-
----
-
-## 2.4 Programmatic `fs.connect()`
-
-```python
-from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
-from pse_ecosystem.models.reactors.cstr_hf import CSTRHF, CSTRHFParams, ReactionConfig
-from pse_ecosystem.models.separators.flash_vl_hf import FlashVLHF, FlashVLHFParams
-
-rxn = ReactionConfig(
-    stoichiometry={"CO": -1, "H2O": -1, "CO2": 1, "H2": 1},
-    k0=1e4, Ea_J_per_mol=50_000,
-    reaction_orders={"CO": 1.0, "H2O": 1.0},
-    delta_H_J_per_mol=-41_000,
-)
-cstr  = CSTRHF("cstr",  ["CO","H2O","CO2","H2"], CSTRHFParams(reactions=[rxn], volume_m3=2.0))
-flash = FlashVLHF("flash", ["CO2","H2"], FlashVLHFParams(species_vle=["CO2","H2"]))
-
-fs = BaseFlowsheet(name="wgs_process", units=[cstr, flash])
-fs.connect(cstr.outlet_port, flash.inlet_port)
-
-from pse_ecosystem.solvers.slp import SLPConfig, SLPDriver
-result = SLPDriver(fs, SLPConfig(max_iter=40)).run()
-```
-
-**Note:** `fs.connect()` enforces exact variable-count match between ports. When connecting units with mismatched T/P flags (e.g. WGSReactorHF → SeparatorHF), directly append `Connection` objects for the shared flow variables only:
-
-```python
-from pse_ecosystem.flowsheets.base_flowsheet import Connection
-
-for c in ["H2", "CO", "CO2", "H2O", "CH4", "N2"]:
-    fs.connections.append(Connection(
-        var_a=f"wgs.shifted_out.F_{c}",
-        var_b=f"separator.inlet.F_{c}",
-    ))
-```
-
----
-
-## 2.5 Properties Module
-
-```python
-from pse_ecosystem.models.properties.ideal_gas import cp_J_mol_K, enthalpy_J_mol
-from pse_ecosystem.models.properties.vle import K_value, rachford_rice
-
-cp = cp_J_mol_K("CO2", 1000.0)       # 54.3 J/mol/K (NIST Shomate)
-K  = K_value("benzene", 353.15, 101325.0)   # ~1.0 at normal boiling point
-```
-
-Available SHOMATE species: H2, O2, N2, CO, CO2, CH4, H2O. Coefficients from NIST WebBook, validated <1%.
-
----
-
-## 2.6 Recycle Loops
-
-```python
-from pse_ecosystem.solvers.slp import SLPConfig, TearStreamConfig
-
-cfg = SLPConfig(
-    max_iter=50,
-    tear_streams=[TearStreamConfig(var_name="recycle.F_A", connected_to="feed.F_A",
-                                   q_min=-5.0, q_max=0.0)],
-)
-```
-
-`q=0` → direct substitution (safe, slow); `q ∈ [-5, 0]` → Wegstein acceleration.
-
----
-
-## 2.7 Costing
-
-```python
-from pse_ecosystem.models.costing.sslw_costing import (
-    cstr_purchase_cost_USD, annualized_capex
-)
-
-cost = cstr_purchase_cost_USD(5.0, material="CS")   # 5 m³ CSTR, CE500 basis
-ann  = annualized_capex(cost, lang_factor=5.0, crf=0.10, cepci_now=800.0)
-```
-
-CAPEX reported as a KPI (`result.kpis["cstr:capex_USD"]`); OPEX enters the LP objective via `objective_contribution()`.
-
----
-
----
-
-# Part 3 — Advanced Showcase
-
-## 3.1 Investor Walkthrough Script
-
-**Audience:** Funders / Industrial Partners  
-**Total time:** 20 minutes (optional Stage 4 adds 3 minutes)
-
-### Pre-Meeting Setup (2 minutes)
-
-```powershell
-& C:\Users\gh00616\.venvs\pse_ecosystem\Scripts\Activate.ps1
-cd "C:\Users\gh00616\OneDrive - University of Surrey\Desktop\PhD Folder\IMP\PSE_ECOSYSTEM"
-streamlit run pse_ecosystem/ui/app_streamlit.py
-```
-
-Confirm the Dashboard shows green solver metrics.
-
----
-
-### Stage 1 — "The Engine Works" (5 minutes)
-
-1. Flowsheet Builder → Category: **Small** → **"CSTR + Flash (NL)"** → Apply & Select.
-2. Solver Monitor → Solver mode: **SLP** → Run Solve.
-3. Point at the **Residual Norm** convergence chart.
-
-> *"The linearisation uses an analytically-derived Jacobian — not finite differences — so there is no truncation error. You are seeing exact gradient information from the physics equations."*
-
-> *"The flash unit solves the Rachford-Rice equation:*
-> $$\sum_i \frac{z_i (K_i - 1)}{1 + \psi(K_i - 1)} = 0, \qquad K_i = \frac{P_{sat,i}(T)}{P}$$
-> *This is an industry-standard formulation — the same physics used in Aspen."*
-
-**Success:** convergence in ≤ 10 iterations; V_frac KPI shown.
-
----
-
-### Stage 2 — "Real-World Scale" (7 minutes)
-
-1. Flowsheet Builder → Category: **Hydrogen** → **"Biomass → H₂ (Gasification)"**.
-2. Adjust `T_gasifier_C` (default 800 °C) and `feed_wet_kg_s` (default 1.0 kg/s) → Apply & Select.
-3. Solver Monitor → Run Solve.
-
-> *"The gasifier solves two coupled equilibrium equations simultaneously:*
-> $$K_{WGS}(T) = \frac{n_{CO_2} \cdot n_{H_2}}{n_{CO} \cdot n_{H_2O}}, \qquad \ln K_{met}(T) = \frac{25000}{T} - 26.2$$
-> *These are exact thermochemical expressions — not regression fits."*
-
-**Success:** convergence ≤ 20 iterations; H₂ production (kg/h), CGE (%), H₂ purity (%) displayed.
-
----
-
-### Stage 3 — "The Decision Tool" (5 minutes)
-
-1. Flowsheet Builder → Category: **Hydrogen** → **"PEM Electrolysis"** → Apply & Select.
-2. Expand **"1D Parameter Sensitivity Sweep"** → parameter: `pem.electricity_price_per_kWh`, Min=0.02, Max=0.15, Points=12 → Run Sweep.
-
-> *"This is the investor's decision curve. LCOH crosses grid parity at a specific electricity price — this chart generates in under 2 seconds."*
-
-**Success:** Plotly chart with 12-point sweep; LCOH in ~2–8 £/kg range.
-
----
-
-### Stage 4 — "The Architecture" (optional, 3 minutes)
-
-> *"Three strict layers: UI / Solver / Physics. They communicate only via the Handshake Protocol — a typed contract. Replace the solver without touching the physics; replace the UI without touching the solver."*
-
----
-
-## 3.2 Q&A Preparation
-
-### "Can it handle recycle loops?"
-> "Yes — Wegstein tear-stream acceleration. Documented in §2.6."
-
-### "How does this compare to Aspen Plus?"
-> "Aspen is proprietary, £30,000+/seat. PSE Ecosystem exposes the full algebraic residual and Jacobian — every equation is inspectable. It runs on a £500 laptop. Analytical Jacobians converge faster on well-initialised problems."
-
-### "What's the IP moat?"
-> Three things: **(1)** the three-layer handshake architecture; **(2)** the analytical Jacobian protocol — every unit ships exact ∂f/∂x; **(3)** B-HYPSYS corrections — 16 physics defects in the published benchmark corrected in v1.1.0."
-
-### "What sectors beyond hydrogen?"
-> "Sector-agnostic. Current library: H₂ production, DAC, CHP, VLE separation. Any process expressible as algebraic equations — CO₂ utilisation, e-fuels, ammonia — is a direct extension."
-
-### "What's your go-to-market?"
-> "SaaS licensing to engineering consultancies and national labs who need explainable, auditable process simulation without the Aspen licence cost."
-
----
-
-## 3.3 Grand Challenge: 10-Unit Biomass → H₂ Validation
-
-**Template key:** `industrial.grand_challenge_10unit`
-
-### Chain Architecture
-
-```
-Unit 1:  BiomassStorageHF   (storage)      — drying, wet → dry biomass
-Unit 2:  BiomassGasifierHF  (gasifier)     — thermochemical equilibrium, 800 °C
-Unit 3:  SeparatorHF        (cyclone)      — 99% char/ash removal
-Unit 4:  WGSReactorHF       (hts)          — High-Temperature Shift, 400 °C
-Unit 5:  WGSReactorHF       (lts)          — Low-Temperature Shift, 220 °C
-Unit 6:  SeparatorHF        (moisture_sep) — 70% H₂O to condensate
-Unit 7:  SeparatorHF        (co2_scrubber) — 97% CO₂ absorption
-Unit 8:  H2SeparatorPSA     (psa)          — 94% H₂ recovery
-Unit 9:  Compressor         (h2_comp)      — 50 bar compression
-Unit 10: SeparatorHF        (h2_polisher)  — 99.5% final purity
-```
-
-### Analytical Basis (1 kg/s Wet Pine Wood, S/B = 1.0)
-
-| Parameter | Value |
+| Symptom | Fix |
 |---|---|
-| Biomass moisture content | 17% (MC = 0.17) |
-| Dry feed rate | 0.83 kg/s |
-| Steam feed | 46.1 mol/s (S/B = 1.0) |
-| Elemental C feed | ~32.5 mol/s |
-| Elemental H feed (total, incl. steam) | ~144 mol/s |
-
-**Gasifier equilibrium** (T = 800 °C, steam agent):
-
-$$K_{WGS}(T) = \exp\!\left(\frac{4300}{T} - 3.84\right) \approx 1.8 \text{ at } 800°C$$
-
-$$K_{met}(T) = \exp\!\left(\frac{25000}{T} - 26.2\right) \approx 150 \text{ at } 800°C$$
-
-Carbon balance: n_CO + n_CO₂ + n_CH₄ = n_C_feed (closed to < 0.1%)
-
-**Dual-stage WGS** (HTS 400 °C → LTS 220 °C):
-
-$$K_{WGS}(400°C) = \exp\!\left(\frac{4300}{673} - 3.84\right) \approx 8.9 \quad X_{CO,HTS} \approx 75\%$$
-$$K_{WGS}(220°C) = \exp\!\left(\frac{4300}{493} - 3.84\right) \approx 86 \quad X_{CO,LTS} \approx 90\%\text{ of remainder}$$
-
-**PSA** (linear model, H₂_recovery = 0.94): n_H₂_product = 0.94 × n_H₂_feed
-
-### Analytical vs UI Verification Table
-
-| KPI | Analytical Target | Solver Direction | Tolerance |
-|---|---|---|---|
-| Gasifier C balance closure | 100.0% | Must close | < 0.1% |
-| HTS CO conversion | ~75% | Within bounds | ±10% |
-| LTS CO conversion | ~90% of HTS residual | Within bounds | ±10% |
-| PSA H₂ recovery | 94.0% | Exact (linear) | < 0.01% |
-| H₂ polisher recovery | 99.5% | Exact (linear) | < 0.01% |
-| H₂ product flow | > 0 mol/s | Positive | — |
-
-*Note: SLP convergence on the full 10-unit nonlinear chain uses `use_trust_region=False` and 60 max iterations. The linear units (polisher, PSA, cyclone, moisture_sep, co2_scrubber) satisfy their split fractions exactly at each LP step. Full physical mass-balance convergence requires the Adaptive solver cascade.*
-
-### Running the Grand Challenge
-
-```python
-from pse_ecosystem.ui.flowsheet_service import load_template
-from pse_ecosystem.solvers.slp import SLPDriver, SLPConfig
-
-fs = load_template("industrial.grand_challenge_10unit", {
-    "biomass_feed_kg_s": 1.0,
-    "T_gasifier_C": 800.0,
-    "T_hts_C": 400.0,
-    "T_lts_C": 220.0,
-    "H2_recovery": 0.94,
-    "P_out_Pa": 5_000_000.0,
-})
-result = SLPDriver(fs, SLPConfig(max_iter=60, use_trust_region=False)).run()
-print(result.kpis["psa.H2_production_kg_h"])
-```
-
-**Test suite:** `pytest tests/test_grand_challenge.py -v` (9 pass, 1 conditional skip)
+| "No LP solver available" | `pip install highspy` or install GLPK |
+| "pvlib not installed" | `pip install 'pse_ecosystem[weather]'` |
+| "streamlit is required" | `pip install 'pse_ecosystem[gui]'` |
+| Template shows INFEASIBLE | Increase Max iterations; try Adaptive solver mode |
+| Mermaid diagram blank | Toggle "Use simple Graphviz diagram" (CDN may be blocked) |
+| Pyomo W1002 warning | Harmless numerical precision note; result is correct |
+| Custom flowsheet: "0 connections" | Check Shared Component Set matches all units; verify From/To dropdowns |
+| Live chart doesn't update | Only non-linear templates trigger per-iteration callbacks; linear templates solve in one shot |
 
 ---
 
-## 3.4 Known Limitations
-
-| Limitation | Status | Roadmap |
-|---|---|---|
-| VLE limited to Raoult's Law (Antoine) | Current | Cubic EOS (PR/SRK) v1.4 |
-| No recycle loop in gallery | Implemented in solver, no demo | Add CSTR-recycle template v1.4 |
-| FlashVLHF: Antoine extrapolates above Tc for syngas species | Known — use SeparatorHF instead | Extended EOS |
-| IPOPT requires `idaes-pse` install (optional) | Not required for SLP | Documented |
-| Biomass template validated T ≥ 650 °C only | Physics-valid constraint | Add T warning in UI |
-| 10-unit chain: full convergence needs Adaptive solver | SLP gives LP-feasible iterate | Adaptive integration |
-
 ---
 
-## 3.5 Key Equations Reference
+# Part 2 — Manual Assembly Workshop (7-Unit Build)
 
-### Rachford-Rice (Flash VLE)
+> **Gold Standard for solver independence:** No hard-coded template. No pre-wired connections.
+> You select each unit, set each parameter, and draw each connection by hand — proving the
+> Aspen-style Custom Flowsheet builder works for real industrial chains.
 
-$$f(\psi) = \sum_{i=1}^{N_c} \frac{z_i (K_i - 1)}{1 + \psi(K_i - 1)} = 0, \qquad K_i = \frac{P_{sat,i}(T)}{P}$$
+## 2.1 Philosophy
 
-Solved by Illinois bracket method; ψ ∈ (0, 1) guaranteed.
+Like Aspen Plus, PSE Ecosystem lets you pick unit operations from a dropdown, configure their
+parameters, and draw connections between ports. The solver then finds the steady-state operating
+point satisfying all mass-balance residuals simultaneously. This section is a guided exercise
+you can complete in under 15 minutes.
 
-### Water-Gas Shift Equilibrium
-
-$$K_{WGS}(T) = \exp\!\left(\frac{4300}{T} - 3.84\right) \qquad \text{(van't Hoff fit, valid 600–1200 K)}$$
-
-### SLP Linearisation
-
-At iteration k, non-linear residual f(x) → linear approximation:
-
-$$f(x^k) + J(x^k)(x - x^k) = 0, \qquad J_{ij} = \frac{\partial f_i}{\partial x_j}\bigg|_{x^k}$$
-
-J is computed **analytically** (not finite differences). The LP:
-
-$$\min_{x} \; c^T x \quad \text{s.t.} \quad Ax = b,\; x_{\ell} \le x \le x_u$$
-
-### Methanation Equilibrium (Sabatier)
-
-$$K_{Sab}(T) = \frac{K_{met}(T)}{(P/P°)^{-2}}, \quad X_{CO_2} = \frac{K_{Sab}}{1 + K_{Sab}}$$
-
----
-
-## 3.6 Manual Build Workshop — 7-Unit Biomass → H₂ Chain
-
-> **Goal:** Prove that the Aspen-style Custom Flowsheet builder works for real process chains —
-> no pre-built template, no hard-coded connections. You assemble, configure, and link everything
-> by hand through the UI.
-
-### Philosophy
-
-Like Aspen Plus, the PSE Ecosystem lets you drag-and-drop (here: select from dropdowns) unit
-operations, set their parameters, and draw connections. The solver then finds the operating point
-that satisfies all mass balance residuals simultaneously. This section is a guided exercise you
-can complete in under 15 minutes.
-
-### The Chain
+**The chain:**
 
 ```
-Biomass Feed → [1] BiomassStorageHF → [2] BiomassGasifierHF → [3] SeparatorHF (Cyclone)
-            → [4] WGSReactorHF → [5] CoolerHF → [6] SeparatorHF (PSA) → [7] Compressor
+[1] BiomassStorageHF → [2] BiomassGasifierHF → [3] SeparatorHF (Cyclone)
+→ [4] WGSReactorHF → [5] CoolerHF → [6] SeparatorHF (PSA) → [7] Compressor
 ```
 
 ---
 
-### Step 1 — Open the Custom Flowsheet Builder
+## 2.2 Step 1 — Open the Custom Flowsheet Builder
 
-1. Flowsheet Builder page → scroll to **"Custom Flowsheet"** section.
-2. **Shared Component Set**: type `H2,CO,CO2,H2O,CH4,N2` (the 6-species syngas set).
+1. Flowsheet Builder page → sector filter: **Custom** → template: **Custom Flowsheet**.
+2. **Shared Component Set**: type `H2,CO,CO2,H2O,CH4,N2`.
 3. **Number of units**: set to **7**.
 4. Click **Add Units**.
 
 ---
 
-### Step 2 — Configure Each Unit
+## 2.3 Step 2 — Configure Each Unit
 
-| # | UI Unit Type | Unit ID | Key Parameters to Set |
+| # | UI Unit Type | Unit ID | Key Parameters |
 |---|---|---|---|
 | 1 | `BiomassStorageHF` | `storage` | biomass_type = "Pine Wood", T_preheat_C = 200 |
 | 2 | `BiomassGasifierHF` | `gasifier` | T_gasifier_C = 800, gasifying_agent = "Steam" |
-| 3 | `SeparatorHF` | `cyclone` | n_outlets = 2 (99% of each species → outlet_0) |
+| 3 | `SeparatorHF` | `cyclone` | n_outlets = 2 (99% each species → outlet_0) |
 | 4 | `WGSReactorHF` | `wgs` | T_wgs_C = 400 |
 | 5 | `CoolerHF` | `cooler` | T_out_K = 310 |
-| 6 | `SeparatorHF` | `psa` | n_outlets = 2 (85% H₂ → outlet_0, 5% other → outlet_0) |
+| 6 | `SeparatorHF` | `psa` | n_outlets = 2 (85% H₂ → outlet_0) |
 | 7 | `Compressor` | `comp` | eta_isentropic = 0.78, P_out_Pa = 5000000 |
 
-Expand each unit expander in turn and set the parameters above. Leave all other fields at their defaults.
+Expand each unit expander in turn and set the parameters above. Leave all other fields at defaults.
 
 ---
 
-### Step 3 — Wire the Connections
-
-In the Connections panel, set 6 pairs (one per consecutive unit):
+## 2.4 Step 3 — Wire the Connections
 
 | Connection # | From Unit | To Unit |
 |---|---|---|
@@ -615,57 +373,47 @@ In the Connections panel, set 6 pairs (one per consecutive unit):
 | 5 | `cooler` | `psa` |
 | 6 | `psa` | `comp` |
 
-> **Note on T/P mismatches:** Internally the service applies a *flow-only fallback* when two ports
-> have mismatched T/P flags (e.g. WGSReactorHF has no T/P on its ports; SeparatorHF does). The
-> builder automatically links the shared `.F_*` component variables and reports `(flow-only)` in
-> the connection description. This is expected behaviour — it is NOT an error.
+> **Note on T/P mismatches:** When a port with no T/P variables connects to a port with T/P
+> (e.g. WGSReactorHF → SeparatorHF), the builder applies a *flow-only fallback* and links only
+> the shared `.F_*` component variables. The connection description shows `(flow-only)`. This
+> is expected — not an error.
 
 ---
 
-### Step 4 — Build and Verify
+## 2.5 Step 4 — Build and Verify
 
-Click **Build & Select**. The success banner should read:
+Click **Build & Select**. Success banner:
 
 ```
 Custom flowsheet built: 7 units, 6 connections.
 ```
 
-If you see "0 connections" instead, check that:
-- All unit IDs are unique.
-- The Shared Component Set includes the syngas species.
-- The connection From/To dropdowns are filled in correctly.
+If you see "0 connections": check that all unit IDs are unique, the Shared Component Set includes the syngas species, and all 6 connection From/To pairs are filled.
 
 ---
 
-### Step 5 — Solve
+## 2.6 Step 5 — Solve
 
-Navigate to **Solver Monitor** → Solver mode: **SLP** → click **Run Solve**.
+Navigate to **Solver Monitor** → mode: **SLP** → click **Run Solve**.
 
-Expected convergence: 5–20 SLP iterations for the non-linear units (gasifier, WGS, compressor).
-The linear units (storage, cyclone, cooler, PSA) satisfy their balances exactly at each LP step.
+Expected: 5–20 SLP iterations. Linear units (storage, cyclone, cooler, PSA) satisfy their balances exactly at each LP step. Non-linear units (gasifier, WGS, compressor) converge iteratively.
 
 ---
 
-### Validation Answer Key
+## 2.7 Validation Answer Key
 
-Use these analytical targets to verify your UI result:
-
-| Quantity | Formula / Basis | Expected Range |
+| Quantity | Basis | Expected |
 |---|---|---|
 | Storage dry outlet (kg/s) | `F_wet × (1 − MC)` = 1.0 × (1 − 0.17) | **0.83 kg/s** |
-| Gasifier C balance closure | `n_CO + n_CO₂ + n_CH₄ = n_C_feed` | **< 0.1% error** |
-| WGS CO conversion X_CO | At 400 °C, K_WGS ≈ 8.9 → X_CO ≈ 75% | **60–85%** |
-| Cooler outlet flow | Equals inlet flow (mass conservation) | **= inlet total** |
+| Gasifier C balance closure | n_CO + n_CO₂ + n_CH₄ = n_C_feed | **< 0.1% error** |
+| WGS CO conversion X_CO | K_WGS(400 °C) ≈ 8.9 → equilibrium | **60–85%** |
+| Cooler outlet flow | F_out = F_in (mass conservation) | **= inlet total** |
 | PSA H₂ to outlet_0 | 85% split fraction | **85% of H₂ feed** |
 | Compressor P_out | Fixed parameter | **5 MPa** |
 
-> **Interpretation:** If your KPI cards show the storage dry feed near 0.83 kg/s and the
-> WGS CO conversion in 60–85%, the physics are physically consistent. The PSA and cyclone
-> split fractions are exact (linear units) and should match their split parameters precisely.
-
 ---
 
-### Programmatic Equivalent (for testing)
+## 2.8 Programmatic Equivalent
 
 ```python
 from pse_ecosystem.ui.flowsheet_service import build_custom_flowsheet
@@ -704,7 +452,421 @@ print(f"Units: {len(fs.units)}, Connections: {len(fs.connections)}")
 
 ---
 
-## 3.7 Adding a Custom Unit
+---
+
+# Part 3 — Industrial Template Library
+
+The 14 templates are organized into 6 industrial sectors. Select the sector in the Flowsheet Builder
+Category dropdown to filter.
+
+---
+
+## 3.1 Hydrogen Production (4 templates)
+
+| Template Key | Display Name | Units | Solver | Notes |
+|---|---|---|---|---|
+| `hydrogen.electrolysis_only` | PEM Electrolysis | PEMToy | LP (linear) | LCOH + Carbon Intensity KPIs |
+| `hydrogen.electrolysis_or_gasification` | PEM + Gasifier (MILP) | PEMToy, GasifierToy | MILP | Technology-selection binary |
+| `industrial.green_hydrogen` | Green Hydrogen Hub | PEMToy, MixerHF | LP | H₂ buffer with mixer |
+| `biomass.gasification_to_hydrogen` | Biomass → H₂ (Gasification) | BiomassStorageHF, BiomassGasifierHF, WGSReactorHF, H2SeparatorPSA | SLP (3–10 iters) | Full B-HYPSYS chain |
+
+**MILP technology-selection (PEM + Gasifier):**
+
+```python
+from pse_ecosystem.ui.flowsheet_service import load_template_with_choices
+from pse_ecosystem.solvers.orchestrator import Orchestrator
+from pse_ecosystem.core.contracts import SolveMode
+
+fs, choices = load_template_with_choices(
+    "hydrogen.electrolysis_or_gasification", {"h2_demand_kg_per_h": 100.0}
+)
+result = Orchestrator(fs, SolveMode.FLEXIBLE_MILP, technology_choices=choices).solve()
+print(result.technology_selection)   # {'pick_pem': True, 'pick_gasifier': False}
+```
+
+---
+
+## 3.2 Biomass Processing (2 templates)
+
+| Template Key | Display Name | Units | Solver | Notes |
+|---|---|---|---|---|
+| `biomass.gasification_to_hydrogen` | Biomass → H₂ (Gasification) | 4 units | SLP | Also in §3.1 |
+| `industrial.grand_challenge_10unit` | Grand Challenge: Biomass → H₂ (10-Unit) | 10 units | SLP | Full industrial chain |
+
+**Grand Challenge template:**
+
+```python
+from pse_ecosystem.ui.flowsheet_service import load_template
+from pse_ecosystem.solvers.slp import SLPDriver, SLPConfig
+
+fs = load_template("industrial.grand_challenge_10unit", {
+    "biomass_feed_kg_s": 1.0,
+    "T_gasifier_C": 800.0,
+    "T_hts_C": 400.0,
+    "T_lts_C": 220.0,
+    "H2_recovery": 0.94,
+    "P_out_Pa": 5_000_000.0,
+})
+result = SLPDriver(fs, SLPConfig(max_iter=60, use_trust_region=False)).run()
+print(result.kpis["psa.H2_production_kg_h"])
+```
+
+10-unit chain:
+```
+BiomassStorage → Gasifier → Cyclone → HTS-WGS → LTS-WGS →
+MoistureSep → CO2Scrubber → PSA → Compressor → H2Polisher
+```
+
+---
+
+## 3.3 Power Generation (1 template)
+
+| Template Key | Display Name | Units | Solver | Notes |
+|---|---|---|---|---|
+| `industrial.gasification_to_power` | Gasification to Power | StoichiometricReactor, Compressor | LP | Syngas compression for turbine |
+
+Basis: CH₄ + CO₂ dry reforming → CO + H₂ → compression to 5 bar.
+
+---
+
+## 3.4 Petrochemicals (2 templates)
+
+| Template Key | Display Name | Units | Solver | Notes |
+|---|---|---|---|---|
+| `industrial.power_to_methanol` | Power-to-Methanol | StoichiometricReactor, SeparatorHF | LP | CO₂ + 3H₂ → MeOH + H₂O |
+| `industrial.syngas_production` | Syngas Production | GasifierToy, SeparatorHF | LP | Gasifier + CO₂ scrubber |
+
+**Power-to-Methanol:**
+
+```python
+from pse_ecosystem.ui.flowsheet_service import load_template
+from pse_ecosystem.core.contracts import SolveMode
+from pse_ecosystem.solvers.orchestrator import Orchestrator
+
+fs = load_template("industrial.power_to_methanol", {"extent_max": 3.0})
+result = Orchestrator(fs, SolveMode.FIXED_LP).solve()
+print(result.status, result.kpis)
+```
+
+---
+
+## 3.5 Carbon Capture & Utilization (1 template)
+
+| Template Key | Display Name | Units | Solver | Notes |
+|---|---|---|---|---|
+| `dac.power_to_methane` | Direct Air Capture → Methane (DAC-U) | TVSAContactor, ElectrolyserHF, MethanationReactor | SLP (2 iters) | CO₂ 415 ppm → CH₄ |
+
+**DAC sensitivity sweep (CO₂ capture efficiency vs energy):**
+
+```
+η_cap = 0.60 → spec. energy ≈ 455 kWh/tCO₂
+η_cap = 0.85 → spec. energy ≈ 420 kWh/tCO₂
+η_cap = 0.99 → spec. energy ≈ 411 kWh/tCO₂
+```
+
+W_fan is constant (fixed air flow); specific energy improves at higher η_cap because CO₂ output grows faster than the thermal regen penalty.
+
+---
+
+## 3.6 Other Industrial Processes (4 templates)
+
+| Template Key | Display Name | Units | Solver | Notes |
+|---|---|---|---|---|
+| `small.cstr_flash` | CSTR + Flash | CSTRHF, FlashVLHF | SLP | WGS kinetics + Rachford-Rice |
+| `small.compression_train` | Compression Train | Compressor, ShellTubeHX, Valve | LP | 3-unit train |
+| `small.mixer_settler` | Mixer + Settler | MixerHF, SeparatorHF | LP | Energy balance mixer + settler |
+| `small.distillation` | Distillation Column | DistillationHF | SLP | FUG shortcut, benzene/toluene |
+
+---
+
+## 3.7 Engineering Parameter Reference
+
+All editable parameters in the Flowsheet Builder parameter form:
+
+| Template | Parameter | Default | Unit | Controls |
+|---|---|---|---|---|
+| All PEM templates | `pem.eta_kg_per_kWh` | 0.018 | kg H₂/kWh | Electrolyser efficiency |
+| All PEM templates | `pem.capacity_kW` | 10 000 | kW | Maximum rated power |
+| All PEM templates | `pem.electricity_price_per_kWh` | 0.05 | £/kWh | Electricity OPEX rate |
+| All PEM templates | `pem.capex_annual_per_kW` | 100 | £/kW/yr | Annualised CAPEX |
+| All PEM templates | `pem.grid_carbon_intensity_kg_CO2_per_kWh` | 0.233 | kg CO₂/kWh | Grid emission factor |
+| All PEM templates | `h2_demand_kg_per_h` | 100 | kg/h | H₂ production target |
+| Power-to-Methanol | `extent_max` | 3.0 | mol/s | Max reaction extent |
+| Gasification to Power | `comp.eta_isentropic` | 0.78 | — | Compressor efficiency |
+| Gasification to Power | `comp.P_out_Pa` | 500 000 | Pa | Compressor outlet pressure |
+| Syngas Production | `h2_demand_kg_per_h` | 200 | kg/h | H₂-rich syngas target |
+| Syngas Production | `co2_capture_fraction` | 0.95 | — | CO₂ scrubber removal |
+| Biomass templates | `T_gasifier_C` | 800 | °C | Gasifier temperature |
+| Biomass templates | `T_wgs_C` | 400 | °C | WGS reactor temperature |
+| Biomass templates | `biomass_feed_kg_s` | 1.0 | kg/s | Wet biomass feed rate |
+| DAC (P2Methane) | `F_air_mol_s` | 10 000 | mol/s | Ambient air feed flow |
+| DAC | `eta_cap` | 0.85 | — | CO₂ capture efficiency |
+| DAC | `eta_elec` | 0.70 | — | Electrolyser efficiency (HHV) |
+| DAC | `T_rx_K` | 673 | K | Methanation temperature |
+| CSTR+Flash | `cstr.volume_m3` | 1.0 | m³ | Reactor volume |
+| Compression Train | `hx.U_W_per_m2_K` | 500 | W/m²K | HX overall heat transfer |
+| Compression Train | `hx.A_m2` | 10 | m² | HX heat transfer area |
+
+*Cp and K-values are computed from NIST Shomate / Antoine correlations — not user-settable in the UI. See DEVELOPER_GUIDE.md §11 for code-level overrides.*
+
+---
+
+## 3.8 Carbon Intensity KPI
+
+```
+CI = (emission_factor × energy_or_feed × operating_hours) / annual_H2_produced
+```
+
+| Template | CI definition |
+|---|---|
+| PEM templates | `grid_carbon_intensity × electricity_kW × 8000 h / annual_H2_kg` |
+| Syngas Production | `biomass_carbon_intensity × feed_kg_h × 8000 h / annual_H2_kg` |
+
+**EU green hydrogen threshold: 1.0 kg CO₂/kg H₂.** The UI shows a red/green delta indicator.
+
+Typical values:
+- UK grid (2023): CI ≈ 12–13 kg CO₂/kg H₂
+- Wind/solar power: CI ≈ 0.3–0.8 kg CO₂/kg H₂
+- Biomass gasification (residual): CI ≈ 0.3 kg CO₂/kg H₂
+
+---
+
+---
+
+# Part 4 — Advanced Showcase
+
+## 4.1 Investor Walkthrough Script
+
+**Audience:** Funders / Industrial Partners | **Total time:** 20 minutes
+
+### Pre-Meeting Setup
+
+```powershell
+& C:\Users\gh00616\.venvs\pse_ecosystem\Scripts\Activate.ps1
+cd "C:\Users\gh00616\OneDrive - University of Surrey\Desktop\PhD Folder\IMP\PSE_ECOSYSTEM"
+streamlit run pse_ecosystem/ui/app_streamlit.py
+```
+
+### Stage 1 — "The Engine Works" (5 min)
+
+1. Flowsheet Builder → Sector: **Other Industrial Processes** → **"CSTR + Flash (NL)"** → Apply & Select.
+2. Solver Monitor → **SLP** → Run Solve.
+
+> *"The linearisation uses an analytically-derived Jacobian — not finite differences. You are seeing exact gradient information from the physics equations."*
+
+> *"The flash unit solves the Rachford-Rice equation:*
+> $$\sum_i \frac{z_i (K_i - 1)}{1 + \psi(K_i - 1)} = 0, \qquad K_i = \frac{P_{sat,i}(T)}{P}$$
+> *This is the same physics used in Aspen."*
+
+### Stage 2 — "Real-World Scale" (7 min)
+
+1. Sector: **Biomass Processing** → **"Biomass → H₂ (Gasification)"**.
+2. Adjust `T_gasifier_C` (800 °C) and `biomass_feed_kg_s` (1.0 kg/s) → Apply & Select.
+3. Solver Monitor → Run Solve.
+
+> *"The gasifier solves two coupled equilibrium equations simultaneously:*
+> $$K_{WGS}(T) = \frac{n_{CO_2} \cdot n_{H_2}}{n_{CO} \cdot n_{H_2O}}, \qquad \ln K_{met}(T) = \frac{25000}{T} - 26.2$$"*
+
+### Stage 3 — "The Decision Tool" (5 min)
+
+1. Sector: **Hydrogen Production** → **"PEM Electrolysis"** → Apply & Select.
+2. Expand **1D Sensitivity Sweep** → parameter: `pem.electricity_price_per_kWh`, Min=0.02, Max=0.15, Points=12 → Run Sweep.
+
+> *"This is the investor's decision curve. LCOH crosses grid parity at a specific electricity price — generated in under 2 seconds."*
+
+### Stage 4 — "The Architecture" (optional, 3 min)
+
+> *"Three strict layers: UI / Solver / Physics. They communicate only via the Handshake Protocol — a typed contract. Replace the solver without touching the physics; replace the UI without touching the solver."*
+
+---
+
+## 4.2 Q&A Preparation
+
+### "Can it handle recycle loops?"
+> "Yes — Wegstein tear-stream acceleration. See §4.6."
+
+### "How does this compare to Aspen Plus?"
+> "Aspen is proprietary, £30,000+/seat. PSE Ecosystem exposes the full algebraic residual and Jacobian — every equation is inspectable. Analytical Jacobians converge faster on well-initialised problems."
+
+### "What's the IP moat?"
+> Three things: **(1)** the three-layer handshake architecture; **(2)** the analytical Jacobian protocol; **(3)** B-HYPSYS corrections — 16 physics defects in the published benchmark corrected."
+
+### "What sectors beyond hydrogen?"
+> "Sector-agnostic. Current library: H₂ production, biomass processing, power generation, petrochemicals, DAC. Any process expressible as algebraic equations is a direct extension."
+
+---
+
+## 4.3 Grand Challenge: 10-Unit Biomass → H₂ Validation
+
+**Template key:** `industrial.grand_challenge_10unit` | **Category:** Biomass Processing
+
+### Chain Architecture
+
+```
+Unit 1:  BiomassStorageHF   (storage)      — drying
+Unit 2:  BiomassGasifierHF  (gasifier)     — thermochemical equilibrium, 800 °C
+Unit 3:  SeparatorHF        (cyclone)      — 99% char/ash removal
+Unit 4:  WGSReactorHF       (hts)          — High-Temperature Shift, 400 °C
+Unit 5:  WGSReactorHF       (lts)          — Low-Temperature Shift, 220 °C
+Unit 6:  SeparatorHF        (moisture_sep) — 70% H₂O condensate removal
+Unit 7:  SeparatorHF        (co2_scrubber) — 97% CO₂ absorption
+Unit 8:  H2SeparatorPSA     (psa)          — 94% H₂ recovery
+Unit 9:  Compressor         (h2_comp)      — 50 bar compression
+Unit 10: SeparatorHF        (h2_polisher)  — 99.5% final purity
+```
+
+### Analytical vs UI Verification
+
+| KPI | Analytical Target | Tolerance |
+|---|---|---|
+| Gasifier C balance closure | 100.0% | < 0.1% |
+| HTS CO conversion | ~75% (K_WGS(673K) ≈ 8.9) | ±10% |
+| LTS CO conversion | ~90% of HTS residual | ±10% |
+| PSA H₂ recovery | 94.0% (exact linear) | < 0.01% |
+| H₂ polisher recovery | 99.5% (exact linear) | < 0.01% |
+
+**Test suite:** `pytest tests/test_grand_challenge.py -v` (9 pass, 1 conditional skip)
+
+---
+
+## 4.4 Known Limitations
+
+| Limitation | Status | Roadmap |
+|---|---|---|
+| VLE limited to Raoult's Law (Antoine) | Current | Cubic EOS (PR/SRK) v1.4 |
+| No recycle loop in gallery templates | Implemented in solver, no demo | Add CSTR-recycle template v1.4 |
+| FlashVLHF: Antoine extrapolates above Tc for syngas species | Known — use SeparatorHF instead | Extended EOS |
+| IPOPT requires `idaes-pse` install (optional) | Not required for SLP | Documented |
+| Biomass template validated T ≥ 650 °C only | Physics-valid constraint | Add T warning in UI |
+| 10-unit chain: full convergence needs Adaptive solver | SLP gives LP-feasible iterate | Adaptive integration |
+
+---
+
+## 4.5 Key Equations Reference
+
+### Rachford-Rice (Flash VLE)
+
+$$f(\psi) = \sum_{i=1}^{N_c} \frac{z_i (K_i - 1)}{1 + \psi(K_i - 1)} = 0, \qquad K_i = \frac{P_{sat,i}(T)}{P}$$
+
+### Water-Gas Shift Equilibrium
+
+$$K_{WGS}(T) = \exp\!\left(\frac{4300}{T} - 3.84\right) \qquad \text{(van't Hoff fit, 600–1200 K)}$$
+
+### SLP Linearisation
+
+$$f(x^k) + J(x^k)(x - x^k) = 0, \qquad J_{ij} = \frac{\partial f_i}{\partial x_j}\bigg|_{x^k}$$
+
+### Methanation Equilibrium (Sabatier)
+
+$$K_{Sab}(T) = \frac{K_{met}(T)}{(P/P°)^{-2}}, \quad X_{CO_2} = \frac{K_{Sab}}{1 + K_{Sab}}$$
+
+---
+
+## 4.6 Programmatic Reference
+
+### Case A: 3-Unit Chain (P2M)
+
+```python
+from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
+from pse_ecosystem.models.reactors.stoichiometric_reactor import StoichiometricReactor, StoichiometricParams
+from pse_ecosystem.models.separators.separator_hf import SeparatorHF, SeparatorHFParams
+from pse_ecosystem.solvers.orchestrator import Orchestrator
+from pse_ecosystem.core.contracts import SolveMode
+
+components = ["CO2", "H2", "methanol", "water"]
+p2m_stoich = {"CO2": [-1.0], "H2": [-3.0], "methanol": [1.0], "water": [1.0]}
+
+heater  = StoichiometricReactor("heater",  components, StoichiometricParams(stoichiometry=p2m_stoich))
+reactor = StoichiometricReactor("reactor", components, StoichiometricParams(stoichiometry=p2m_stoich, xi_max=[50.0]))
+sep     = SeparatorHF("sep", components, SeparatorHFParams(n_outlets=2))
+
+fs = BaseFlowsheet(name="p2m", units=[heater, reactor, sep])
+fs.connect(heater.outlet_port,  reactor.inlet_port)
+fs.connect(reactor.outlet_port, sep.inlet_port)
+
+result = Orchestrator(fs, SolveMode.FIXED_LP).solve()
+print(result.status, result.iterations)   # CONVERGED, 1
+```
+
+### Programmatic `fs.connect()`
+
+```python
+from pse_ecosystem.flowsheets.base_flowsheet import Connection
+
+# Flow-only connection (T/P mismatch workaround):
+for c in ["H2", "CO", "CO2", "H2O", "CH4", "N2"]:
+    fs.connections.append(Connection(
+        var_a=f"wgs.shifted_out.F_{c}",
+        var_b=f"separator.inlet.F_{c}",
+    ))
+```
+
+### Recycle Loops
+
+```python
+from pse_ecosystem.solvers.slp import SLPConfig, TearStreamConfig
+
+cfg = SLPConfig(
+    max_iter=50,
+    tear_streams=[TearStreamConfig(var_name="recycle.F_A", connected_to="feed.F_A",
+                                   q_min=-5.0, q_max=0.0)],
+)
+```
+
+### Costing
+
+```python
+from pse_ecosystem.models.costing.sslw_costing import cstr_purchase_cost_USD, annualized_capex
+
+cost = cstr_purchase_cost_USD(5.0, material="CS")   # 5 m³ CSTR, CE500 basis
+ann  = annualized_capex(cost, lang_factor=5.0, crf=0.10, cepci_now=800.0)
+```
+
+### Properties Module
+
+```python
+from pse_ecosystem.models.properties.ideal_gas import cp_J_mol_K
+from pse_ecosystem.models.properties.vle import K_value
+
+cp = cp_J_mol_K("CO2", 1000.0)             # 54.3 J/mol/K (NIST Shomate)
+K  = K_value("benzene", 353.15, 101325.0)  # ~1.0 at normal boiling point
+```
+
+---
+
+## 4.7 Flowsheet Merging & Composition
+
+### Merging Two Templates
+
+```python
+from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
+from pse_ecosystem.ui.flowsheet_service import load_template
+
+fs_a = load_template("industrial.gasification_to_power")
+fs_b = load_template("industrial.green_hydrogen")
+
+fs_merged = BaseFlowsheet(
+    name="gasif_plus_pem",
+    units=[*fs_a.units, *fs_b.units],
+)
+for conn in [*fs_a.connections, *fs_b.connections]:
+    fs_merged.connections.append(conn)
+fs_merged.extra_bounds = {**fs_a.extra_bounds, **fs_b.extra_bounds}
+```
+
+### Cross-Flowsheet Connections
+
+```python
+comp_unit = next(u for u in fs_a.units if "comp" in u.unit_id)
+pem_unit  = next(u for u in fs_b.units if "pem"  in u.unit_id)
+fs_merged.connect(comp_unit.outlet_port, pem_unit.inlet_port, description="Syngas to PEM feed")
+```
+
+`connect()` raises `ValueError` if ports have different component lists.
+
+---
+
+## 4.8 Adding a Custom Unit
 
 ```python
 from pse_ecosystem.models.base_unit import BaseUnit
@@ -739,7 +901,7 @@ Override `linearize(guess)` with an analytical Jacobian for SLP performance.
 
 ---
 
-## 3.8 SLP Configuration Reference
+## 4.9 SLP Configuration Reference
 
 ```python
 SLPConfig(
@@ -760,4 +922,4 @@ SLPConfig(
 
 ---
 
-*User Manual v1.3.0-Phase5 — PSE Ecosystem*
+*User Manual v1.3.0-Phase6 — PSE Ecosystem | Private — University of Surrey*

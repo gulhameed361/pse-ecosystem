@@ -79,24 +79,24 @@ Four pages:
 
 ---
 
-## Flowsheet Templates (v1.3.0 — 14 templates)
+## Flowsheet Templates (v1.3.0 — 14 templates across 6 industrial sectors)
 
-| Key | Name | Category | Solver |
+| Sector | Key | Name | Solver |
 |---|---|---|---|
-| `hydrogen.electrolysis_only` | PEM Electrolysis | Hydrogen | LP (linear) |
-| `hydrogen.electrolysis_or_gasification` | PEM + Gasifier | Hydrogen | MILP |
-| `industrial.green_hydrogen` | Green Hydrogen Hub | Industrial | LP |
-| `industrial.power_to_methanol` | Power-to-Methanol | Industrial | LP |
-| `industrial.gasification_to_power` | Gasification to Power | Industrial | LP |
-| `industrial.syngas_production` | Syngas Production | Industrial | LP |
-| **`industrial.grand_challenge_10unit`** | **Biomass → H₂ (10-Unit Grand Challenge)** | **Industrial** | **SLP** |
-| `biomass.gasification_to_hydrogen` | Biomass → H₂ (B-HYPSYS) | Hydrogen | SLP (3–10 iters) |
-| `dac.power_to_methane` | Direct Air Capture → Methane | Industrial | SLP (2 iters) |
-| `custom.user_flowsheet` | Custom Flowsheet | Custom | LP |
-| `small.cstr_flash` | CSTR + Flash | Small | SLP |
-| `small.compression_train` | Compression Train | Small | LP |
-| `small.mixer_settler` | Mixer + Settler | Small | LP |
-| `small.distillation` | Distillation Column | Small | SLP |
+| **Hydrogen Production** | `hydrogen.electrolysis_only` | PEM Electrolysis | LP |
+| **Hydrogen Production** | `hydrogen.electrolysis_or_gasification` | PEM + Gasifier (MILP) | MILP |
+| **Hydrogen Production** | `industrial.green_hydrogen` | Green Hydrogen Hub | LP |
+| **Biomass Processing** | `biomass.gasification_to_hydrogen` | Biomass → H₂ (B-HYPSYS) | SLP |
+| **Biomass Processing** | `industrial.grand_challenge_10unit` | **Biomass → H₂ (10-Unit Grand Challenge)** | **SLP** |
+| **Power Generation** | `industrial.gasification_to_power` | Gasification to Power | LP |
+| **Petrochemicals** | `industrial.power_to_methanol` | Power-to-Methanol | LP |
+| **Petrochemicals** | `industrial.syngas_production` | Syngas Production | LP |
+| **Carbon Capture & Utilization** | `dac.power_to_methane` | Direct Air Capture → Methane | SLP |
+| **Other Industrial** | `small.cstr_flash` | CSTR + Flash | SLP |
+| **Other Industrial** | `small.compression_train` | Compression Train | LP |
+| **Other Industrial** | `small.mixer_settler` | Mixer + Settler | LP |
+| **Other Industrial** | `small.distillation` | Distillation Column | SLP |
+| **Custom** | `custom.user_flowsheet` | Custom Flowsheet | LP |
 
 ### Grand Challenge — 10-Unit Biomass → H₂ (v1.3.0 new)
 

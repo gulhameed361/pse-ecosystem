@@ -86,7 +86,7 @@ _REGISTRY: List[TemplateSpec] = [
     TemplateSpec(
         key="hydrogen.electrolysis_only",
         display_name="PEM Electrolysis",
-        category="Hydrogen",
+        category="Hydrogen Production",
         description="Single PEM electrolyser meeting a fixed H2 demand. "
                     "Fully linear — solves in one LP step. Reports LCOH and Carbon Intensity.",
         topology_diagram=(
@@ -109,7 +109,7 @@ _REGISTRY: List[TemplateSpec] = [
     TemplateSpec(
         key="hydrogen.electrolysis_or_gasification",
         display_name="PEM + Gasifier (MILP)",
-        category="Hydrogen",
+        category="Hydrogen Production",
         description="Technology selection between PEM electrolysis and gasification "
                     "to meet H2 demand at minimum cost. Solved via MILP.",
         topology_diagram=(
@@ -134,7 +134,7 @@ _REGISTRY: List[TemplateSpec] = [
     TemplateSpec(
         key="industrial.green_hydrogen",
         display_name="Green Hydrogen Hub",
-        category="Industrial",
+        category="Hydrogen Production",
         description="PEM electrolyser with H2 buffer mixer. "
                     "Reports LCOH and Carbon Intensity KPIs.",
         topology_diagram=(
@@ -160,7 +160,7 @@ _REGISTRY: List[TemplateSpec] = [
     TemplateSpec(
         key="industrial.power_to_methanol",
         display_name="Power-to-Methanol",
-        category="Industrial",
+        category="Petrochemicals",
         description="CO2 + 3H2 → methanol + H2O, then split-fraction "
                     "separation of liquid methanol. Fully linear.",
         topology_diagram=(
@@ -185,7 +185,7 @@ _REGISTRY: List[TemplateSpec] = [
     TemplateSpec(
         key="industrial.gasification_to_power",
         display_name="Gasification to Power",
-        category="Industrial",
+        category="Power Generation",
         description="Biomass dry reforming (CH4+CO2→2CO+2H2) then syngas "
                     "compression to 5 bar for power generation.",
         topology_diagram=(
@@ -208,7 +208,7 @@ _REGISTRY: List[TemplateSpec] = [
     TemplateSpec(
         key="industrial.syngas_production",
         display_name="Syngas Production",
-        category="Industrial",
+        category="Petrochemicals",
         description="Toy gasifier → CO2 scrubber (PSA/membrane) → clean syngas. "
                     "Reports LCOH and Carbon Intensity KPIs.",
         topology_diagram=(
@@ -250,7 +250,7 @@ _REGISTRY: List[TemplateSpec] = [
     TemplateSpec(
         key="small.cstr_flash",
         display_name="CSTR + Flash",
-        category="Small",
+        category="Other Industrial Processes",
         description="Water-gas shift CSTR with adiabatic Arrhenius kinetics "
                     "followed by V/L flash separation (CO2/H2 light, CO/H2O heavy).",
         topology_diagram=(
@@ -270,7 +270,7 @@ _REGISTRY: List[TemplateSpec] = [
     TemplateSpec(
         key="small.compression_train",
         display_name="Compression Train",
-        category="Small",
+        category="Other Industrial Processes",
         description="Gas compressor followed by shell & tube intercooler "
                     "and let-down valve.",
         topology_diagram=(
@@ -299,7 +299,7 @@ _REGISTRY: List[TemplateSpec] = [
     TemplateSpec(
         key="small.mixer_settler",
         display_name="Mixer + Settler",
-        category="Small",
+        category="Other Industrial Processes",
         description="Two-stream mixer with adiabatic energy balance, "
                     "then split-fraction settler.",
         topology_diagram=(
@@ -319,7 +319,7 @@ _REGISTRY: List[TemplateSpec] = [
     TemplateSpec(
         key="small.distillation",
         display_name="Distillation Column",
-        category="Small",
+        category="Other Industrial Processes",
         description="FUG shortcut distillation column separating "
                     "benzene (light key) from toluene (heavy key).",
         topology_diagram=(
@@ -335,7 +335,7 @@ _REGISTRY: List[TemplateSpec] = [
     TemplateSpec(
         key="biomass.gasification_to_hydrogen",
         display_name="Biomass → H2 (Gasification)",
-        category="Hydrogen",
+        category="Biomass Processing",
         description=(
             "Full B-HYPSYS flowsheet: drying → thermochemical equilibrium "
             "gasification → WGS reactor → PSA separation. "
@@ -377,7 +377,7 @@ _REGISTRY: List[TemplateSpec] = [
     TemplateSpec(
         key="industrial.grand_challenge_10unit",
         display_name="Grand Challenge: Biomass → H2 (10-Unit)",
-        category="Industrial",
+        category="Biomass Processing",
         description=(
             "Full 10-unit biomass-to-green-H2 flowsheet: drying → gasification → "
             "cyclone → HTS-WGS → LTS-WGS → moisture separator → CO2 scrubber → "
@@ -440,7 +440,7 @@ _REGISTRY: List[TemplateSpec] = [
     TemplateSpec(
         key="dac.power_to_methane",
         display_name="Direct Air Capture → Methane (DAC-U)",
-        category="Industrial",
+        category="Carbon Capture & Utilization",
         description=(
             "Power-to-Methane via TVSA CO₂ capture (415 ppm), PEM electrolysis, "
             "and Sabatier methanation (CO₂ + 4H₂ → CH₄ + 2H₂O). "

@@ -140,9 +140,15 @@ def _page_flowsheet_builder():
     st.title("Flowsheet Builder")
 
     templates = list_templates()
-    categories = ["All"] + sorted({t.category for t in templates},
-                                  key=lambda c: ["Custom", "Hydrogen", "Industrial", "Small"].index(c)
-                                  if c in ["Custom", "Hydrogen", "Industrial", "Small"] else 99)
+    _CAT_ORDER = [
+        "Hydrogen Production", "Biomass Processing", "Power Generation",
+        "Petrochemicals", "Carbon Capture & Utilization",
+        "Other Industrial Processes", "Custom",
+    ]
+    categories = ["All"] + sorted(
+        {t.category for t in templates},
+        key=lambda c: _CAT_ORDER.index(c) if c in _CAT_ORDER else 99,
+    )
 
     col_left, col_right = st.columns([1, 2])
 
