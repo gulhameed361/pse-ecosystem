@@ -143,23 +143,22 @@ def build_lp(
 
     # ── Objective ─────────────────────────────────────────────────────────
     obj_terms: Dict[str, float] = {}
-    for lin in linearizations:
-        for v, c in lin.objective_terms.items():
-            obj_terms[v] = obj_terms.get(v, 0.0) + float(c)
 
-    # Merge flowsheet-level objective overrides (objective_extra).
-    for v, c in getattr(flowsheet, "objective_extra", {}).items():
-        if v in model.x:
-            obj_terms[v] = obj_terms.get(v, 0.0) + float(c)
+    if not getattr(flowsheet, "force_feasibility", False):
+        # Collect per-unit linear OPEX contributions (feedstock cost, electricity, etc.)
+        for lin in linearizations:
+            for v, c in lin.objective_terms.items():
+                obj_terms[v] = obj_terms.get(v, 0.0) + float(c)
 
-    if obj_terms:
-        model.objective = pyo.Objective(
-            expr=sum(c * model.x[v] for v, c in obj_terms.items()),
-            sense=pyo.minimize,
-        )
-    else:
-        # Feasibility problem.
-        model.objective = pyo.Objective(expr=0.0, sense=pyo.minimize)
+        # Merge flowsheet-level objective overrides (objective_extra).
+        for v, c in getattr(flowsheet, "objective_extra", {}).items():
+            if v in model.x:
+                obj_terms[v] = obj_terms.get(v, 0.0) + float(c)
+
+    model.objective = pyo.Objective(
+        expr=sum(c * model.x[v] for v, c in obj_terms.items()) if obj_terms else 0.0,
+        sense=pyo.minimize,
+    )
 
     # Stash metadata the SLP driver may want.
     model._objective_terms = obj_terms

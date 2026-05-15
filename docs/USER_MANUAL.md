@@ -945,24 +945,64 @@ This is expected behaviour and not an error. The solver correctly enforces all v
 ## 2.10 Setting an Optimization Objective
 
 The **Objective Function** tab (inside the Flowsheet Builder, alongside the Sensitivity Sweep)
-lets you instruct the solver to do more than just find a feasible operating point.
+lets you instruct the solver to pursue an economic or process goal — not just find a
+feasible point.
 
-| Option | What the solver does |
-|---|---|
-| Feasibility Only (default) | Finds a point satisfying all residuals; objective = 0 |
-| Maximize H₂ Yield | Negative coefficient on the last H₂ outlet variable → LP maximises H₂ flow |
-| Minimize Energy | Positive coefficient on shaft work / electricity variables → LP reduces energy use |
-| Minimize LCOH (proxy) | Minimises electricity cost; maximises H₂ simultaneously |
-| Maximize Net Profit (proxy) | Same as above with combined coefficients |
+### How it works
 
-**Steps:**
-1. In Flowsheet Builder → **Objective Function** tab, select your objective.
-2. Optionally type an exact variable name (e.g. `comp_1.outlet.F_H2`) to override auto-detection.
-3. Click **Apply Objective**.
-4. Go to **Solver Monitor** → Run Solve. The LP objective now reflects your choice.
+The LP solver uses three sources for the objective:
+1. **Unit-level OPEX** — each unit's `objective_contribution()` returns linear cost coefficients
+   (e.g. `{electricity_kW: 400}` for PEMToy, `{biomass_in.F_Biomass: 0.05}` for BiomassGasifier).
+   These are always active unless you choose **Feasibility Only**.
+2. **`objective_extra`** — additional coefficients set by the Objective Function tab
+   (energy penalties, annualised CAPEX, H₂ yield terms).
+3. **`force_feasibility`** — when active, the LP objective is set to 0.0, suppressing
+   all unit costs. The solver finds any point satisfying the mass/energy balance residuals.
 
-*Advanced:* Set `fs.objective_extra = {"variable_name": coefficient}` programmatically
-(negative = maximise). The LP builder merges this with unit-level `objective_contribution()`.
+### Objective options
+
+| Mode | LP objective | When to use |
+|---|---|---|
+| **Feasibility Only** | 0 (pure constraint satisfaction) | Debugging connections; checking mass-balance closes |
+| **Minimize OPEX** | Unit feedstock + electricity costs | Cost-optimal operation using built-in unit economics |
+| **Minimize Energy** | Shaft work + electrical power × electricity price × annual hours | Reducing compression or electrolysis energy use |
+| **Minimize TAC** | OPEX + annualised CAPEX (linear terms only) | Holistic cost; includes capital cost penalty on power vars |
+| **Minimize LCOH** | TAC + negative H₂ yield | Levelized cost proxy; exact when H₂ demand is fixed |
+| **Maximize H₂ Yield** | −1 × most-downstream H₂ outlet flow | Maximise hydrogen production regardless of cost |
+
+### LCOH and TAC — what's implemented
+
+- **LCOH** [USD/kg H₂] = TAC [USD/yr] / H₂_production [kg/yr]. This is a ratio — not
+  directly linearizable. The PSE Ecosystem proxy minimises TAC while simultaneously
+  maximising H₂ yield. For fixed-demand flowsheets (`extra_bounds` pins H₂ = target),
+  this is mathematically exact (minimising TAC ≡ minimising LCOH).
+
+- **TAC = OPEX + annualised CAPEX.** OPEX contributions come from unit
+  `objective_contribution()` (already in LP). Annualised CAPEX is added as a linear term
+  for units with linear capex models (e.g. ElectrolyserHF: 700 USD/kW × CRF). For SSLW
+  units (Compressor, vessels), capex is non-linear; it is reported as a post-solve KPI
+  in the Excel export's Unit Performance sheet.
+
+### Steps
+
+1. Flowsheet Builder → **Objective Function** tab.
+2. Select an objective mode.
+3. Optionally adjust economic parameters (electricity price, CRF, annual hours) in the
+   Advanced section.
+4. Click **Apply Objective**.
+5. Solver Monitor → **Run Solve**. The convergence chart objective column will be non-zero
+   for all modes except Feasibility Only.
+
+*Programmatic equivalent:*
+```python
+from pse_ecosystem.ui.flowsheet_service import build_objective_extra
+fs.objective_extra, fs.force_feasibility = build_objective_extra(
+    fs, "Minimize TAC",
+    electricity_price_USD_per_kWh=0.05,
+    operating_hours=8000.0,
+    crf=0.10,
+)
+```
 
 ---
 

@@ -1,8 +1,47 @@
 # PSE Ecosystem — System State Ledger
 
-**Version:** 1.3.1
+**Version:** 1.3.2
 **Date:** 2026-05-15
-**Status:** v1.3.1 — Connection display fix, Objective Function tab, 3-sheet Excel export, smart unit IDs, category filter, MAX_ITER tips
+**Status:** v1.3.2 — Proper economic objectives (LCOH, TAC, OPEX, Energy, Feasibility) using real capex/opex methods; force_feasibility flag; 169 tests
+
+---
+
+## What's New in v1.3.2 — Proper Economic Objectives & Alignment
+
+### Objective Function — Properly Grounded in Unit Economics (`flowsheet_service.py`)
+
+New public function `build_objective_extra(flowsheet, mode, elec_price, hours, crf)` that
+computes objective terms from the actual unit cost architecture:
+
+| Mode | Source | LP terms |
+|---|---|---|
+| **Feasibility Only** | `force_feasibility=True` | objective = 0 (suppresses unit OPEX too) |
+| **Minimize OPEX** | Unit `objective_contribution()` already in LP | `objective_extra = {}` |
+| **Minimize Energy** | Searches `all_variables()` for W_shaft/W_elec/electricity_kW | Positive coeff = price × hours |
+| **Minimize TAC** | Energy penalty + ElectrolyserHF annualised capex (700 × CRF) | Combined |
+| **Minimize LCOH** | TAC + negative H₂ coefficient (most-downstream H₂ outlet variable) | Combined |
+| **Maximize H₂ Yield** | Detects H₂ outlet variable via port-tag segment containing "out" | Coeff = −1 |
+
+### `force_feasibility` flag (`base_flowsheet.py` + `lp_builder.py`)
+
+`BaseFlowsheet.force_feasibility: bool = False` — when True, `lp_builder.build_lp()` sets
+`objective = 0.0` unconditionally, skipping all unit OPEX contributions. Enables true
+feasibility-only mode distinct from "minimize OPEX with existing unit costs".
+
+### Objective Function tab — UI updated (`app_streamlit.py`)
+
+- All 6 objective modes now use `build_objective_extra()` — no heuristic substring matching.
+- Advanced economic parameters exposed: electricity price, annual hours, CRF.
+- In-place help text explains each mode's LP behaviour.
+- Version string: v1.3.1 → v1.3.2.
+
+### Alignment (`pyproject.toml`, `README.md`, `USER_MANUAL.md`)
+
+- `pyproject.toml`: version 1.3.1 → 1.3.2.
+- `README.md`: test count 154 → 169.
+- `USER_MANUAL.md §2.10`: full rewrite with proper LCOH/TAC explanation and programmatic API.
+
+### Tests (`tests/test_objectives.py`): 8 new tests — 169 total, 1 pre-existing skip.
 
 ---
 

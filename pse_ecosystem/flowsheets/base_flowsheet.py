@@ -61,6 +61,12 @@ class BaseFlowsheet:
         ``fs.objective_extra = {"comp.outlet.F_H2": -1.0}``
     """
 
+    force_feasibility: bool = False
+    """When True the LP builder sets ``objective = 0.0``, suppressing all unit-level
+    ``objective_contribution()`` terms AND any ``objective_extra`` terms.  The solver
+    finds any feasible point satisfying all residuals without cost pressure.
+    Useful for debugging port connectivity and checking mass-balance closure."""
+
     # ── Port connectivity ────────────────────────────────────────────────────
 
     def connect(

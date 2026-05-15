@@ -57,7 +57,7 @@ def _page_dashboard():
     from pse_ecosystem.ui.flowsheet_service import list_templates
 
     st.title("PSE Ecosystem")
-    st.caption("v1.3.1  |  Private — University of Surrey")
+    st.caption("v1.3.2  |  Private — University of Surrey")
 
     # ── LP solver check ────────────────────────────────────────────────────
     try:
@@ -274,50 +274,70 @@ def _page_flowsheet_builder():
                 "Sets an extra LP objective term on top of any unit-level cost contributions. "
                 "Applies when you run from the **Solver Monitor**."
             )
-            _obj_mode = st.radio(
-                "Objective",
-                [
-                    "Feasibility Only (default)",
-                    "Maximize H₂ Yield",
-                    "Minimize Energy (shaft + electricity)",
-                    "Minimize LCOH (proxy: minimize cost variables)",
-                    "Maximize Net Profit (proxy: maximize H₂ − energy cost)",
-                ],
-                index=0,
-                key="objective_mode",
-            )
-            _obj_target_var = st.text_input(
-                "Override target variable (optional)",
-                value="",
-                key="objective_target_var",
-                help="Advanced: enter a variable name (e.g. 'comp_1.outlet.F_H2'). "
-                     "Leave blank to use the auto-detected variable for the chosen objective.",
-            )
-            _obj_coeff = st.number_input(
-                "Coefficient (negative = maximise)",
-                value=-1.0,
-                key="objective_coeff",
-                help="Applied to the target variable in the LP/NLP objective.",
-            )
-            st.info(
-                "**How it works:** The solver adds this as an extra LP term "
-                "(merged with per-unit `objective_contribution()`). "
-                "For 'Maximize H₂ Yield', the H₂ outlet variable of the last unit is "
-                "auto-detected and given a negative coefficient so the minimiser maximises it."
-            )
+            _OBJ_OPTIONS = [
+                "Feasibility Only",
+                "Minimize OPEX",
+                "Minimize Energy",
+                "Minimize TAC",
+                "Minimize LCOH (Levelized Cost of H₂)",
+                "Maximize H₂ Yield",
+            ]
+            _obj_mode = st.radio("Objective", _OBJ_OPTIONS, index=0, key="objective_mode")
+
+            _OBJ_HELP = {
+                "Feasibility Only":
+                    "objective = 0. Solver finds any point satisfying all mass/energy balances — "
+                    "no cost pressure. Best for debugging connectivity.",
+                "Minimize OPEX":
+                    "Minimises the sum of unit operating costs already defined in each unit model "
+                    "(feedstock cost for BiomassGasifier, electricity cost for PEM, etc.). "
+                    "No extra objective terms needed.",
+                "Minimize Energy":
+                    "Adds electricity price × annual hours as a coefficient on shaft work "
+                    "and electrical power decision variables (e.g. Compressor W_shaft).",
+                "Minimize TAC":
+                    "Total Annualised Cost = OPEX + annualised CAPEX. "
+                    "Adds energy cost + 700 USD/kW × CRF for ElectrolyserHF (linear capex). "
+                    "SSLW-correlated capex (Compressor, vessels) reported as post-solve KPIs.",
+                "Minimize LCOH (Levelized Cost of H₂)":
+                    "Proxy: minimise TAC while maximising H₂ outlet flow. "
+                    "For fixed H₂ demand (extra_bounds), minimising TAC ≡ minimising LCOH exactly.",
+                "Maximize H₂ Yield":
+                    "Coefficient −1 on the most-downstream H₂ outlet variable. "
+                    "LP maximises H₂ production regardless of cost.",
+            }
+            st.info(_OBJ_HELP.get(_obj_mode, ""))
+
+            with st.expander("Advanced: Economic Parameters", expanded=False):
+                _elec_price = st.number_input(
+                    "Electricity price (USD/kWh)", value=0.05, format="%.3f",
+                    key="obj_elec_price",
+                    help="Used for energy cost coefficients in Energy/TAC/LCOH objectives.",
+                )
+                _op_hours = st.number_input(
+                    "Annual operating hours (h/yr)", value=8000, step=100,
+                    key="obj_op_hours",
+                )
+                _crf = st.number_input(
+                    "Capital Recovery Factor (CRF)", value=0.10, format="%.3f",
+                    key="obj_crf",
+                    help="Annualises purchase cost: CRF = i(1+i)^n / ((1+i)^n − 1).",
+                )
             if st.button("Apply Objective", key="apply_objective_btn"):
                 st.session_state["objective_config"] = {
                     "mode":       _obj_mode,
-                    "target_var": _obj_target_var.strip(),
-                    "coeff":      float(_obj_coeff),
+                    "elec_price": float(_elec_price),
+                    "op_hours":   float(_op_hours),
+                    "crf":        float(_crf),
                 }
                 st.success(f"Objective set to: **{_obj_mode}**. Run from Solver Monitor.")
 
-            # Show current objective config if set
             _oc = st.session_state.get("objective_config")
             if _oc:
-                st.caption(f"Current objective: {_oc['mode']}"
-                           + (f" | variable: {_oc['target_var']}" if _oc["target_var"] else ""))
+                st.caption(f"Active objective: **{_oc['mode']}** | "
+                           f"elec {_oc.get('elec_price', 0.05):.3f} USD/kWh | "
+                           f"{int(_oc.get('op_hours', 8000))} h/yr | "
+                           f"CRF {_oc.get('crf', 0.10):.2f}")
 
 
 # ── Sensitivity sweep ────────────────────────────────────────────────────────
@@ -858,30 +878,16 @@ def _page_solver_monitor():
                     tech_choices = []
 
                 # Apply objective config from Objective Function tab
+                from pse_ecosystem.ui.flowsheet_service import build_objective_extra
                 _oc = st.session_state.get("objective_config", {})
-                _obj_mode_val = _oc.get("mode", "Feasibility Only (default)")
-                _obj_tv       = _oc.get("target_var", "")
-                _obj_cv       = float(_oc.get("coeff", -1.0))
-                if _obj_mode_val != "Feasibility Only (default)":
-                    _all_vars = list(flowsheet.all_variables().keys()) if hasattr(flowsheet, "all_variables") else []
-                    if _obj_tv:
-                        flowsheet.objective_extra = {_obj_tv: _obj_cv}
-                    elif "Maximize H₂ Yield" in _obj_mode_val:
-                        _h2 = [v for v in _all_vars if "F_H2" in v and "outlet" in v]
-                        flowsheet.objective_extra = {_h2[-1]: -1.0} if _h2 else {}
-                    elif "Minimize Energy" in _obj_mode_val:
-                        _en = [v for v in _all_vars if any(k in v for k in ["W_shaft", "W_elec", "electricity"])]
-                        flowsheet.objective_extra = {_en[0]: 1.0} if _en else {}
-                    elif "LCOH" in _obj_mode_val or "Net Profit" in _obj_mode_val:
-                        _h2 = [v for v in _all_vars if "F_H2" in v and "outlet" in v]
-                        _en = [v for v in _all_vars if any(k in v for k in ["W_shaft", "W_elec"])]
-                        flowsheet.objective_extra = {}
-                        if _h2:
-                            flowsheet.objective_extra[_h2[-1]] = -1.0
-                        if _en:
-                            flowsheet.objective_extra[_en[0]] = 0.1
-                else:
-                    flowsheet.objective_extra = {}
+                _obj_mode_val = _oc.get("mode", "Feasibility Only")
+                flowsheet.objective_extra, flowsheet.force_feasibility = build_objective_extra(
+                    flowsheet,
+                    _obj_mode_val,
+                    electricity_price_USD_per_kWh=float(_oc.get("elec_price", 0.05)),
+                    operating_hours=float(_oc.get("op_hours", 8000.0)),
+                    crf=float(_oc.get("crf", 0.10)),
+                )
 
                 orch = Orchestrator(
                     flowsheet=flowsheet,

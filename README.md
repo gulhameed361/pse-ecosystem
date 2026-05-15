@@ -11,7 +11,7 @@ Application-centric Knowledge Ecosystem for Process Systems Engineering.
 - **Analytical Jacobians throughout.** The SLP solver linearises using exact ∂f/∂x, not finite differences. Faster convergence, provable gradient accuracy.
 - **3-layer separation.** UI / Solver / Knowledge are strictly decoupled via the Handshake Protocol. Swap the solver without touching the physics; swap the UI without touching the solver.
 - **Modular Assembly Freedom.** Aspen-style Custom Flowsheet builder with dynamic parameter forms — pre-filled engineering defaults per unit type. 16+ unit types supported.
-- **Analytical Verification.** Every unit exposes exact Jacobians; 7-unit workshop chain validated via 154 automated tests.
+- **Analytical Verification.** Every unit exposes exact Jacobians; 7-unit workshop chain validated via 169 automated tests.
 - **Excel Export.** Download KPIs and solution variables to `.xlsx` from the Solver Monitor.
 - **Progressive Solver Tightening.** New SLP strategy for complex chains; Max Iterations slider extended to 1000.
 

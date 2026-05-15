@@ -120,6 +120,91 @@ def get_unit_param_specs(utype: str) -> List[ParamSpec]:
 
 # ── Type-specific Unit ID suggestions ────────────────────────────────────────
 
+def build_objective_extra(
+    flowsheet: "BaseFlowsheet",
+    mode: str,
+    electricity_price_USD_per_kWh: float = 0.05,
+    operating_hours: float = 8_000.0,
+    crf: float = 0.10,
+) -> tuple:
+    """Compute (objective_extra, force_feasibility) for the given objective mode.
+
+    Called by the UI's Objective Function tab before each solve.  Returns a
+    two-tuple ``(extra_dict, force_feas)`` which should be applied to the
+    flowsheet as::
+
+        fs.objective_extra, fs.force_feasibility = build_objective_extra(fs, mode)
+
+    Parameters
+    ----------
+    flowsheet             : assembled BaseFlowsheet
+    mode                  : one of the UI objective mode labels
+    electricity_price_USD_per_kWh : multiplied by annual hours to give $/kW/yr
+    operating_hours       : annual operating hours (default 8 000 h/yr)
+    crf                   : Capital Recovery Factor for annualising capex
+    """
+    all_vars: List[str] = flowsheet.all_variables()
+    energy_coeff = electricity_price_USD_per_kWh * operating_hours  # $/kW/yr
+
+    # ── Feasibility Only ─────────────────────────────────────────────────────
+    if mode == "Feasibility Only":
+        return {}, True   # force_feasibility=True zeros out all LP cost terms
+
+    obj: dict = {}
+
+    # ── Minimize OPEX ────────────────────────────────────────────────────────
+    # Unit objective_contribution() terms (feedstock, electricity) are ALREADY
+    # injected into the LP via LinearizedModel.objective_terms.  No extra terms
+    # are needed — just ensure force_feasibility is False.
+    if mode == "Minimize OPEX":
+        return {}, False
+
+    # ── Energy penalty ───────────────────────────────────────────────────────
+    # Add electricity price × hours on any decision variable representing
+    # shaft work or electrical power draw.
+    if mode in ("Minimize Energy", "Minimize TAC", "Minimize LCOH (Levelized Cost of H₂)"):
+        for v in all_vars:
+            lv = v.lower()
+            if any(k in lv for k in ("w_shaft", "w_elec_kw", "electricity_kw")):
+                obj[v] = obj.get(v, 0.0) + energy_coeff
+
+    # ── Annualised CAPEX for linear-capex units ───────────────────────────────
+    # ElectrolyserHF has strictly linear capex: 700 USD/kW.
+    # Annualised = 700 × CRF per kW → inject on the W_elec_kW decision variable.
+    # SSLW-correlated units (Compressor, HXN, vessels) have non-linear capex;
+    # their costs are captured post-solve in kpis() and the Excel report.
+    if mode in ("Minimize TAC", "Minimize LCOH (Levelized Cost of H₂)"):
+        for unit in flowsheet.units:
+            if type(unit).__name__ == "ElectrolyserHF":
+                w_var = next(
+                    (v for v in all_vars
+                     if unit.unit_id in v and "w_elec_kw" in v.lower()),
+                    None,
+                )
+                if w_var:
+                    obj[w_var] = obj.get(w_var, 0.0) + 700.0 * crf  # $70/kW/yr
+
+    # ── H₂ yield maximisation ────────────────────────────────────────────────
+    # Negative coefficient (−1.0) on the last H₂ outlet flow variable in the chain.
+    # "Last" is determined by lexicographic sort; for sequential chains this gives
+    # the most downstream H₂ variable.
+    if mode in ("Maximize H₂ Yield", "Minimize LCOH (Levelized Cost of H₂)"):
+        # Variable format: unit_id.port_tag.variable_name
+        # Outlet port tags contain "out": syngas_out, shifted_out, h2_out, outlet, dry_out
+        # Inlet port tags contain "in": syngas_in, feed_in, biomass_in, inlet, wet_in
+        def _is_h2_outlet(v: str) -> bool:
+            parts = v.split(".")
+            if len(parts) < 3:
+                return False
+            return parts[-1].lower() == "f_h2" and "out" in parts[1].lower()
+
+        h2_candidates = sorted(v for v in all_vars if _is_h2_outlet(v))
+        if h2_candidates:
+            obj[h2_candidates[-1]] = obj.get(h2_candidates[-1], 0.0) - 1.0
+
+    return obj, False
+
+
 TYPE_ID_SUGGESTIONS: Dict[str, str] = {
     "PEMToy":                "pem",
     "GasifierToy":           "gasifier",
