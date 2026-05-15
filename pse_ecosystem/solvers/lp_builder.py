@@ -147,6 +147,11 @@ def build_lp(
         for v, c in lin.objective_terms.items():
             obj_terms[v] = obj_terms.get(v, 0.0) + float(c)
 
+    # Merge flowsheet-level objective overrides (objective_extra).
+    for v, c in getattr(flowsheet, "objective_extra", {}).items():
+        if v in model.x:
+            obj_terms[v] = obj_terms.get(v, 0.0) + float(c)
+
     if obj_terms:
         model.objective = pyo.Objective(
             expr=sum(c * model.x[v] for v, c in obj_terms.items()),

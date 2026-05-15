@@ -53,6 +53,14 @@ class BaseFlowsheet:
     the solver never reads this field.  Declare recycle tear streams in
     :class:`~pse_ecosystem.solvers.slp.TearStreamConfig` instead."""
 
+    objective_extra: Dict[str, float] = field(default_factory=dict)
+    """Flowsheet-level LP objective overrides, merged with per-unit
+    ``objective_contribution()`` terms.  Negative coefficient = maximise.
+
+    Set via the UI's Objective Function tab or programmatically:
+        ``fs.objective_extra = {"comp.outlet.F_H2": -1.0}``
+    """
+
     # ── Port connectivity ────────────────────────────────────────────────────
 
     def connect(

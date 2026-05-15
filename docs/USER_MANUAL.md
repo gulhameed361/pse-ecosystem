@@ -922,7 +922,51 @@ SLPConfig(
 
 ---
 
-## 2.9 Solve Benchmarks — 7-Unit Chain
+## 2.9 Understanding the Connection Display
+
+After clicking **Build & Select** you will see a banner such as:
+
+```
+Custom flowsheet built: 7 units, 6 stream link(s) (33 variable equalities).
+```
+
+- **6 stream links** = the number of From→To pairs you drew in the Connections panel.
+  This is the number that should match your flowsheet diagram.
+- **33 variable equalities** = the number of individual equality constraints the solver
+  enforces internally. Each stream link generates one constraint per shared variable
+  (one per component flow, plus T and P where both ports include them). For a 6-component
+  syngas chain with flow-only connections (no T/P), each link produces 6 equalities:
+  6 links × 6 species = 36, minus a few for the Biomass-to-Gasifier link (1 species) ≈ 31–33.
+
+This is expected behaviour and not an error. The solver correctly enforces all variable equalities.
+
+---
+
+## 2.10 Setting an Optimization Objective
+
+The **Objective Function** tab (inside the Flowsheet Builder, alongside the Sensitivity Sweep)
+lets you instruct the solver to do more than just find a feasible operating point.
+
+| Option | What the solver does |
+|---|---|
+| Feasibility Only (default) | Finds a point satisfying all residuals; objective = 0 |
+| Maximize H₂ Yield | Negative coefficient on the last H₂ outlet variable → LP maximises H₂ flow |
+| Minimize Energy | Positive coefficient on shaft work / electricity variables → LP reduces energy use |
+| Minimize LCOH (proxy) | Minimises electricity cost; maximises H₂ simultaneously |
+| Maximize Net Profit (proxy) | Same as above with combined coefficients |
+
+**Steps:**
+1. In Flowsheet Builder → **Objective Function** tab, select your objective.
+2. Optionally type an exact variable name (e.g. `comp_1.outlet.F_H2`) to override auto-detection.
+3. Click **Apply Objective**.
+4. Go to **Solver Monitor** → Run Solve. The LP objective now reflects your choice.
+
+*Advanced:* Set `fs.objective_extra = {"variable_name": coefficient}` programmatically
+(negative = maximise). The LP builder merges this with unit-level `objective_contribution()`.
+
+---
+
+## 2.11 Solve Benchmarks — 7-Unit Chain
 
 Use these benchmarks to choose solver settings for the workshop chain:
 

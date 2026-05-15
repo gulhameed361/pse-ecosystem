@@ -57,7 +57,7 @@ def _page_dashboard():
     from pse_ecosystem.ui.flowsheet_service import list_templates
 
     st.title("PSE Ecosystem")
-    st.caption("v1.3.0  |  Private — University of Surrey")
+    st.caption("v1.3.1  |  Private — University of Surrey")
 
     # ── LP solver check ────────────────────────────────────────────────────
     try:
@@ -263,8 +263,61 @@ def _page_flowsheet_builder():
                     )
 
         st.divider()
-        with st.expander("1D Parameter Sensitivity Sweep", expanded=False):
+        _fb_tabs = st.tabs(["1D Sensitivity Sweep", "Objective Function"])
+
+        with _fb_tabs[0]:
             _section_sensitivity_sweep(st, chosen_key, spec)
+
+        with _fb_tabs[1]:
+            st.subheader("Optimization Objective")
+            st.caption(
+                "Sets an extra LP objective term on top of any unit-level cost contributions. "
+                "Applies when you run from the **Solver Monitor**."
+            )
+            _obj_mode = st.radio(
+                "Objective",
+                [
+                    "Feasibility Only (default)",
+                    "Maximize H₂ Yield",
+                    "Minimize Energy (shaft + electricity)",
+                    "Minimize LCOH (proxy: minimize cost variables)",
+                    "Maximize Net Profit (proxy: maximize H₂ − energy cost)",
+                ],
+                index=0,
+                key="objective_mode",
+            )
+            _obj_target_var = st.text_input(
+                "Override target variable (optional)",
+                value="",
+                key="objective_target_var",
+                help="Advanced: enter a variable name (e.g. 'comp_1.outlet.F_H2'). "
+                     "Leave blank to use the auto-detected variable for the chosen objective.",
+            )
+            _obj_coeff = st.number_input(
+                "Coefficient (negative = maximise)",
+                value=-1.0,
+                key="objective_coeff",
+                help="Applied to the target variable in the LP/NLP objective.",
+            )
+            st.info(
+                "**How it works:** The solver adds this as an extra LP term "
+                "(merged with per-unit `objective_contribution()`). "
+                "For 'Maximize H₂ Yield', the H₂ outlet variable of the last unit is "
+                "auto-detected and given a negative coefficient so the minimiser maximises it."
+            )
+            if st.button("Apply Objective", key="apply_objective_btn"):
+                st.session_state["objective_config"] = {
+                    "mode":       _obj_mode,
+                    "target_var": _obj_target_var.strip(),
+                    "coeff":      float(_obj_coeff),
+                }
+                st.success(f"Objective set to: **{_obj_mode}**. Run from Solver Monitor.")
+
+            # Show current objective config if set
+            _oc = st.session_state.get("objective_config")
+            if _oc:
+                st.caption(f"Current objective: {_oc['mode']}"
+                           + (f" | variable: {_oc['target_var']}" if _oc["target_var"] else ""))
 
 
 # ── Sensitivity sweep ────────────────────────────────────────────────────────
@@ -395,11 +448,22 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
     shared_components = [c.strip() for c in raw_comps.split(",") if c.strip()]
 
     n_units = st.number_input("Number of units", min_value=1, max_value=10, value=2, step=1)
-    unit_types = list(AVAILABLE_UNITS.keys())
 
-    from pse_ecosystem.ui.flowsheet_service import get_unit_param_specs
+    from pse_ecosystem.ui.flowsheet_service import (
+        get_unit_param_specs, UNIT_CATEGORIES, TYPE_ID_SUGGESTIONS,
+    )
 
-    _auto_ids = [f"u{j+1}" for j in range(int(n_units))]
+    # Dynamic category filter — narrows the unit type dropdown
+    _all_cats = ["All"] + list(UNIT_CATEGORIES.keys())
+    _cat_sel = st.selectbox(
+        "Filter unit types by category", _all_cats,
+        index=0, key="custom_cat_filter",
+        help="Narrows the Type dropdown in each unit expander.",
+    )
+    if _cat_sel == "All":
+        unit_types = list(AVAILABLE_UNITS.keys())
+    else:
+        unit_types = UNIT_CATEGORIES.get(_cat_sel, list(AVAILABLE_UNITS.keys()))
 
     unit_configs = []
     for i in range(int(n_units)):
@@ -411,17 +475,18 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
                 help=AVAILABLE_UNITS.get(unit_types[min(i, len(unit_types)-1)], ""),
             )
 
-            # Smart-select: dropdown of auto-generated IDs + free-form fallback
-            _id_options = _auto_ids + ["custom..."]
+            # Smart-select: type-specific ID suggestions + free-form fallback
+            _base_id = TYPE_ID_SUGGESTIONS.get(utype, f"u{i+1}")
+            _id_options = [f"{_base_id}_{j}" for j in range(1, 4)] + ["custom..."]
             _id_sel = st.selectbox(
                 "Unit ID", _id_options,
-                index=min(i, len(_auto_ids) - 1),
+                index=0,
                 key=f"custom_unit_id_sel_{i}",
-                help="Select an auto-generated ID or choose 'custom...' to type your own.",
+                help=f"Suggested IDs for '{utype}'. Choose 'custom...' to type your own.",
             )
             if _id_sel == "custom...":
                 uid = st.text_input(
-                    "Custom ID", value=f"u{i+1}",
+                    "Custom ID", value=_base_id,
                     key=f"custom_unit_id_txt_{i}",
                 )
             else:
@@ -526,10 +591,12 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
             st.session_state["custom_flowsheet"] = fs
             for w in getattr(fs, "_conn_warnings", []):
                 st.warning(f"Connection skipped: {w}")
-            n_conn = len(fs.connections)
+            n_streams   = len(connections)        # logical stream pairs drawn in UI
+            n_equalities = len(fs.connections)   # variable equality constraints (internal)
             st.success(
                 f"Custom flowsheet built: {len(fs.units)} units, "
-                f"{n_conn} connections. Go to **Solver Monitor** to run."
+                f"{n_streams} stream link(s) ({n_equalities} variable equalities). "
+                f"Go to **Solver Monitor** to run."
             )
         except Exception as exc:
             st.error(f"Build failed: {exc}")
@@ -668,7 +735,7 @@ def _page_solver_monitor():
     with st.expander("Solver Settings", expanded=True):
         col_a, col_b = st.columns(2)
         with col_a:
-            max_iter = st.slider("Max iterations", 5, 1000, 50)
+            max_iter = st.slider("Max iterations", 5, 1000, 200)
             eps_x    = st.number_input("Step tolerance (eps_x)", value=1e-4,
                                         format="%.2e", min_value=1e-10, max_value=1.0)
         with col_b:
@@ -790,6 +857,32 @@ def _page_solver_monitor():
                     flowsheet = load_template(selected_key, params)
                     tech_choices = []
 
+                # Apply objective config from Objective Function tab
+                _oc = st.session_state.get("objective_config", {})
+                _obj_mode_val = _oc.get("mode", "Feasibility Only (default)")
+                _obj_tv       = _oc.get("target_var", "")
+                _obj_cv       = float(_oc.get("coeff", -1.0))
+                if _obj_mode_val != "Feasibility Only (default)":
+                    _all_vars = list(flowsheet.all_variables().keys()) if hasattr(flowsheet, "all_variables") else []
+                    if _obj_tv:
+                        flowsheet.objective_extra = {_obj_tv: _obj_cv}
+                    elif "Maximize H₂ Yield" in _obj_mode_val:
+                        _h2 = [v for v in _all_vars if "F_H2" in v and "outlet" in v]
+                        flowsheet.objective_extra = {_h2[-1]: -1.0} if _h2 else {}
+                    elif "Minimize Energy" in _obj_mode_val:
+                        _en = [v for v in _all_vars if any(k in v for k in ["W_shaft", "W_elec", "electricity"])]
+                        flowsheet.objective_extra = {_en[0]: 1.0} if _en else {}
+                    elif "LCOH" in _obj_mode_val or "Net Profit" in _obj_mode_val:
+                        _h2 = [v for v in _all_vars if "F_H2" in v and "outlet" in v]
+                        _en = [v for v in _all_vars if any(k in v for k in ["W_shaft", "W_elec"])]
+                        flowsheet.objective_extra = {}
+                        if _h2:
+                            flowsheet.objective_extra[_h2[-1]] = -1.0
+                        if _en:
+                            flowsheet.objective_extra[_en[0]] = 0.1
+                else:
+                    flowsheet.objective_extra = {}
+
                 orch = Orchestrator(
                     flowsheet=flowsheet,
                     mode=mode,
@@ -801,6 +894,7 @@ def _page_solver_monitor():
             # Collapse the live chart — the final chart below is higher quality.
             live_chart.empty()
             st.session_state["last_result"] = result
+            st.session_state["last_flowsheet"] = flowsheet   # for per-unit Excel export
 
         except Exception as exc:
             st.error(f"Solve failed: {exc}")
@@ -825,6 +919,32 @@ def _page_solver_monitor():
             f"Solver status: **{str(result.status).split('.')[-1]}**  |  "
             f"{result.message}"
         )
+        _status_name = str(result.status).split(".")[-1]
+        _tips = {
+            "MAX_ITER": (
+                "**Potential fixes:**\n"
+                "1. Increase the **Max Iterations** slider (currently " + str(int(max_iter)) + ").\n"
+                "2. Enable **Progressive Tightening** checkbox — starts with loose tolerances.\n"
+                "3. Switch to **Adaptive** solver mode (SLP → NLP → Trust-Region cascade).\n"
+                "4. Verify the **Shared Component Set** matches all unit types."
+            ),
+            "INFEASIBLE": (
+                "**Potential fixes:**\n"
+                "1. Widen variable bounds or reduce `extra_bounds` constraints.\n"
+                "2. Check connections are correctly wired (look for zero flows in the stream table).\n"
+                "3. Loosen Step Tolerance (eps_x) in **Advanced solver settings**."
+            ),
+            "NUMERICAL_ERROR": (
+                "**Potential fixes:**\n"
+                "1. Try a different LP solver backend (HiGHS → CBC).\n"
+                "2. Enable Trust-Region mode with a reduced minimum radius.\n"
+                "3. Check for near-zero denominators in equilibrium unit models."
+            ),
+        }
+        _tip = _tips.get(_status_name, "")
+        if _tip:
+            with st.expander("Potential Fix"):
+                st.markdown(_tip)
 
     # Convergence plot
     if result.history:
@@ -915,24 +1035,65 @@ def _page_solver_monitor():
             hide_index=True,
         )
 
-    # ── Excel download ───────────────────────────────────────────────────────
+    # ── Excel download (3 sheets) ─────────────────────────────────────────────
     try:
         import io
         import pandas as _pd
+        _last_fs = st.session_state.get("last_flowsheet")
         _buf = io.BytesIO()
         with _pd.ExcelWriter(_buf, engine="openpyxl") as _writer:
-            _pd.DataFrame(
-                [{"KPI": k, "Value": v} for k, v in result.kpis.items()]
-            ).to_excel(_writer, sheet_name="KPIs", index=False)
-            _pd.DataFrame(
-                [{"Variable": k, "Value": v} for k, v in result.x.items()]
-            ).to_excel(_writer, sheet_name="Solution Variables", index=False)
+
+            # Sheet 1: Stream Table — variables parsed from unit.port.variable format
+            _stream_rows = []
+            for k, v in result.x.items():
+                _parts = k.split(".")
+                if len(_parts) >= 3:
+                    _stream_rows.append({
+                        "Unit": _parts[0],
+                        "Port": _parts[1],
+                        "Variable": ".".join(_parts[2:]),
+                        "Value": v,
+                    })
+                else:
+                    _stream_rows.append({"Unit": "", "Port": "", "Variable": k, "Value": v})
+            _pd.DataFrame(_stream_rows).to_excel(_writer, sheet_name="Stream Table", index=False)
+
+            # Sheet 2: Unit Performance — per-unit KPIs + capex where available
+            _perf_rows = []
+            if _last_fs is not None:
+                for _unit in _last_fs.units:
+                    try:
+                        for kk, vv in _unit.kpis(result.x).items():
+                            _perf_rows.append({"Unit": _unit.unit_id, "KPI": kk, "Value": vv})
+                        _capex = getattr(_unit, "capex_USD", lambda _x: 0.0)(result.x)
+                        if _capex:
+                            _perf_rows.append({
+                                "Unit": _unit.unit_id, "KPI": "capex_USD", "Value": _capex,
+                            })
+                    except Exception:
+                        pass
+            if not _perf_rows:
+                # Fallback: aggregated KPIs
+                _perf_rows = [{"Unit": "all", "KPI": k, "Value": v}
+                              for k, v in result.kpis.items()]
+            _pd.DataFrame(_perf_rows).to_excel(_writer, sheet_name="Unit Performance", index=False)
+
+            # Sheet 3: Optimization Summary
+            _summary = [
+                {"Field": "Status",     "Value": str(result.status).split(".")[-1]},
+                {"Field": "Iterations", "Value": result.iterations},
+                {"Field": "Objective",  "Value": result.objective},
+                {"Field": "Converged",  "Value": result.converged},
+                {"Field": "Message",    "Value": result.message},
+            ]
+            _pd.DataFrame(_summary).to_excel(_writer, sheet_name="Optimization Summary", index=False)
+
         st.download_button(
             label="⬇ Download Results (XLSX)",
             data=_buf.getvalue(),
             file_name="pse_results.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            help="Exports KPIs (Sheet 1) and all solution variables (Sheet 2) to Excel.",
+            help="Sheet 1: Stream Table | Sheet 2: Unit Performance | Sheet 3: Optimization Summary",
         )
     except ImportError:
         st.caption("Install `openpyxl` to enable Excel export: `pip install openpyxl`")

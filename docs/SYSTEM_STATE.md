@@ -1,8 +1,48 @@
 # PSE Ecosystem — System State Ledger
 
-**Version:** 1.3.0-Phase7
+**Version:** 1.3.1
 **Date:** 2026-05-15
-**Status:** v1.3.0 "Industrial Ready" — UI ergonomics (dynamic param forms, smart-select IDs), Excel export, progressive solver tightening, iteration slider to 1000
+**Status:** v1.3.1 — Connection display fix, Objective Function tab, 3-sheet Excel export, smart unit IDs, category filter, MAX_ITER tips
+
+---
+
+## What's New in v1.3.1 — Connection Fix, Objective Function & Enhanced Export
+
+### Bug Fix
+- **"33 connections" display corrected**: The success banner after "Build & Select" now reads
+  "N stream link(s) (M variable equalities)". The stream link count (6 for the 7-unit chain)
+  is the number you drew; the variable equality count is the solver's internal constraint count.
+  These were previously conflated in `len(fs.connections)`.
+
+### UI & UX (`app_streamlit.py` + `flowsheet_service.py`)
+- **Smart unit IDs**: Unit ID dropdown now shows type-specific suggestions (e.g. `gasifier_1`,
+  `wgs_1`, `comp_1`) using the new `TYPE_ID_SUGGESTIONS` dict in `flowsheet_service.py`.
+- **Category filter**: A "Filter unit types by category" selectbox above the unit expanders
+  narrows the type dropdown using the existing `UNIT_CATEGORIES` dict (Biomass, Reactors, etc.).
+- **Objective Function tab**: New tab in the Flowsheet Builder (alongside Sensitivity Sweep).
+  Four objectives: Maximize H₂ Yield, Minimize Energy, Minimize LCOH (proxy), Maximize Net Profit.
+  The selected objective is injected into the flowsheet as `objective_extra` before each solve.
+- **MAX_ITER tip messages**: When solver returns non-CONVERGED status, an expandable
+  "Potential Fix" panel appears with mode-specific troubleshooting steps.
+- **Solver default iterations**: slider default raised from 50 → 200.
+- **Version tag**: v1.3.0 → v1.3.1 on Dashboard and pyproject.toml.
+
+### Solver: Objective Injection (`base_flowsheet.py` + `lp_builder.py`)
+- `BaseFlowsheet.objective_extra: Dict[str, float]` — new dataclass field (default empty).
+- `lp_builder.build_lp()` now merges `flowsheet.objective_extra` into the LP objective terms
+  before constructing the Pyomo `Objective`. Negative coefficient = maximise.
+- Flowsheet reference stored in `session_state["last_flowsheet"]` after each solve for per-unit KPI extraction.
+
+### Data Export (`app_streamlit.py`)
+- **3-sheet Excel**: Stream Table (unit/port/variable/value), Unit Performance (per-unit KPIs + capex),
+  Optimization Summary (status, iterations, objective, message). Replaced the previous 2-sheet export.
+
+### Documentation (`USER_MANUAL.md`)
+- §2.9: Explains the "6 stream links (33 variable equalities)" display.
+- §2.10: Objective Function tab guide (4 options, advanced variable override).
+- §2.11: Solve benchmarks table (unchanged from Phase 7).
+
+### Tests (`tests/test_v131.py`): 7 new tests — 161 total, 1 pre-existing skip.
 
 ---
 

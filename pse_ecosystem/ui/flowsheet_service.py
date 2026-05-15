@@ -118,6 +118,28 @@ def get_unit_param_specs(utype: str) -> List[ParamSpec]:
     return UNIT_PARAM_SPECS.get(utype, [])
 
 
+# ── Type-specific Unit ID suggestions ────────────────────────────────────────
+
+TYPE_ID_SUGGESTIONS: Dict[str, str] = {
+    "PEMToy":                "pem",
+    "GasifierToy":           "gasifier",
+    "BiomassStorageHF":      "storage",
+    "BiomassGasifierHF":     "gasifier",
+    "WGSReactorHF":          "wgs",
+    "StoichiometricReactor": "stoich_rx",
+    "MethanationReactor":    "meth",
+    "SeparatorHF":           "sep",
+    "FlashVLHF":             "flash",
+    "TVSAContactor":         "dac",
+    "HeatExchangerNTU":      "hex",
+    "CoolerHF":              "cooler",
+    "ElectrolyserHF":        "elec",
+    "CHPUnit":               "chp",
+    "MixerHF":               "mixer",
+    "Compressor":            "comp",
+}
+
+
 # ── TemplateSpec ─────────────────────────────────────────────────────────────
 
 @dataclass
