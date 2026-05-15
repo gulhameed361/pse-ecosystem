@@ -10,6 +10,8 @@ Application-centric Knowledge Ecosystem for Process Systems Engineering.
 - **Explainable physics.** Every unit model ships its exact algebraic residuals and analytical Jacobian. Regulators, auditors, and partners can inspect every equation — no black-box solver.
 - **Analytical Jacobians throughout.** The SLP solver linearises using exact ∂f/∂x, not finite differences. Faster convergence, provable gradient accuracy.
 - **3-layer separation.** UI / Solver / Knowledge are strictly decoupled via the Handshake Protocol. Swap the solver without touching the physics; swap the UI without touching the solver.
+- **Modular Assembly Freedom.** Aspen-style Custom Flowsheet builder supports 16+ unit types including biomass-domain units (BiomassStorageHF, BiomassGasifierHF, WGSReactorHF, CoolerHF). Users assemble, configure, and connect any chain without writing templates.
+- **Analytical Verification.** Every unit exposes exact Jacobians; 7-unit workshop chain is validated via 146 automated tests.
 
 ---
 
@@ -44,7 +46,7 @@ python -m venv $HOME\.venvs\pse_ecosystem
 pip install -e ".[dev,solvers,gui,weather]"
 
 # Run tests
-pytest tests\ -q                       # 128 unit tests
+pytest tests\ -q                       # 146 unit tests
 
 # Launch the Streamlit UI
 streamlit run pse_ecosystem/ui/app_streamlit.py
@@ -118,7 +120,7 @@ Basis: 1 kg/s wet Pine Wood (800 °C gasifier, dual-stage WGS at 400 °C / 220 �
 | `MethanationReactor` | False | Analytical (3×6) | Sabatier equilibrium CO₂ + 4H₂ → CH₄ + 2H₂O |
 | `CHPUnit` | **True** | Analytical (7×13) | Combined Heat & Power — turbine + HRSG |
 
-### Biomass (v1.1.0)
+### Biomass / Gas Cooling (v1.1.0 + v1.3.0)
 
 | Class | `is_linear` | Purpose |
 |---|---|---|
@@ -126,6 +128,7 @@ Basis: 1 kg/s wet Pine Wood (800 °C gasifier, dual-stage WGS at 400 °C / 220 �
 | `BiomassGasifierHF` | False | Equilibrium gasifier (WGS + methanation Kp) |
 | `WGSReactorHF` | False | Water-Gas Shift at fixed T |
 | `H2SeparatorPSA` | True | PSA H₂ separation |
+| `CoolerHF` | **True** | Single-stream gas cooler — linear, fixed T_out (v1.3.0) |
 
 ### Core Engineering
 

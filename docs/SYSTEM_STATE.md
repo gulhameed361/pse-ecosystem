@@ -1,8 +1,38 @@
 # PSE Ecosystem — System State Ledger
 
-**Version:** 1.2.1
-**Date:** 2026-05-14
-**Status:** v1.2.1 "Showcase-Ready" — connections bug fixed, FlashVLHF in custom builder, Biomass convergence stabilised
+**Version:** 1.3.0-Phase5
+**Date:** 2026-05-15
+**Status:** v1.3.0 "Aspen-Style Assembly & Validation" — CoolerHF unit, biomass unit registry, flow-only fallback, workshop documentation
+
+---
+
+## What's New in v1.3.0-Phase5 — Aspen-Style Assembly & Validation
+
+### New Unit
+- **`CoolerHF`** (`models/heat_exchangers/cooler_hf.py`): Single-stream gas cooler.
+  Linear, fixed-T_out, flow-through. Both ports T/P-free for direct chaining to WGS-style units.
+  Exact analytical Jacobian (`is_linear = True`). Registered in `AVAILABLE_UNITS` + `UNIT_CATEGORIES`.
+
+### Service Fixes (`flowsheet_service.py`)
+- **AVAILABLE_UNITS extended**: `BiomassStorageHF`, `BiomassGasifierHF`, `WGSReactorHF`, `CoolerHF`
+  now selectable in the Custom Flowsheet UI dropdown (previously only available via templates).
+- **UNIT_CATEGORIES**: new `"Biomass"` and `"Cooling"` categories.
+- **`_instantiate_unit()` extended**: 4 new instantiation blocks for the biomass + cooler units.
+- **Flow-only fallback** in `build_custom_flowsheet()`: when `fs.connect()` raises `ValueError`
+  due to T/P variable-count mismatch, the service now links only the shared `.F_*` component flow
+  variables instead of silently logging 0 connections. This prevents the "0 connections" failure
+  for chains like WGSReactorHF → SeparatorHF.
+
+### Tests (`tests/test_ui_assembly_logic.py`)
+- 18 new tests: CoolerHF unit physics (6), registration checks (5), flow-only fallback (1),
+  7-unit chain integration (3). Full suite: 146 pass, 1 conditional skip.
+
+### Documentation
+- **USER_MANUAL.md §3.6**: Manual Build Workshop — step-by-step 7-unit chain assembly guide
+  with UI input table, connection wiring table, and validation answer key.
+- **ARCHITECTURE.md §5.1**: Dynamic port mapping and flow-only fallback — explains
+  `_OUTLET_NAMED`, `_INLET_NAMED`, and the flow-only fallback mechanism.
+- **THEORY_REFERENCE.md §8**: Mass/energy balance LaTeX math for all 7 workshop chain units.
 
 ---
 

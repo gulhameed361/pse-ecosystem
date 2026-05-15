@@ -44,6 +44,10 @@ AVAILABLE_UNITS: Dict[str, str] = {
     # Feed / Product
     "PEMToy":                "Electrolyser — linear (LCOH + Carbon Intensity KPIs)",
     "GasifierToy":           "Gasifier toy — non-linear (LCOH + Carbon Intensity KPIs)",
+    # Biomass chain
+    "BiomassStorageHF":      "Biomass dryer/storage — linear, solid feedstock",
+    "BiomassGasifierHF":     "Biomass gasifier — non-linear equilibrium, 6-species syngas",
+    "WGSReactorHF":          "Water-Gas Shift reactor — non-linear equilibrium, analytical J",
     # Reactors
     "StoichiometricReactor": "Stoichiometric reactor — linear (exact analytical J)",
     "MethanationReactor":    "Sabatier methanation — non-linear equilibrium, analytical J",
@@ -52,6 +56,7 @@ AVAILABLE_UNITS: Dict[str, str] = {
     "TVSAContactor":         "TVSA DAC contactor — linear, analytical J (415 ppm CO2 feed)",
     # Heat Exchange
     "HeatExchangerNTU":      "Heat exchanger NTU — non-linear (counter-current)",
+    "CoolerHF":              "Single-stream gas cooler — linear, fixed T_out parameter",
     # Power / CHP
     "ElectrolyserHF":        "PEM/AEL electrolyser — linear, port-based, analytical J",
     "CHPUnit":               "Combined Heat & Power — linear, analytical J (H2/CO/CH4 fuel)",
@@ -64,9 +69,10 @@ AVAILABLE_UNITS: Dict[str, str] = {
 
 UNIT_CATEGORIES: Dict[str, List[str]] = {
     "Feed/Product":       ["PEMToy", "GasifierToy"],
+    "Biomass":            ["BiomassStorageHF", "BiomassGasifierHF", "WGSReactorHF"],
     "Reactors":           ["StoichiometricReactor", "MethanationReactor"],
     "Separation/DAC":     ["SeparatorHF", "FlashVLHF", "TVSAContactor"],
-    "Heat Exchange":      ["HeatExchangerNTU"],
+    "Heat Exchange":      ["HeatExchangerNTU", "CoolerHF"],
     "Power/CHP":          ["ElectrolyserHF", "CHPUnit"],
     "Mixing":             ["MixerHF"],
     "Pressure Changers":  ["Compressor"],
@@ -627,10 +633,23 @@ def build_custom_flowsheet(config: Dict[str, Any]) -> "BaseFlowsheet":
             try:
                 fs.connect(out_port, in_port,
                            description=f"{conn['from_unit']} → {conn['to_unit']}")
-            except ValueError as exc:
-                conn_warnings.append(
-                    f"{conn['from_unit']} → {conn['to_unit']}: {exc}"
-                )
+            except ValueError:
+                # Variable-count mismatch (usually T/P present on one port but not the other).
+                # Fall back to linking only component flow variables (.F_*).
+                from pse_ecosystem.flowsheets.base_flowsheet import Connection as _Conn
+                a_flows = [v for v in out_port.variable_names() if ".F_" in v]
+                b_flows = [v for v in in_port.variable_names() if ".F_" in v]
+                if len(a_flows) == len(b_flows) and a_flows:
+                    for va, vb in zip(a_flows, b_flows):
+                        fs.connections.append(_Conn(
+                            var_a=va, var_b=vb,
+                            description=f"{conn['from_unit']} → {conn['to_unit']} (flow-only)",
+                        ))
+                else:
+                    conn_warnings.append(
+                        f"{conn['from_unit']} → {conn['to_unit']}: "
+                        f"component count mismatch ({len(a_flows)} vs {len(b_flows)}), skipped"
+                    )
         elif out_port is None and in_port is None:
             conn_warnings.append(
                 f"{conn['from_unit']} → {conn['to_unit']}: "
@@ -783,6 +802,42 @@ def _instantiate_unit(utype: str, uid: str, params: dict) -> Any:
             eta_hrec=float(params.get("eta_hrec", 0.85)),
             lambda_air=float(params.get("lambda_air", 1.1)),
         )
+
+    if utype == "BiomassStorageHF":
+        from pse_ecosystem.models.biomass.biomass_storage import BiomassStorageHF
+        return BiomassStorageHF(
+            uid,
+            biomass_type=params.get("biomass_type", "Pine Wood"),
+            T_in_C=float(params.get("T_in_C", 15.0)),
+            T_preheat_C=float(params.get("T_preheat_C", 200.0)),
+        )
+
+    if utype == "BiomassGasifierHF":
+        from pse_ecosystem.models.biomass.biomass_gasifier import BiomassGasifierHF
+        return BiomassGasifierHF(
+            uid,
+            biomass_type=params.get("biomass_type", "Pine Wood"),
+            T_gasifier_C=float(params.get("T_gasifier_C", 800.0)),
+            gasifying_agent=params.get("gasifying_agent", "Steam"),
+            P_atm=float(params.get("P_atm", 1.0)),
+            biomass_cost_USD_per_kg=float(params.get("biomass_cost_USD_per_kg", 0.05)),
+        )
+
+    if utype == "WGSReactorHF":
+        from pse_ecosystem.models.biomass.wgs_reactor import WGSReactorHF
+        return WGSReactorHF(
+            uid,
+            T_wgs_C=float(params.get("T_wgs_C", 400.0)),
+        )
+
+    if utype == "CoolerHF":
+        from pse_ecosystem.models.heat_exchangers.cooler_hf import CoolerHF, CoolerHFParams
+        components = params.get("components", ["H2", "CO", "CO2", "H2O", "CH4", "N2"])
+        cp = CoolerHFParams(
+            T_out_K=float(params.get("T_out_K", 400.0)),
+            feed_max=float(params.get("feed_max", 1_000.0)),
+        )
+        return CoolerHF(uid, components, cp)
 
     raise ValueError(f"Unknown unit type: {utype}")
 

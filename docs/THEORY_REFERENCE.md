@@ -820,3 +820,168 @@ $$n_{H_2,product} = 0.995 \cdot n_{H_2,comp\_outlet}$$
 | H₂ product flow | > 0 mol/s | `psa.h2_out.F_H2 > 0` |
 
 All 9 structural tests in `tests/test_grand_challenge.py` pass on a clean install.
+
+---
+
+## §11 Manual Build Workshop: 7-Unit Chain Mass & Energy Balances
+
+This section provides the symbolic residual mathematics for each unit in the v1.3.0-Phase5
+workshop chain:
+
+```
+[1] BiomassStorageHF → [2] BiomassGasifierHF → [3] SeparatorHF (Cyclone)
+→ [4] WGSReactorHF → [5] CoolerHF → [6] SeparatorHF (PSA) → [7] Compressor
+```
+
+Notation: $\dot{n}$ [mol/s], $\dot{F}$ [kg/s], $T$ [K], $P$ [Pa].
+
+---
+
+### §11.1 BiomassStorageHF (Unit 1) — Linear
+
+Single residual: dry biomass outlet = wet inlet minus moisture.
+
+$$f_1 = \dot{F}_{dry} - \dot{F}_{wet}(1 - \text{MC}) = 0$$
+
+where MC = moisture content (e.g. 0.17 for Pine Wood). One residual, two variables.
+
+Jacobian (exact, constant):
+
+$$J = \begin{bmatrix} -(1-\text{MC}) & +1 \end{bmatrix}$$
+
+---
+
+### §11.2 BiomassGasifierHF (Unit 2) — Non-linear
+
+Six residuals, 8 variables ($\dot{F}_{biomass}$, $\dot{F}_{steam}$, $\dot{n}_{H_2}$, $\dot{n}_{CO}$, $\dot{n}_{CO_2}$, $\dot{n}_{H_2O}$, $\dot{n}_{CH_4}$, $\dot{n}_{N_2}$):
+
+**Element balances:**
+
+$$f_1 = \dot{n}_{CO} + \dot{n}_{CO_2} + \dot{n}_{CH_4} - \dot{n}_C(\dot{F}_{bio}) = 0 \quad \text{(carbon)}$$
+
+$$f_2 = 2\dot{n}_{H_2} + 2\dot{n}_{H_2O} + 4\dot{n}_{CH_4} - \dot{n}_{H}(\dot{F}_{bio}, \dot{F}_{steam}) = 0 \quad \text{(hydrogen)}$$
+
+$$f_3 = \dot{n}_{CO} + 2\dot{n}_{CO_2} + \dot{n}_{H_2O} - \dot{n}_{O}(\dot{F}_{bio}, \dot{F}_{steam}) = 0 \quad \text{(oxygen)}$$
+
+$$f_4 = 2\dot{n}_{N_2} - \dot{n}_N(\dot{F}_{bio}) = 0 \quad \text{(nitrogen)}$$
+
+**Equilibrium constraints:**
+
+$$f_5 = K_{WGS}(T) \cdot \dot{n}_{CO} \cdot \dot{n}_{H_2O} - \dot{n}_{CO_2} \cdot \dot{n}_{H_2} = 0$$
+
+$$f_6 = K_{met}(T) \cdot \dot{n}_{CO} \cdot \dot{n}_{H_2}^3 \cdot \left(\frac{P}{\dot{n}_{total}}\right)^{-2} - \dot{n}_{CH_4} \cdot \dot{n}_{H_2O} = 0$$
+
+where:
+
+$$K_{WGS}(T) = \exp\!\left(\frac{4300}{T} - 3.84\right), \qquad K_{met}(T) = \exp\!\left(\frac{25000}{T} - 26.2\right)$$
+
+---
+
+### §11.3 SeparatorHF — Cyclone (Unit 3) — Linear
+
+For each species $c \in \{H_2, CO, CO_2, H_2O, CH_4, N_2\}$ with split fraction $s_c$ to outlet_0:
+
+$$f_{c,1} = \dot{n}_{c, out_0} - s_c \cdot \dot{n}_{c, in} = 0$$
+
+$$f_{c,2} = \dot{n}_{c, out_1} - (1 - s_c) \cdot \dot{n}_{c, in} = 0$$
+
+With $s_c = 0.99$ for all species (99% char/ash removal to outlet_0 is clean syngas):
+12 residuals, 18 flow variables. Exact analytical Jacobian.
+
+---
+
+### §11.4 WGSReactorHF (Unit 4) — Non-linear
+
+7 residuals, 13 variables (6 inlet + 6 outlet flows + $X_{CO}$):
+
+**Stoichiometric balances** ($i \in \{H_2, CO, CO_2, H_2O, CH_4, N_2\}$):
+
+$$f_{CO}:     \quad \dot{n}_{CO,out}    = \dot{n}_{CO,in}(1 - X_{CO}) = 0$$
+
+$$f_{H_2O}:   \quad \dot{n}_{H_2O,out}  = \dot{n}_{H_2O,in} - \dot{n}_{CO,in} X_{CO} = 0$$
+
+$$f_{CO_2}:   \quad \dot{n}_{CO_2,out}  = \dot{n}_{CO_2,in} + \dot{n}_{CO,in} X_{CO} = 0$$
+
+$$f_{H_2}:    \quad \dot{n}_{H_2,out}   = \dot{n}_{H_2,in}  + \dot{n}_{CO,in} X_{CO} = 0$$
+
+$$f_{CH_4}:   \quad \dot{n}_{CH_4,out}  = \dot{n}_{CH_4,in} = 0$$
+
+$$f_{N_2}:    \quad \dot{n}_{N_2,out}   = \dot{n}_{N_2,in}  = 0$$
+
+**Equilibrium constraint** (Δn = 0, pressure-independent):
+
+$$f_{eq}: \; K_{WGS}(T_{wgs}) \cdot \dot{n}_{CO,out} \cdot \dot{n}_{H_2O,out} - \dot{n}_{CO_2,out} \cdot \dot{n}_{H_2,out} = 0$$
+
+At $T_{wgs} = 400°C = 673\,\text{K}$: $K_{WGS}(673) \approx 8.9$, giving $X_{CO} \approx 75\%$.
+
+---
+
+### §11.5 CoolerHF (Unit 5) — Linear
+
+$N$ residuals, $2N$ variables (N inlet + N outlet flows, no T/P in ports):
+
+$$f_i = \dot{n}_{c_i, out} - \dot{n}_{c_i, in} = 0 \qquad \forall\, i = 1, \ldots, N$$
+
+Mass is conserved; outlet temperature is fixed by parameter $T_{out}$ (informational KPI, not
+a solver variable). Exact analytical Jacobian:
+
+$$J_{ij} = \begin{cases} -1 & \text{if } j = \text{inlet index of } c_i \\ +1 & \text{if } j = \text{outlet index of } c_i \\ 0 & \text{otherwise} \end{cases}$$
+
+---
+
+### §11.6 SeparatorHF — PSA Proxy (Unit 6) — Linear
+
+Same split-fraction structure as the Cyclone (§11.3), but with species-specific splits to model
+H₂ enrichment. Example: H₂ split to outlet_0 = 0.85, all other species = 0.05. 12 residuals,
+exact linear.
+
+---
+
+### §11.7 Compressor (Unit 7) — Non-linear
+
+$N + 3$ residuals, $2N + 5$ variables (N inlet + N outlet flows + $T_{in}$, $P_{in}$, $T_{out}$, $P_{out}$, $W_{shaft}$):
+
+**Material balances** (N equations):
+
+$$f_i = \dot{n}_{c_i, out} - \dot{n}_{c_i, in} = 0 \qquad \forall\, i = 1, \ldots, N$$
+
+**Isentropic outlet temperature:**
+
+$$f_{T}: \; T_{out} - \frac{T_{in}}{\eta_{is}} \left[\left(\frac{P_{out}}{P_{in}}\right)^{(\gamma-1)/\gamma} - 1\right] - T_{in} = 0$$
+
+with $\gamma = c_p / c_v$ evaluated at $T_{in}$ for the mixture, $\eta_{is}$ = isentropic efficiency.
+
+**Outlet pressure constraint** (when $P_{out}$ is fixed):
+
+$$f_P: \; P_{out} - P_{out,set} = 0$$
+
+**Shaft work:**
+
+$$f_W: \; W_{shaft} - \dot{n}_{total} \cdot c_p(T_{avg}) \cdot (T_{out} - T_{in}) = 0$$
+
+At $P_{out} = 5\,\text{MPa}$, $P_{in} = 101325\,\text{Pa}$, $T_{in} = 310\,\text{K}$, $\eta_{is} = 0.78$:
+
+$$\left(\frac{5 \times 10^6}{101325}\right)^{0.286} \approx 3.35 \implies T_{out} \approx 310 + \frac{310 \times (3.35 - 1)}{0.78} \approx 1243\,\text{K (multi-species)}$$
+
+*Note: the actual outlet temperature depends on the mixture $\gamma$ computed from species Shomate coefficients.*
+
+---
+
+### §11.8 Connection Topology — Variable Equalities
+
+Each connection in the workshop chain is an equality constraint in the Pyomo LP:
+
+| Connection | Type | Variables linked |
+|---|---|---|
+| `storage.dry_out.F_Biomass` = `gasifier.biomass_in.F_Biomass` | Full-port | 1 variable |
+| `gasifier.syngas_out.F_{c}` = `cyclone.inlet.F_{c}` (×6) | Flow-only | 6 variables |
+| `cyclone.outlet_0.F_{c}` = `wgs.syngas_in.F_{c}` (×6) | Flow-only | 6 variables |
+| `wgs.shifted_out.F_{c}` = `cooler.inlet.F_{c}` (×6) | Full-port | 6 variables |
+| `cooler.outlet.F_{c}` = `psa.inlet.F_{c}` (×6) | Full-port | 6 variables |
+| `psa.outlet_0.F_{c}` = `comp.inlet.F_{c}` (×6) | Flow-only | 6 variables |
+
+**Total:** 31 connection equality constraints across the 7 units.
+
+Flow-only connections arise when one port includes T and P variables and the other does not.
+The `build_custom_flowsheet()` flow-only fallback (§5.1 in ARCHITECTURE.md) handles this
+automatically.

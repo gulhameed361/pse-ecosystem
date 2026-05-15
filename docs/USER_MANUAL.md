@@ -1,6 +1,6 @@
 # PSE Ecosystem — User Manual
 
-**Version:** 1.3.0 | **Date:** 2026-05-14
+**Version:** 1.3.0-Phase5 | **Date:** 2026-05-15
 
 This single document replaces `SHOWCASE_WALKTHROUGH.md` and `TUTORIAL_WALKTHROUGH.md`.
 
@@ -34,7 +34,7 @@ Open `http://localhost:8501`. The 4-page app:
 ### Verify Installation
 
 ```powershell
-pytest tests/ -v   # 128 checks — all must pass
+pytest tests/ -v   # 146 checks — all must pass
 ```
 
 ---
@@ -146,6 +146,7 @@ result = Orchestrator(fs, SolveMode.ADAPTIVE, slp_config=cfg).solve()
 |---|---|---|
 | `MixerHF` | No | Material + ideal-gas energy balance |
 | `HeatExchangerNTU` | No | Counter-flow NTU-effectiveness |
+| `CoolerHF` | **Yes** | Single-stream gas cooler — fixed T_out, flow-through (v1.3.0) |
 | `Compressor` | No | Isentropic + efficiency |
 | `Valve` | No | Isoenthalpic throttle |
 | `Pump` | No | Incompressible isentropic |
@@ -554,7 +555,156 @@ $$K_{Sab}(T) = \frac{K_{met}(T)}{(P/P°)^{-2}}, \quad X_{CO_2} = \frac{K_{Sab}}{
 
 ---
 
-## 3.6 Adding a Custom Unit
+## 3.6 Manual Build Workshop — 7-Unit Biomass → H₂ Chain
+
+> **Goal:** Prove that the Aspen-style Custom Flowsheet builder works for real process chains —
+> no pre-built template, no hard-coded connections. You assemble, configure, and link everything
+> by hand through the UI.
+
+### Philosophy
+
+Like Aspen Plus, the PSE Ecosystem lets you drag-and-drop (here: select from dropdowns) unit
+operations, set their parameters, and draw connections. The solver then finds the operating point
+that satisfies all mass balance residuals simultaneously. This section is a guided exercise you
+can complete in under 15 minutes.
+
+### The Chain
+
+```
+Biomass Feed → [1] BiomassStorageHF → [2] BiomassGasifierHF → [3] SeparatorHF (Cyclone)
+            → [4] WGSReactorHF → [5] CoolerHF → [6] SeparatorHF (PSA) → [7] Compressor
+```
+
+---
+
+### Step 1 — Open the Custom Flowsheet Builder
+
+1. Flowsheet Builder page → scroll to **"Custom Flowsheet"** section.
+2. **Shared Component Set**: type `H2,CO,CO2,H2O,CH4,N2` (the 6-species syngas set).
+3. **Number of units**: set to **7**.
+4. Click **Add Units**.
+
+---
+
+### Step 2 — Configure Each Unit
+
+| # | UI Unit Type | Unit ID | Key Parameters to Set |
+|---|---|---|---|
+| 1 | `BiomassStorageHF` | `storage` | biomass_type = "Pine Wood", T_preheat_C = 200 |
+| 2 | `BiomassGasifierHF` | `gasifier` | T_gasifier_C = 800, gasifying_agent = "Steam" |
+| 3 | `SeparatorHF` | `cyclone` | n_outlets = 2 (99% of each species → outlet_0) |
+| 4 | `WGSReactorHF` | `wgs` | T_wgs_C = 400 |
+| 5 | `CoolerHF` | `cooler` | T_out_K = 310 |
+| 6 | `SeparatorHF` | `psa` | n_outlets = 2 (85% H₂ → outlet_0, 5% other → outlet_0) |
+| 7 | `Compressor` | `comp` | eta_isentropic = 0.78, P_out_Pa = 5000000 |
+
+Expand each unit expander in turn and set the parameters above. Leave all other fields at their defaults.
+
+---
+
+### Step 3 — Wire the Connections
+
+In the Connections panel, set 6 pairs (one per consecutive unit):
+
+| Connection # | From Unit | To Unit |
+|---|---|---|
+| 1 | `storage` | `gasifier` |
+| 2 | `gasifier` | `cyclone` |
+| 3 | `cyclone` | `wgs` |
+| 4 | `wgs` | `cooler` |
+| 5 | `cooler` | `psa` |
+| 6 | `psa` | `comp` |
+
+> **Note on T/P mismatches:** Internally the service applies a *flow-only fallback* when two ports
+> have mismatched T/P flags (e.g. WGSReactorHF has no T/P on its ports; SeparatorHF does). The
+> builder automatically links the shared `.F_*` component variables and reports `(flow-only)` in
+> the connection description. This is expected behaviour — it is NOT an error.
+
+---
+
+### Step 4 — Build and Verify
+
+Click **Build & Select**. The success banner should read:
+
+```
+Custom flowsheet built: 7 units, 6 connections.
+```
+
+If you see "0 connections" instead, check that:
+- All unit IDs are unique.
+- The Shared Component Set includes the syngas species.
+- The connection From/To dropdowns are filled in correctly.
+
+---
+
+### Step 5 — Solve
+
+Navigate to **Solver Monitor** → Solver mode: **SLP** → click **Run Solve**.
+
+Expected convergence: 5–20 SLP iterations for the non-linear units (gasifier, WGS, compressor).
+The linear units (storage, cyclone, cooler, PSA) satisfy their balances exactly at each LP step.
+
+---
+
+### Validation Answer Key
+
+Use these analytical targets to verify your UI result:
+
+| Quantity | Formula / Basis | Expected Range |
+|---|---|---|
+| Storage dry outlet (kg/s) | `F_wet × (1 − MC)` = 1.0 × (1 − 0.17) | **0.83 kg/s** |
+| Gasifier C balance closure | `n_CO + n_CO₂ + n_CH₄ = n_C_feed` | **< 0.1% error** |
+| WGS CO conversion X_CO | At 400 °C, K_WGS ≈ 8.9 → X_CO ≈ 75% | **60–85%** |
+| Cooler outlet flow | Equals inlet flow (mass conservation) | **= inlet total** |
+| PSA H₂ to outlet_0 | 85% split fraction | **85% of H₂ feed** |
+| Compressor P_out | Fixed parameter | **5 MPa** |
+
+> **Interpretation:** If your KPI cards show the storage dry feed near 0.83 kg/s and the
+> WGS CO conversion in 60–85%, the physics are physically consistent. The PSA and cyclone
+> split fractions are exact (linear units) and should match their split parameters precisely.
+
+---
+
+### Programmatic Equivalent (for testing)
+
+```python
+from pse_ecosystem.ui.flowsheet_service import build_custom_flowsheet
+
+SYNGAS_6 = ["H2", "CO", "CO2", "H2O", "CH4", "N2"]
+config = {
+    "units": [
+        {"type": "BiomassStorageHF", "id": "storage", "params": {}},
+        {"type": "BiomassGasifierHF", "id": "gasifier",
+         "params": {"T_gasifier_C": 800.0, "gasifying_agent": "Steam"}},
+        {"type": "SeparatorHF", "id": "cyclone",
+         "params": {"components": SYNGAS_6, "n_outlets": 2}},
+        {"type": "WGSReactorHF", "id": "wgs", "params": {"T_wgs_C": 400.0}},
+        {"type": "CoolerHF", "id": "cooler",
+         "params": {"components": SYNGAS_6, "T_out_K": 310.0}},
+        {"type": "SeparatorHF", "id": "psa",
+         "params": {"components": SYNGAS_6, "n_outlets": 2}},
+        {"type": "Compressor", "id": "comp",
+         "params": {"components": SYNGAS_6, "P_out_Pa": 5e6}},
+    ],
+    "connections": [
+        {"from_unit": "storage",  "to_unit": "gasifier"},
+        {"from_unit": "gasifier", "to_unit": "cyclone"},
+        {"from_unit": "cyclone",  "to_unit": "wgs"},
+        {"from_unit": "wgs",      "to_unit": "cooler"},
+        {"from_unit": "cooler",   "to_unit": "psa"},
+        {"from_unit": "psa",      "to_unit": "comp"},
+    ],
+}
+fs = build_custom_flowsheet(config)
+print(f"Units: {len(fs.units)}, Connections: {len(fs.connections)}")
+# → Units: 7, Connections: 6
+```
+
+**Test coverage:** `pytest tests/test_ui_assembly_logic.py -v` (18 tests, all green)
+
+---
+
+## 3.7 Adding a Custom Unit
 
 ```python
 from pse_ecosystem.models.base_unit import BaseUnit
@@ -589,7 +739,7 @@ Override `linearize(guess)` with an analytical Jacobian for SLP performance.
 
 ---
 
-## 3.7 SLP Configuration Reference
+## 3.8 SLP Configuration Reference
 
 ```python
 SLPConfig(
@@ -610,4 +760,4 @@ SLPConfig(
 
 ---
 
-*User Manual v1.3.0 — PSE Ecosystem*
+*User Manual v1.3.0-Phase5 — PSE Ecosystem*

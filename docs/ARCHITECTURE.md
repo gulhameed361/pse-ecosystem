@@ -281,6 +281,86 @@ boundary that matters is "no concrete-physics module name appears in
 
 ---
 
+## 5.1 Shared Component Set Propagation and Dynamic Port Mapping
+
+When a user assembles a custom flowsheet in the UI, `flowsheet_service.build_custom_flowsheet()`
+must wire any pair of units regardless of how each unit internally names its ports. Two mechanisms
+handle this:
+
+### Port-name candidate lookup
+
+`_primary_outlet(unit)` and `_primary_inlet(unit)` iterate a fixed priority list of attribute names:
+
+```python
+_OUTLET_NAMED = (
+    "outlet_port",       # StoichiometricReactor, Compressor, Pump, Valve, MixerHF
+    "hot_outlet_port",   # HeatExchangerNTU (process hot side)
+    "syngas_out_port",   # BiomassGasifierHF
+    "shifted_out_port",  # WGSReactorHF
+    "h2_out_port",       # H2SeparatorPSA
+    "dry_out_port",      # BiomassStorageHF
+    "vapor_port",        # FlashVLHF (primary vapour outlet)
+)
+_OUTLET_LISTS = ("outlet_ports",)   # SeparatorHF — takes first element
+
+_INLET_NAMED = (
+    "inlet_port",        # StoichiometricReactor, SeparatorHF, Compressor, FlashVLHF
+    "hot_inlet_port",    # HeatExchangerNTU
+    "syngas_in_port",    # WGSReactorHF
+    "feed_in_port",      # H2SeparatorPSA
+    "biomass_in_port",   # BiomassGasifierHF
+    "wet_in_port",       # BiomassStorageHF
+)
+_INLET_LISTS = ("inlet_ports",)     # MixerHF
+```
+
+The first matching attribute wins. New units only need to name their ports after any entry in these
+lists to be automatically compatible with the custom builder.
+
+### Flow-only fallback for T/P mismatches
+
+`BaseFlowsheet.connect(port_a, port_b)` requires that both ports expose the same number of
+variables. Some units omit T and P from their ports (e.g. WGSReactorHF, CoolerHF) while others
+include them (e.g. SeparatorHF, Compressor). When `connect()` raises `ValueError`, the service
+falls back to linking only the shared `.F_*` component flow variables:
+
+```python
+# Fallback in build_custom_flowsheet() — simplified
+a_flows = [v for v in out_port.variable_names() if ".F_" in v]
+b_flows = [v for v in in_port.variable_names() if ".F_" in v]
+for va, vb in zip(a_flows, b_flows):
+    fs.connections.append(Connection(var_a=va, var_b=vb, description="… (flow-only)"))
+```
+
+These flow-only `Connection` objects become equality constraints in the Pyomo LP exactly as
+full-port connections do — `model.x[conn.var_a] == model.x[conn.var_b]`. The T and P variables
+of the downstream unit remain free (bounded by `extra_bounds` or unit bounds), which is
+physically correct for units that define their own outlet temperature/pressure via a residual
+(e.g. `Compressor` computes T_out via isentropic relations; `SeparatorHF` passes T/P through).
+
+### The `Connection` dataclass — the atomic equality constraint
+
+```python
+@dataclass
+class Connection:
+    var_a: str      # e.g. "wgs.shifted_out.F_H2"
+    var_b: str      # e.g. "cyclone.inlet.F_H2"
+    description: str
+```
+
+`lp_builder.build_lp()` processes each connection as:
+
+```python
+model.connection_constraints.add(
+    model.x[conn.var_a] == model.x[conn.var_b]
+)
+```
+
+This is the only way mass/energy is transferred between units in the LP. There is no implicit
+stream propagation — every link must appear explicitly in `flowsheet.connections`.
+
+---
+
 ## 6. Roadmap — how this scales
 
 The contract is unchanged across each phase below. Only Layer 3 grows.
