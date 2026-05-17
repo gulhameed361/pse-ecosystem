@@ -131,8 +131,11 @@ class WGSReactorHF(BaseUnit):
             n_H2O_out - (n_H2O_in - dn_CO),                 # f[3]: H2O balance
             n_CH4_out - n_CH4_in,                            # f[4]: CH4 inert
             n_N2_out  - n_N2_in,                             # f[5]: N2 inert
-            K_wgs * max(n_CO_out, 1e-12) * max(n_H2O_out, 1e-12)
-            - max(n_CO2_out, 1e-12) * max(n_H2_out, 1e-12), # f[6]: equilibrium
+            # f[6]: equilibrium — variable lower bounds enforce species ≥ 0
+            # at the LP level, so the residual stays smooth in x. The
+            # pre-v1.4.0 max(x, 1e-12) guards introduced a Jacobian kink at
+            # the floor that the SLP linearisation could not see; audit H5.
+            K_wgs * n_CO_out * n_H2O_out - n_CO2_out * n_H2_out,
         ], dtype=float)
         return f
 

@@ -11,7 +11,8 @@ Source: Wilson (1969), Rachford & Rice (1952).
 """
 
 import numpy as np
-from scipy.optimize import brentq
+# scipy import deferred to the public sim function so the module can be
+# imported by environments without the `blackbox` extra. v1.4.0 audit H8.
 
 COMPS = ['H2', 'CH4', 'Tol', 'Benz', 'Diph']
 
@@ -33,6 +34,7 @@ def _rachford_rice(psi, z, K):
 
 
 def _solve_flash(z, K):
+    from scipy.optimize import brentq  # deferred — v1.4.0 audit H8
     psi_min = max(1.0 / (1.0 - max(K.values())) + 1e-8, 1e-8)
     psi_max = min(1.0 / (1.0 - min(K.values())) - 1e-8, 1.0 - 1e-8)
     if _rachford_rice(1e-8, z, K) <= 0.0:

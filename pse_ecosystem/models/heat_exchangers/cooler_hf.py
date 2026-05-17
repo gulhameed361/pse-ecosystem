@@ -139,5 +139,10 @@ class CoolerHF(BaseUnit):
     def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
         return {}
 
-    def capex_USD(self, x: Dict[str, float]) -> float:
+    def capex(self, x: Dict[str, float]) -> float:
+        """No SSLW correlation for the simplified linear cooler; return 0.
+
+        Renamed from ``capex_USD`` in v1.4.0 audit cleanup to align with the
+        ``BaseUnit.capex`` contract every other unit follows.
+        """
         return 0.0

@@ -18,11 +18,30 @@ from dataclasses import dataclass
 # CE=500 is the traditional basis year used in SSLW correlations (~2001).
 # Primary source: data/economics.json (loaded at import time if present).
 # Fallback: hardcoded dict below (kept for environments without the data file).
+#
+# v1.4.0 audit H9: prefer `importlib.resources.files` so the loader works for
+# a pip-installed package (where the source-tree relative path traversal
+# fails silently). Fall back to the legacy path lookup for editable installs
+# of older Python where importlib.resources lacks `files()`.
 
-_ECONOMICS_JSON = (
-    pathlib.Path(__file__).parent.parent.parent.parent  # → project root
-    / "data" / "economics.json"
-)
+
+def _resolve_economics_json() -> pathlib.Path:
+    # Try the packaged-data path first (works after `pip install`).
+    try:
+        from importlib.resources import files
+        candidate = files("pse_ecosystem.data") / "economics.json"
+        if candidate.is_file():
+            return pathlib.Path(str(candidate))
+    except (ImportError, ModuleNotFoundError, FileNotFoundError):
+        pass
+    # Fall back to the source-tree layout (editable installs).
+    return (
+        pathlib.Path(__file__).parent.parent.parent.parent
+        / "data" / "economics.json"
+    )
+
+
+_ECONOMICS_JSON = _resolve_economics_json()
 
 
 def _load_cepci_from_json() -> "tuple[dict[int, float], float]":

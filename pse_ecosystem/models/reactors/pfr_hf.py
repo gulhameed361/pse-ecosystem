@@ -178,9 +178,14 @@ class PFRHF(BaseUnit):
 
         try:
             F_out_calc, T_out_calc, P_out_calc = self._integrate(F_in, T_in, P_in)
-        except Exception:
-            # Integration failure: return large residuals
+        except Exception as exc:  # noqa: BLE001
+            # Surface the failure for debugging — caching on the unit lets
+            # downstream KPI / status reports name the root cause rather
+            # than seeing only the 1e6 penalty residual. Audit M9.
+            self._last_integration_error = repr(exc)
             return np.full(N + 2, 1e6, dtype=float)
+        else:
+            self._last_integration_error = None
 
         if self.params.isobaric:
             P_out_calc = P_in

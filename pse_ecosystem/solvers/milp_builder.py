@@ -30,12 +30,20 @@ from pse_ecosystem.solvers.lp_builder import _bound_pair, _PYOMO_INF
 
 @dataclass
 class TechnologyChoice:
-    """One binary technology candidate."""
+    """One binary technology candidate.
+
+    ``big_M`` must dominate any feasible flow magnitude on every variable in
+    ``flow_variables``; otherwise the y=0 branch silently clips the binary
+    selection. The default of 1e9 covers all industrial-scale flowsheets we
+    ship templates for (mass flows ≤ 1e3 kg/s, pressures ≤ 1e8 Pa, power
+    ≤ 1e8 W). Lower it only when the variable bounds are known and tight,
+    or when the LP relaxation becomes ill-conditioned at large M.
+    """
 
     name: str
     unit_id: str
     flow_variables: List[str]
-    big_M: float = 1e6
+    big_M: float = 1e9
     fixed_cost: float = 0.0
     """Linear cost added to the objective when ``y = 1`` (e.g. annualised CAPEX)."""
 

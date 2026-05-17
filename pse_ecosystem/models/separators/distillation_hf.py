@@ -140,9 +140,14 @@ class DistillationHF(BaseUnit):
 
         # Underwood function: Σ α_i*z_i/(α_i - θ) = 1-q
         target = 1.0 - q
-        # θ must be between the α of hk and lk
-        alpha_hk = alpha.get(self.params.hk, 1.0)
-        alpha_lk = alpha.get(self.params.lk, 2.0)
+        # θ must lie strictly between the α of the heavy and light keys.
+        # If the user mis-labels them (α_hk > α_lk because the operating
+        # condition flipped the K-value ordering), swap so the bracket is
+        # always valid rather than degenerating. Audit M7.
+        a_hk_raw = alpha.get(self.params.hk, 1.0)
+        a_lk_raw = alpha.get(self.params.lk, 2.0)
+        alpha_hk = min(a_hk_raw, a_lk_raw)
+        alpha_lk = max(a_hk_raw, a_lk_raw)
         theta_lo = alpha_hk + 1e-6
         theta_hi = alpha_lk - 1e-6
 

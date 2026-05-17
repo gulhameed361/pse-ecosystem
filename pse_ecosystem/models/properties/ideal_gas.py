@@ -120,9 +120,16 @@ def enthalpy_J_mol(species: str, T_K: float, T_ref_K: float = 298.15) -> float:
 
 
 def gamma(species: str, T_K: float) -> float:
-    """Heat-capacity ratio Cp/Cv for an ideal gas at T_K."""
+    """Heat-capacity ratio Cp/Cv for an ideal gas at T_K.
+
+    Guards against the Shomate polynomial dipping below R = 8.314 J/mol/K
+    at low temperatures (some species have a negative A coefficient and a
+    Cp(T) that becomes unphysically small near 200 K). When that happens
+    we floor Cv at 1 J/mol/K so gamma stays finite and positive; the caller
+    is responsible for staying inside each species' valid T range.
+    """
     cp = cp_J_mol_K(species, T_K)
-    cv = cp - _R_GAS
+    cv = max(cp - _R_GAS, 1.0)
     return cp / cv
 
 

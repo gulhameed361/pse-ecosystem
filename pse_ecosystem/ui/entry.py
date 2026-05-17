@@ -1,8 +1,8 @@
-"""Layer-1 entry-point stub for v0.
+"""Layer-1 entry-point — minimal CLI shipped alongside the Streamlit app (v1.4.0).
 
-Exposes a minimal CLI so the architecture is exercised end-to-end without
-shipping a real UI yet. A future Streamlit or FastAPI front-end will sit
-above this module and call the same Orchestrator the CLI does.
+Exposes a JSON-output command so the Orchestrator can be exercised without
+booting the GUI (useful in CI, packaging smoke tests, and scripted runs).
+The Streamlit front-end lives in :mod:`pse_ecosystem.ui.app_streamlit`.
 """
 
 from __future__ import annotations

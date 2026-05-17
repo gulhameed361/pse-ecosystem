@@ -11,7 +11,8 @@ Source: Seader & Henley (2011), Douglas (1988).
 """
 
 import numpy as np
-from scipy.optimize import brentq
+# scipy import deferred to the public sim function so the module can be
+# imported by environments without the `blackbox` extra. v1.4.0 audit H8.
 
 COMPS_AROM = ['Benz', 'Tol', 'Diph']
 Tc    = {'Benz': 562.2, 'Tol': 591.8, 'Diph': 789.0}
@@ -40,6 +41,7 @@ def _fenske(alpha_lk, x_lk_D, x_hk_D, x_lk_B, x_hk_B):
 
 
 def _underwood(alpha, z_feed, q, comps):
+    from scipy.optimize import brentq  # deferred — v1.4.0 audit H8
     alpha_lk = max(alpha[c] for c in comps)
     alpha_hk = min(alpha[c] for c in comps)
     eps = 1e-6

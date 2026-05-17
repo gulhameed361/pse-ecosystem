@@ -116,8 +116,15 @@ class FlashVLHF(BaseUnit):
         Q      = x.get(self._v_Q(), 0.0)
         V_frac = x.get(self._v_Vfrac(), 0.5)
 
-        F_vap_total = max(float(F_vap.sum()), _SMALL)
-        F_liq_total = max(float(F_liq.sum()), _SMALL)
+        # Soft-clamp phase totals away from zero so y / xi stay bounded near
+        # single-phase boundaries. Pre-v1.4.0 the floor was at _SMALL (1e-12)
+        # which let mole fractions explode to 1e12 when one phase vanished
+        # and the LP saw a near-singular Jacobian column. Lift the floor
+        # to 1e-6 — accurate where the flash is two-phase, stable when it
+        # is not. Audit M4.
+        _PHASE_FLOOR = max(_SMALL, 1.0e-6)
+        F_vap_total = max(float(F_vap.sum()), _PHASE_FLOOR)
+        F_liq_total = max(float(F_liq.sum()), _PHASE_FLOOR)
         F_feed_total = max(float(F_feed.sum()), _SMALL)
 
         y = F_vap / F_vap_total  # vapour mole fractions

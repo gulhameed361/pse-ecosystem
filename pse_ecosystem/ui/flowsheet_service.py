@@ -109,6 +109,56 @@ UNIT_PARAM_SPECS: Dict[str, List[ParamSpec]] = {
         ParamSpec("eta_comb", "Combustion Efficiency", "float", 0.95, unit="—"),
         ParamSpec("eta_isentropic", "Turbine Isentropic Efficiency", "float", 0.85, unit="—"),
     ],
+    # ── v1.4.0 audit H11: extra UI-selectable types ──────────────────────────
+    "Pump": [
+        ParamSpec("eta_pump", "Pump Efficiency", "float", 0.75,
+                  unit="—", help="Mechanical efficiency, 0–1; typical 0.65–0.85"),
+        ParamSpec("P_out_Pa", "Outlet Pressure", "float", 1_000_000.0,
+                  unit="Pa", help="Set to 0 to leave P_out free"),
+    ],
+    "Valve": [
+        ParamSpec("Cv", "Valve Coefficient (Cv)", "float", 1.0,
+                  unit="—", help="Flow coefficient; sets the throttle resistance"),
+        ParamSpec("P_out_Pa", "Outlet Pressure", "float", 200_000.0,
+                  unit="Pa", help="Throttle target pressure"),
+    ],
+    "ShellTubeHX": [
+        ParamSpec("U_W_per_m2_K", "Overall U", "float", 500.0,
+                  unit="W/m²/K", help="Heat-transfer coefficient"),
+        ParamSpec("A_m2", "Heat-transfer Area", "float", 16.0,
+                  unit="m²", help="Total tube surface area"),
+        ParamSpec("n_shell_passes", "Shell Passes", "int", 1,
+                  help="LMTD F-factor depends on the shell/tube pass combination"),
+        ParamSpec("n_tube_passes", "Tube Passes", "int", 2,
+                  help="LMTD F-factor depends on the shell/tube pass combination"),
+    ],
+    "H2SeparatorPSA": [
+        ParamSpec("H2_recovery", "H₂ Recovery", "float", 0.85,
+                  unit="—", help="Fraction of feed H₂ recovered to product, 0–1"),
+    ],
+    "GibbsReactor": [
+        # No tunable params; T is a solver variable inside the reactor.
+        ParamSpec("T_max", "Max Temperature", "float", 2000.0,
+                  unit="K", help="Upper bound used by the inner Gibbs minimiser"),
+    ],
+    "EquilibriumReactor": [
+        ParamSpec("T_ref_K", "Reference Temperature", "float", 673.0,
+                  unit="K", help="van't Hoff reference for Keq(T) scaling"),
+        ParamSpec("Keq_ref", "Reference Keq", "float", 8.9,
+                  unit="—", help="Equilibrium constant at T_ref. Default reaction = WGS"),
+    ],
+    "DistillationHF": [
+        ParamSpec("hk", "Heavy Key Species", "select", "toluene",
+                  ["toluene", "benzene", "methanol", "water"],
+                  help="Component recovered in the bottoms"),
+        ParamSpec("lk", "Light Key Species", "select", "benzene",
+                  ["benzene", "toluene", "methanol", "water"],
+                  help="Component recovered in the distillate"),
+        ParamSpec("R_over_Rmin", "Reflux Multiplier (R/Rmin)", "float", 1.3,
+                  unit="—", help="Operating reflux as a multiple of minimum reflux"),
+        ParamSpec("T_op_K", "Operating Temperature", "float", 350.0,
+                  unit="K", help="T used to evaluate K-values"),
+    ],
     # Toy units and units with no tunable params default to empty list (components-only)
 }
 
@@ -332,6 +382,14 @@ TYPE_ID_SUGGESTIONS: Dict[str, str] = {
     "CHPUnit":               "chp",
     "MixerHF":               "mixer",
     "Compressor":            "comp",
+    # v1.4.0 audit H11 — newly exposed UI types
+    "Pump":                  "pump",
+    "Valve":                 "valve",
+    "ShellTubeHX":           "stx",
+    "H2SeparatorPSA":        "psa",
+    "GibbsReactor":          "gibbs",
+    "EquilibriumReactor":    "eq_rx",
+    "DistillationHF":        "col",
 }
 
 
@@ -365,31 +423,41 @@ AVAILABLE_UNITS: Dict[str, str] = {
     # Reactors
     "StoichiometricReactor": "Stoichiometric reactor — linear (exact analytical J)",
     "MethanationReactor":    "Sabatier methanation — non-linear equilibrium, analytical J",
+    "EquilibriumReactor":    "Equilibrium reactor — van't Hoff Keq (default WGS reaction)",
+    "GibbsReactor":          "Isothermal Gibbs-energy-minimising reactor",
     # Separation / DAC
     "SeparatorHF":           "Separator — split fractions, linear",
     "TVSAContactor":         "TVSA DAC contactor — linear, analytical J (415 ppm CO2 feed)",
+    "H2SeparatorPSA":        "PSA hydrogen separator — linear, configurable H₂ recovery",
+    "DistillationHF":        "Distillation column — Fenske/Underwood (light/heavy key)",
     # Heat Exchange
     "HeatExchangerNTU":      "Heat exchanger NTU — non-linear (counter-current)",
+    "ShellTubeHX":           "Shell-and-tube HX — corrected LMTD (1-2 pass)",
     "CoolerHF":              "Single-stream gas cooler — linear, fixed T_out parameter",
     # Power / CHP
     "ElectrolyserHF":        "PEM/AEL electrolyser — linear, port-based, analytical J",
     "CHPUnit":               "Combined Heat & Power — linear, analytical J (H2/CO/CH4 fuel)",
     # Separation / VLE
     "FlashVLHF":             "Rigorous V/L flash — Antoine K-values + Rachford-Rice (non-linear, terminal unit)",
-    # Other
+    # Mixing
     "MixerHF":               "Multi-stream mixer — non-linear (energy balance)",
+    # Pressure Changers
     "Compressor":            "Isentropic compressor — non-linear",
+    "Pump":                  "Liquid pump — non-linear, isentropic efficiency",
+    "Valve":                 "Throttle valve — isenthalpic, smoothed Cv·√(dP)",
 }
 
 UNIT_CATEGORIES: Dict[str, List[str]] = {
     "Feed/Product":       ["PEMToy", "GasifierToy"],
     "Biomass":            ["BiomassStorageHF", "BiomassGasifierHF", "WGSReactorHF"],
-    "Reactors":           ["StoichiometricReactor", "MethanationReactor"],
-    "Separation/DAC":     ["SeparatorHF", "FlashVLHF", "TVSAContactor"],
-    "Heat Exchange":      ["HeatExchangerNTU", "CoolerHF"],
+    "Reactors":           ["StoichiometricReactor", "MethanationReactor",
+                           "EquilibriumReactor", "GibbsReactor"],
+    "Separation/DAC":     ["SeparatorHF", "FlashVLHF", "TVSAContactor",
+                           "H2SeparatorPSA", "DistillationHF"],
+    "Heat Exchange":      ["HeatExchangerNTU", "ShellTubeHX", "CoolerHF"],
     "Power/CHP":          ["ElectrolyserHF", "CHPUnit"],
     "Mixing":             ["MixerHF"],
-    "Pressure Changers":  ["Compressor"],
+    "Pressure Changers":  ["Compressor", "Pump", "Valve"],
 }
 
 
@@ -1152,6 +1220,99 @@ def _instantiate_unit(utype: str, uid: str, params: dict) -> Any:
             feed_max=float(params.get("feed_max", 1_000.0)),
         )
         return CoolerHF(uid, components, cp)
+
+    # ── v1.4.0 audit H11: newly registered UI types ──────────────────────────
+    if utype == "Pump":
+        from pse_ecosystem.models.pressure_changers.pump import Pump, PumpParams
+        components = params.get("components", ["H2O"])
+        p_out = params.get("P_out_Pa", 1_000_000.0)
+        pp = PumpParams(
+            eta_pump=float(params.get("eta_pump", 0.75)),
+            P_out_Pa=float(p_out) if p_out else None,
+        )
+        return Pump(uid, components, pp)
+
+    if utype == "Valve":
+        from pse_ecosystem.models.pressure_changers.valve import Valve, ValveParams
+        components = params.get("components", ["H2", "CO", "CO2"])
+        cv_val = params.get("Cv", None)
+        p_out = params.get("P_out_Pa", None)
+        vp = ValveParams(
+            Cv=float(cv_val) if cv_val not in (None, 0.0) else None,
+            P_out_Pa=float(p_out) if p_out not in (None, 0.0) else None,
+        )
+        return Valve(uid, components, vp)
+
+    if utype == "ShellTubeHX":
+        from pse_ecosystem.models.heat_exchangers.shell_tube import ShellTubeHX, ShellTubeParams
+        shared = params.get("components", [])
+        hot  = params.get("hot_components",  shared or ["H2", "CO"])
+        cold = params.get("cold_components", ["H2O"])
+        sp = ShellTubeParams(
+            U_W_per_m2_K=float(params.get("U_W_per_m2_K", 500.0)),
+            A_m2=float(params.get("A_m2", 16.0)),
+            n_shell_passes=int(params.get("n_shell_passes", 1)),
+            n_tube_passes=int(params.get("n_tube_passes", 2)),
+        )
+        return ShellTubeHX(uid, hot, cold, sp)
+
+    if utype == "H2SeparatorPSA":
+        from pse_ecosystem.models.biomass.h2_separator import H2SeparatorPSA
+        return H2SeparatorPSA(uid, H2_recovery=float(params.get("H2_recovery", 0.85)))
+
+    if utype == "GibbsReactor":
+        from pse_ecosystem.models.reactors.gibbs_reactor import GibbsReactor, GibbsReactorParams
+        components = params.get("components", ["H2", "CO", "CO2", "H2O"])
+        gp = GibbsReactorParams(T_max=float(params.get("T_max", 2000.0)))
+        return GibbsReactor(uid, components, gp)
+
+    if utype == "EquilibriumReactor":
+        from pse_ecosystem.models.reactors.equilibrium_reactor import (
+            EquilibriumReactor, EquilReactorParams,
+        )
+        from pse_ecosystem.models.reactors.cstr_hf import ReactionConfig
+        components = params.get("components", ["CO", "H2O", "CO2", "H2"])
+        # Default reaction set is WGS (CO + H₂O ↔ CO₂ + H₂). ReactionConfig
+        # carries kinetic fields (k0, Ea, orders) that the equilibrium driver
+        # ignores; we still have to fill them. Override by passing a full
+        # `reactions` list through the Python API.
+        default_rxn = ReactionConfig(
+            stoichiometry={"CO": -1.0, "H2O": -1.0, "CO2": 1.0, "H2": 1.0},
+            k0=1.0,
+            Ea_J_per_mol=0.0,
+            reaction_orders={"CO": 1.0, "H2O": 1.0},
+            delta_H_J_per_mol=-41_200.0,
+            name="WGS",
+        )
+        ep = EquilReactorParams(
+            reactions=params.get("reactions", [default_rxn]),
+            Keq_ref=params.get("Keq_ref_list", [float(params.get("Keq_ref", 8.9))]),
+            T_ref_K=float(params.get("T_ref_K", 673.0)),
+        )
+        return EquilibriumReactor(uid, components, ep)
+
+    if utype == "DistillationHF":
+        from pse_ecosystem.models.separators.distillation_hf import (
+            DistillationHF, DistillationHFParams,
+        )
+        from pse_ecosystem.models.properties.vle import ANTOINE
+        components = params.get("components", ["benzene", "toluene"])
+        vle_species = [c for c in components if c in ANTOINE]
+        if len(vle_species) < 2:
+            vle_species = ["benzene", "toluene"]
+            components = vle_species
+        hk = params.get("hk", "toluene")
+        lk = params.get("lk", "benzene")
+        if hk not in components: hk = vle_species[-1]
+        if lk not in components: lk = vle_species[0]
+        dp = DistillationHFParams(
+            species_vle=vle_species,
+            lk=lk,
+            hk=hk,
+            T_op_K=float(params.get("T_op_K", 350.0)),
+            R_over_Rmin=float(params.get("R_over_Rmin", 1.3)),
+        )
+        return DistillationHF(uid, components, dp)
 
     raise ValueError(f"Unknown unit type: {utype}")
 

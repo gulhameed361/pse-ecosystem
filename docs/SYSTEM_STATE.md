@@ -6,6 +6,144 @@
 
 ---
 
+## What's New in v1.4.0-HARDENING — Audit Punch-List Fixes
+
+A five-agent code audit of every file in the repository (see the punch list
+shipped with this commit) identified 42 defects across the three layers.
+This release closes everything in the **CRITICAL**, **HIGH**, and almost all
+**MEDIUM** bands; two audit findings (H4 — re-linearise MILP after SLP; M3
+— filter insertion symmetry) turned out to be false positives on close
+reading and were not changed.
+
+### Solver core (`solvers/`)
+
+- **C1 — TRF spurious convergence.** `trust_region_driver.py:209` had the
+  step-norm condition inverted: an accepted step zeroed `step_norm`, which
+  then unconditionally passed the convergence guard at line 230. Rewritten
+  to capture the step magnitude *before* the in-place update of `x_k` and
+  force `step_norm = +∞` on rejected steps so the test cannot fire
+  spuriously. New regression test:
+  `tests/test_unrestricted_flowsheet.py::test_trf_convergence_not_spurious_on_first_accepted_step`.
+- **H1 — SLP warm-start clip.** `slp.py:233–234` simplified to a single
+  `np.clip(x + perturbation, lo, hi)` after disentangling the redundant
+  `lo > -1e18` / `hi < 1e18` ternary chain.
+- **H2 — MILP big-M.** `milp_builder.py:38` default lifted from `1e6` to
+  `1e9` with documented rationale; industrial flow ranges (≤ 1e3 kg/s,
+  ≤ 1e8 Pa, ≤ 1e8 W) now sit safely below the cut.
+- **H3 — TRF `eta1` shrink branch.** `trust_region_driver.py:198` now
+  implements the Eason & Biegler 2016 §3.2 schedule in full: `ρ ≥ η₂`
+  grows Δ, `η₁ ≤ ρ < η₂` keeps Δ, `ρ < η₁` shrinks Δ even when the step
+  was accepted on filter grounds.
+- **M2 — NLP scipy tolerances.** `ipopt_driver.py:75–79` annotated to
+  document why `ftol = eps_f²·1e-2` (objective scale is ½‖f‖²).
+
+### Properties / VLE / ideal gas (`models/properties/`)
+
+- **C2 — Antoine `KeyError`.** `vle.py::K_value` now raises a descriptive
+  `ValueError` listing every species in the Antoine table when an unknown
+  species is requested.
+- **C3 — Rachford–Rice all-K=1 degeneracy.** `vle.py::rachford_rice` early-
+  exits with `NaN` when every K-value is within 1e-9 of unity, and the
+  denominator inside the `_rr` inner function is now guarded against
+  near-singular values.
+- **M6 — Ideal-gas Cv floor.** `ideal_gas.py::gamma` clamps `cv = max(cp − R, 1)`
+  so a Shomate polynomial dipping below R at low T cannot produce
+  `γ ≤ 0`.
+- **M8 — HX NTU `exp()` overflow.** `heat_exchanger_ntu.py::_eps_from_NTU`
+  clamps the exponent argument to ±700.
+
+### Layer-3 unit fixes (`models/`)
+
+- **H5 — WGS equilibrium floor.** `wgs_reactor.py:134–135` removed the
+  `max(n_*, 1e-12)` floors from the equilibrium residual; variable lower
+  bounds at the LP level already enforce non-negative species so the
+  Jacobian stays smooth.
+- **H6 — CoolerHF `capex` rename.** `cooler_hf.py:142` method renamed
+  `capex_USD → capex` to match the `BaseUnit` contract every other unit
+  follows.
+- **H7 — Compressor γ at large P-ratio.** `compressor.py::_gamma` no longer
+  reads `T_out` directly from `x` (which is just the solver guess on iter
+  0); it bootstraps an isentropic T_out estimate with γ = 1.4, then
+  evaluates the mixture γ at the resulting `T_avg`. Removes the 2-3 %
+  error at P_r ≈ 50.
+- **M4 — FlashVL phase-boundary singularity.** `flash_vl_hf.py:119–121`
+  raises the phase-total floor from 1e-12 to 1e-6 so mole fractions stay
+  bounded when one phase vanishes.
+- **M5 — Valve dP smoothing.** `valve.py:113–114` adds a 1e-9 ε inside the
+  `√(dP)` so the Jacobian stays finite at `P_in = P_out` (the v1.3.x
+  version had an infinite derivative at zero crossing).
+- **M7 — Distillation θ-bracket guard.** `distillation_hf.py:146–148`
+  auto-swaps `α_hk` / `α_lk` when the user mis-labels the keys instead of
+  silently falling back to a constant.
+- **M9 — PFR ODE failure surfacing.** `pfr_hf.py:181` now caches the
+  exception on `self._last_integration_error` so the 1e6 penalty residual
+  comes with a debuggable root cause.
+
+### UI / UMS expansion (`ui/`)
+
+- **H10 — Absolute-zero guard.** UMS number inputs now declare
+  `min_value` = 0 K / −273.15 °C / −459.67 °F so the user cannot type a
+  sub-absolute-zero temperature into the builder.
+- **H11 — AVAILABLE_UNITS expansion.** Seven previously-orphaned Layer 3
+  classes are now selectable in the Custom Builder dropdown: **Pump,
+  Valve, ShellTubeHX, H2SeparatorPSA, GibbsReactor, EquilibriumReactor
+  (with a default WGS reaction), DistillationHF**. The catalogue is now
+  23 entries across 8 categories, drawn from a 36-class Layer-3 base.
+  FlashSL and PFRHF stay Python-API-only because their reaction /
+  solubility configuration is richer than the flat parameter form.
+- **M10 — Session-state defaults.** `_init_state` now `setdefault`s
+  `custom_flowsheet`, `last_flowsheet`, and `objective_config` so a
+  direct-lookup style consumer cannot crash on first render.
+- **M11 — Excel `_infer_si_unit` regex.** Suffix dispatch is now a sorted
+  longest-suffix-wins rule list rather than an ordered `if` chain.
+
+### Packaging / black-box / docs (`models/_blackbox/`, `models/costing/`)
+
+- **H8 — Deferred scipy imports.** `_blackbox/hda_*_bb.py` modules no
+  longer import scipy at module load time. A `gui`-only install can now
+  import the package without the `blackbox` extra.
+- **H9 — `economics.json` via `importlib.resources`.** `economic_engine.py`
+  resolves the data file via `importlib.resources.files("pse_ecosystem.data")`,
+  falling back to the source-tree path for editable installs.
+- **L1 / L2 — Stale `v0.3.0` / `v0` docstrings.** Updated to v1.4.0 in
+  `ui/app_streamlit.py` and `ui/entry.py`.
+- **L4 — `costing/__init__.py`** now re-exports `CEPCI`,
+  `CEPCI_ESCALATION_RATE`, `EconomicEngine`, and the SSLW purchase-cost
+  helpers.
+
+### Test coverage (`tests/test_unrestricted_flowsheet.py`)
+
+10 new pytest functions across three new test groups:
+
+- `TestUMSEdgeCases` — NaN, ±Inf, absolute zero, very high pressure.
+- `test_solver_mode_nlp_ipopt_smoke`, `..._trust_region_smoke`,
+  `..._adaptive_smoke` — smoke tests for the three solver modes that had
+  no automated coverage pre-v1.4.0 (and where C1 was hiding).
+- `test_trf_convergence_not_spurious_on_first_accepted_step` — direct
+  regression guard for C1.
+- `test_progressive_tightening_loose_tolerances_in_early_iterations` —
+  behavioural test of the `_tighten` schedule at k = 5 / 30 / 80 of 100.
+- `test_every_available_unit_instantiates_with_defaults` — catalogue
+  smoke test for H11.
+
+**Suite total:** 213 passed, 1 pre-existing skip, 0 failures.
+
+### Known carry-forward (not yet fixed in v1.4.0)
+
+- **M1** — progressive-tightening `eps_kpi` uses ×10 / ×3 multipliers
+  versus ×100 / ×10 for `eps_x` / `eps_f`. By design (`eps_kpi` base is
+  10× larger), but worth documenting in a future tuning note.
+- **M12** — no end-to-end *template-vs-custom* parity test on a complex
+  industrial flowsheet (custom-path determinism is verified instead).
+- **L5** — finite-difference Jacobian step size for variables near 1e-8
+  may cross zero; impact is bounded by `max(1, |x|)` scaling.
+- **L8** — `GibbsReactor` is isothermal-only by design; an adiabatic
+  variant with a Q-coupled energy balance is a future track.
+- **L9** — "GPS Weather" page name implies map UI it doesn't have.
+- **L7** — Separator over-determined closure constraints.
+
+---
+
 ## What's New in v1.4.0-UMS — Unit Management System
 
 ### Layer-1 unit conversion registry (`flowsheet_service.py`)

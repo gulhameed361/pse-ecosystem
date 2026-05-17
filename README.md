@@ -10,8 +10,9 @@ Application-centric Knowledge Ecosystem for Process Systems Engineering.
 - **Explainable physics.** Every unit model ships its exact algebraic residuals and analytical Jacobian. Regulators, auditors, and partners can inspect every equation — no black-box solver.
 - **Analytical Jacobians throughout.** The SLP solver linearises using exact ∂f/∂x, not finite differences. Faster convergence, provable gradient accuracy.
 - **3-layer separation.** UI / Solver / Knowledge are strictly decoupled via the Handshake Protocol. Swap the solver without touching the physics; swap the UI without touching the solver.
-- **Unrestricted Assembly Freedom (v1.4.0).** Aspen-style Custom Flowsheet builder — no hard cap on unit count. 3-column specification grid with pre-filled engineering defaults; smart Unit ID dropdown re-seeds on Type change. 16+ unit types supported.
-- **Analytical Verification.** Every unit exposes exact Jacobians; 7-unit workshop chain validated via the automated test suite (170+ pytest functions).
+- **Unrestricted Assembly Freedom (v1.4.0).** Aspen-style Custom Flowsheet builder — no hard cap on unit count. 3-column specification grid with pre-filled engineering defaults; smart Unit ID dropdown re-seeds on Type change. **23 UI-selectable unit types** drawn from a 36-class Layer-3 catalogue.
+- **Unit Management System (v1.4.0).** Every float parameter with a convertible dimension (T, P, mass flow, mass, power, energy) shows a unit dropdown next to its value. Backend stays in SI; UI converts at the boundary. Excel export tags every numeric column with its SI unit.
+- **Analytical Verification.** Every unit exposes exact Jacobians; 7-unit workshop chain validated via the automated test suite (**213 pytest cases**).
 - **Live Help Center (v1.4.0).** A 6th nav page renders the workspace `docs/` markdown directly in the app — User Manual, 7-Unit Workshop with answer key, Theory Reference, Architecture, Developer Guide. Edits to source markdown refresh on the next render.
 - **Excel Export.** Download a 3-sheet ledger (Stream Table / Unit Performance / Optimization Summary) to `.xlsx` from the Solver Monitor.
 - **Progressive Solver Tightening (default ON in v1.4.0).** SLP starts with loose tolerances (≈1e-3) and tightens to precision (≈1e-7) as iterations progress. Max Iterations slider extended to **1500**.
@@ -49,7 +50,7 @@ python -m venv $HOME\.venvs\pse_ecosystem
 pip install -e ".[dev,solvers,gui,weather]"
 
 # Run tests
-pytest tests\ -q                       # 170+ pytest functions
+pytest tests\ -q                       # 213 pytest cases pass
 
 # Launch the Streamlit UI
 streamlit run pse_ecosystem/ui/app_streamlit.py
@@ -181,20 +182,30 @@ CEPCI data (2001–2024) and costing defaults live in `data/economics.json` and 
 
 ---
 
-## Test Suite (170+ pytest + audit scripts)
+## Test Suite (213 pytest cases + audit scripts)
 
 ```powershell
-pytest tests\ -q                        # 170+ pytest (incl. v1.4.0 unrestricted-flowsheet suite)
+pytest tests\ -q                        # 213 pytest cases
 python tests/ui_audit.py                # service + layer checks
 python tests/system_audit.py            # cross-layer / registry checks
 python tests/industrial_audit.py        # physics & KPI convergence checks
 ```
 
-The new `tests/test_unrestricted_flowsheet.py` guards: uncapped builder
-(N up to 15), N-1 connection count, openpyxl 3-sheet round-trip,
-custom-path solve determinism, slider bounds (1–1500), progressive-tightening
-default `True`, and version-string consistency across `__init__.py`,
-`pyproject.toml`, and the Dashboard caption.
+The `tests/test_unrestricted_flowsheet.py` suite (44 functions, expanded in
+the v1.4.0 audit-hardening pass) guards:
+
+- the uncapped builder (N up to 15) and N-1 connection count,
+- openpyxl 3-sheet Excel round-trip with explicit `SI Unit` columns,
+- custom-path solve determinism,
+- UMS round-trip math (K↔°C↔°F, Pa↔bar↔atm↔psi, etc.) plus edge cases
+  (NaN, ±Inf, absolute zero, very high pressure),
+- progressive-tightening schedule behaviour at every phase,
+- every entry in `AVAILABLE_UNITS` instantiates with empty params,
+- TRF / NLP / Adaptive solver-mode smoke tests (the v1.3.x TRF spurious
+  convergence bug is now guarded),
+- slider bounds (1–1500), progressive-tightening default `True`, and
+  version-string consistency across `__init__.py`, `pyproject.toml`,
+  and the Streamlit caption.
 
 ---
 

@@ -109,8 +109,11 @@ class Valve(BaseUnit):
         # Isenthalpic (ideal gas: T_out = T_in) [1]
         res[N] = T_out - T_in
 
-        # Valve flow equation [1]
-        dP = max(P_in - P_out, 0.0)
+        # Valve flow equation [1] — Cv·√(dP). Smoothed with a tiny floor so
+        # the Jacobian stays finite at dP → 0 (the raw √x derivative blows
+        # up at zero). Audit M5: pre-v1.4.0 the residual was identically
+        # zero in the reverse-flow regime, hiding sensitivity to P_out.
+        dP = max(P_in - P_out, 0.0) + 1e-9
         res[N + 1] = F_total_out - Cv * dP ** 0.5
 
         # Pressure spec residual [1]

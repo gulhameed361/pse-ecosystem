@@ -110,12 +110,22 @@ class Compressor(BaseUnit):
     def _gamma(self, x: Dict[str, float]) -> float:
         if self.params.gamma_fixed is not None:
             return self.params.gamma_fixed
-        # Mixture γ from Cp at average T
-        T_avg = 0.5 * (x.get(self._v_T_in(), 298.0) + x.get(self._v_T_out(), 400.0))
         flows = {c: x.get(self._v_F_in(c), 0.0) for c in self.components if c in _KNOWN}
         total = sum(flows.values())
         if total < 1e-12:
             return 1.4
+
+        # Two-stage estimate of T_avg so γ stays accurate at large pressure
+        # ratios. Pre-v1.4.0 we read T_out directly from x, which on the very
+        # first SLP iteration defaulted to ~400 K regardless of the true
+        # isentropic outlet (~1200 K at P_r ≈ 50). Audit H7.
+        T_in = x.get(self._v_T_in(), 298.0)
+        P_in = max(x.get(self._v_P_in(), 101325.0), 1e-3)
+        P_out_guess = max(x.get(self._v_P_out(), P_in), 1e-3)
+        # Stage 1: assume γ = 1.4 to bootstrap the isentropic T_out.
+        theta_0 = (1.4 - 1.0) / 1.4
+        T_out_est = T_in * (P_out_guess / P_in) ** theta_0
+        T_avg = 0.5 * (T_in + T_out_est)
         Cp_mix = mixture_cp_J_mol_K(flows, T_avg, basis="molar_flow")
         return Cp_mix / (Cp_mix - _R_GAS) if Cp_mix > _R_GAS else 1.4
 

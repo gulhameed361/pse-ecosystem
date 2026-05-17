@@ -123,7 +123,15 @@ class HeatExchangerNTU(BaseUnit):
     def _eps_from_NTU(NTU: float, C_star: float) -> float:
         if C_star >= 1.0 - 1e-6:
             return NTU / (1.0 + NTU)  # degenerate balanced case
-        return (1.0 - math.exp(-NTU * (1.0 - C_star))) / (1.0 - C_star * math.exp(-NTU * (1.0 - C_star)))
+        # Clamp the exponent argument to keep math.exp() in range. For very
+        # effective exchangers the (-NTU*(1-C*)) magnitude can grow without
+        # bound; once it exceeds ~700 the result saturates to 0 anyway, so
+        # capping at 700 avoids spurious OverflowError without affecting
+        # downstream numerics.
+        arg = -NTU * (1.0 - C_star)
+        arg = max(min(arg, 700.0), -700.0)
+        e = math.exp(arg)
+        return (1.0 - e) / (1.0 - C_star * e)
 
     def residual(self, x: Dict[str, float]) -> np.ndarray:
         T_hi = x.get(self._vT("hot_in"),  500.0)

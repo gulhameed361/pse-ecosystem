@@ -66,6 +66,14 @@ class NLPDriver:
             return J.T @ r  # gradient of ½‖f‖² is J^T f
 
         try:
+            # scipy's L-BFGS-B convergence is checked on the *objective*
+            # (½‖f‖²) and its *gradient* (J^T f). We expose two thresholds:
+            #   ftol — relative objective change.  Since the objective ½‖f‖²
+            #          scales as eps_f², we set ftol ∝ eps_f² with a 1e-2
+            #          safety factor so scipy keeps refining a step past the
+            #          point where our own residual-norm test would fire.
+            #   gtol — gradient-norm tolerance, kept proportional to eps_f.
+            # See `M2` audit note (v1.4.0): document the squaring rationale.
             result = minimize(
                 objective,
                 x0_vec,

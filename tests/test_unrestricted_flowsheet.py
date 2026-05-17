@@ -423,3 +423,170 @@ class TestExcelUnitInference:
         from pse_ecosystem.ui.app_streamlit import _infer_si_unit
         assert _infer_si_unit("foo") == ""
         assert _infer_si_unit("") == ""
+
+
+# ── v1.4.0 audit — extended UMS edge cases (M14) ─────────────────────────────
+
+
+class TestUMSEdgeCases:
+    """NaN / Inf / extreme-value behaviour of the conversion helpers."""
+
+    def test_nan_input_propagates_nan(self):
+        import math
+        assert math.isnan(to_native(float("nan"), "°C", "K"))
+        assert math.isnan(from_native(float("nan"), "K", "°F"))
+
+    def test_inf_input_propagates_sign(self):
+        import math
+        assert math.isinf(to_native(float("inf"),  "°C", "K"))
+        assert math.isinf(to_native(float("-inf"), "°C", "K"))
+
+    def test_absolute_zero_round_trip(self):
+        # 0 K is the absolute zero floor; check the round-trip closes exactly.
+        assert to_native(0.0, "K", "K") == 0.0
+        assert from_native(0.0, "K", "°C") == pytest.approx(-273.15, abs=1e-9)
+        assert from_native(0.0, "K", "°F") == pytest.approx(-459.67, abs=1e-2)
+
+    def test_high_pressure_round_trip(self):
+        # 1e8 Pa = 1000 bar; well above any realistic process condition.
+        v = 1.0e8
+        b = from_native(v, "Pa", "bar")
+        assert b == pytest.approx(1000.0, rel=1e-9)
+        assert to_native(b, "bar", "Pa") == pytest.approx(v, rel=1e-9)
+
+
+# ── v1.4.0 audit — solver-mode smoke tests (H12) ──────────────────────────────
+#
+# Pre-v1.4.0 only FIXED_LP and FLEXIBLE_MILP were exercised by the test suite;
+# NLP_IPOPT / TRUST_REGION / ADAPTIVE shipped without an end-to-end guard
+# (which is how the TRF step_norm inversion in trust_region_driver.py:209
+# went unnoticed). These smoke tests are intentionally permissive: they
+# accept either CONVERGED or MAX_ITER as a successful run — the goal is to
+# guarantee the dispatch path executes without raising.
+
+
+def _simple_linear_fs():
+    """Single-unit linear flowsheet (BiomassStorageHF). Cheapest possible NLP
+    target — every solver mode should at minimum return a SolveResult."""
+    return build_custom_flowsheet({
+        "units": [
+            {"type": "BiomassStorageHF", "id": "storage", "params": {}},
+        ],
+        "connections": [],
+    })
+
+
+def _assert_returns_result(result, mode_name: str):
+    from pse_ecosystem.core.contracts import SolverStatus
+    assert result is not None, f"{mode_name}: Orchestrator returned None"
+    # CONVERGED or MAX_ITER are both acceptable — the bug we're guarding
+    # against is a code-path exception or a NUMERICAL_ERROR status.
+    acceptable = {SolverStatus.CONVERGED, SolverStatus.MAX_ITER}
+    assert result.status in acceptable, (
+        f"{mode_name} returned status={result.status}; expected one of {acceptable}. "
+        f"Message: {result.message!r}"
+    )
+
+
+def test_solver_mode_nlp_ipopt_smoke():
+    pytest.importorskip("scipy.optimize")
+    fs = _simple_linear_fs()
+    result = Orchestrator(fs, SolveMode.NLP_IPOPT,
+                          slp_config=SLPConfig(max_iter=5)).solve()
+    _assert_returns_result(result, "NLP_IPOPT")
+
+
+def test_solver_mode_trust_region_smoke():
+    fs = _simple_linear_fs()
+    result = Orchestrator(fs, SolveMode.TRUST_REGION,
+                          slp_config=SLPConfig(max_iter=5)).solve()
+    _assert_returns_result(result, "TRUST_REGION")
+
+
+def test_solver_mode_adaptive_smoke():
+    fs = _simple_linear_fs()
+    result = Orchestrator(fs, SolveMode.ADAPTIVE,
+                          slp_config=SLPConfig(max_iter=5)).solve()
+    _assert_returns_result(result, "ADAPTIVE")
+
+
+def test_trf_convergence_not_spurious_on_first_accepted_step():
+    """Guards against the v1.3.x TRF bug where the convergence check fired on
+    the first accepted step because step_norm was forced to 0 (audit C1).
+
+    A flowsheet that genuinely needs > 1 iteration must not return after one.
+    """
+    fs = build_custom_flowsheet({
+        "units": [
+            {"type": "BiomassStorageHF", "id": "storage", "params": {}},
+            {"type": "BiomassGasifierHF", "id": "gas",
+             "params": {"T_gasifier_C": 800.0, "gasifying_agent": "Steam"}},
+        ],
+        "connections": [{"from_unit": "storage", "to_unit": "gas"}],
+    })
+    result = Orchestrator(fs, SolveMode.TRUST_REGION,
+                          slp_config=SLPConfig(max_iter=20)).solve()
+    # The fix forces step_norm = +inf on rejected steps and the real step
+    # magnitude on accepted ones. Genuine convergence in 1 iteration on a
+    # 2-unit non-linear chain is unrealistic; demand at least 2.
+    if result.status.name == "CONVERGED":
+        assert result.iterations >= 2, (
+            f"TRF reported CONVERGED after only {result.iterations} iteration(s) — "
+            f"the spurious-convergence guard (audit C1) regressed."
+        )
+
+
+# ── v1.4.0 audit — progressive-tightening behaviour test (M13) ────────────────
+
+
+def test_progressive_tightening_loose_tolerances_in_early_iterations():
+    """The pre-v1.4.0 source-level check only asserted the default is True.
+
+    This test exercises the runtime schedule: at low iteration count under
+    progressive_tightening the SLP effective tolerances are an order of
+    magnitude looser than the cfg defaults (audit M13).
+    """
+    from pse_ecosystem.solvers.slp import _tighten, SLPConfig
+    cfg = SLPConfig(max_iter=100, eps_x=1e-4, eps_f=1e-4, eps_kpi=1e-3)
+
+    # Phase 1: k < 20% of max_iter (here k=5 of 100). Tolerances 100× looser.
+    eps_x_early, eps_f_early, eps_kpi_early = _tighten(cfg, k=5)
+    assert eps_x_early == pytest.approx(cfg.eps_x * 100.0)
+    assert eps_f_early == pytest.approx(cfg.eps_f * 100.0)
+
+    # Phase 2: 20% ≤ k < 60% (here k=30). Tolerances 10× looser.
+    eps_x_mid, eps_f_mid, _ = _tighten(cfg, k=30)
+    assert eps_x_mid == pytest.approx(cfg.eps_x * 10.0)
+    assert eps_f_mid == pytest.approx(cfg.eps_f * 10.0)
+
+    # Phase 3: k ≥ 60% (here k=80). Tolerances at the cfg defaults.
+    eps_x_tight, eps_f_tight, eps_kpi_tight = _tighten(cfg, k=80)
+    assert eps_x_tight == pytest.approx(cfg.eps_x)
+    assert eps_f_tight == pytest.approx(cfg.eps_f)
+    assert eps_kpi_tight == pytest.approx(cfg.eps_kpi)
+
+
+# ── v1.4.0 audit — UI registry coverage (H11) ─────────────────────────────────
+#
+# Every entry in AVAILABLE_UNITS must be instantiable via _instantiate_unit
+# with empty params (i.e. defaults must exist and be self-consistent). This
+# is the regression guard for the H11 expansion that added Pump, Valve,
+# ShellTubeHX, H2SeparatorPSA, GibbsReactor, EquilibriumReactor, and
+# DistillationHF to the UI catalogue.
+
+
+def test_every_available_unit_instantiates_with_defaults():
+    from pse_ecosystem.ui.flowsheet_service import AVAILABLE_UNITS, _instantiate_unit
+
+    failures = []
+    for utype in AVAILABLE_UNITS:
+        try:
+            obj = _instantiate_unit(utype, f"{utype.lower()}_test", {})
+            assert obj is not None
+        except Exception as exc:  # noqa: BLE001
+            failures.append((utype, repr(exc)))
+
+    assert not failures, (
+        "AVAILABLE_UNITS entries that failed to instantiate with empty params:\n"
+        + "\n".join(f"  - {u}: {e}" for u, e in failures)
+    )

@@ -226,12 +226,10 @@ class SLPDriver:
                         rng = np.random.default_rng(seed=_restart_count)
                         for v in list(x_k):
                             lo, hi = agg_bounds.get(v, (-1e18, 1e18))
-                            lo = max(lo, -1e18)
-                            hi = min(hi, 1e18)
-                            span = hi - lo if hi < 1e18 and lo > -1e18 else 1.0
-                            x_k[v] += float(rng.uniform(-0.05 * span, 0.05 * span))
-                            x_k[v] = float(np.clip(x_k[v], lo if lo > -1e18 else -1e18,
-                                                    hi if hi < 1e18 else 1e18))
+                            bounded = (lo > -1e18) and (hi < 1e18)
+                            span = (hi - lo) if bounded else 1.0
+                            perturbation = float(rng.uniform(-0.05 * span, 0.05 * span))
+                            x_k[v] = float(np.clip(x_k[v] + perturbation, lo, hi))
                         delta = self.config.trust_region_init
                         if self.config.verbose:
                             print(

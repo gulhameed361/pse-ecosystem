@@ -186,6 +186,10 @@ class TrustRegionDriver:
             else:
                 rho = 1.0
 
+            # Capture step magnitude BEFORE assigning x_k = x_trial below; the
+            # convergence guard at the end of the loop depends on it.
+            taken_step_norm = self._inf_norm_diff(x_trial, x_k)
+
             if step_accepted:
                 # Update filter/funnel with new point
                 self._accept_update(globalization, cfg, h_trial, obj_trial,
@@ -194,9 +198,15 @@ class TrustRegionDriver:
                 h0 = h_trial
                 obj0 = obj_trial
 
-                # Grow trust region if rho is high
+                # Eason & Biegler 2016 §3.2 trust-region schedule:
+                #   ρ ≥ η₂        → grow Δ  (linearisation is excellent)
+                #   η₁ ≤ ρ < η₂  → keep Δ  (linearisation is acceptable)
+                #   ρ < η₁        → shrink Δ (linearisation is poor; step accepted
+                #                              on filter grounds only)
                 if rho >= cfg.eta2:
                     delta = min(delta * cfg.gamma2, cfg.delta_max)
+                elif rho < cfg.eta1:
+                    delta = max(delta * cfg.gamma1, cfg.delta_min)
             else:
                 # Rejected: shrink trust region
                 delta = max(delta * cfg.gamma1, cfg.delta_min)
@@ -206,7 +216,10 @@ class TrustRegionDriver:
                     return self._feasibility_restore(x_k, k, history, last_objective)
 
             true_kpi = self._kpi_value(x_k)
-            step_norm = self._inf_norm_diff(x_trial, x_k) if not step_accepted else 0.0
+            # Convergence is only meaningful for an accepted step; for a
+            # rejected step force step_norm = +inf so the test below cannot
+            # fire spuriously.
+            step_norm = taken_step_norm if step_accepted else float("inf")
 
             history.append({
                 "iteration": k,

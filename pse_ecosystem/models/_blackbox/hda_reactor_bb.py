@@ -12,7 +12,9 @@ Source: Douglas (1988), Eason & Biegler (2016), AIChE J. 62(9):3124-3136.
 """
 
 import numpy as np
-from scipy.integrate import solve_ivp
+# scipy import is deferred inside HDA_Reactor_sim so a `gui`-only install
+# without the `blackbox` extra can still import this module (e.g. for type
+# introspection or sphinx). v1.4.0 audit H8.
 
 # ── Kinetic parameters ────────────────────────────────────────────────────────
 
@@ -68,6 +70,7 @@ def _pfr_odes(V, y):
 
 def HDA_Reactor_sim(F_H2_in, F_CH4_in, F_Tol_in, F_Benz_in, T_in, V_R):
     """Simulate HDA adiabatic PFR. Returns 7-tuple (mol/s, mol/s, ..., K, MJ/s)."""
+    from scipy.integrate import solve_ivp  # deferred — v1.4.0 audit H8
     y0 = [
         max(float(F_H2_in),   1e-10),
         max(float(F_CH4_in),  1e-10),

@@ -46,7 +46,21 @@ def K_value(species: str, T_K: float, P_Pa: float) -> float:
     Returns a very large value when T is below the Antoine valid range
     (species is a light gas or supercritical) and a very small value when T
     is above the valid range (species is a heavy liquid at high T).
+
+    Raises
+    ------
+    ValueError
+        If *species* is not in the Antoine database. The error names the
+        species and lists the known set so the caller can pre-validate at
+        flowsheet build time rather than discovering the gap at solve time.
     """
+    if species not in ANTOINE:
+        raise ValueError(
+            f"Antoine constants not available for species {species!r}. "
+            f"Known species: {sorted(ANTOINE)}. Extend "
+            f"`pse_ecosystem.models.properties.vle.ANTOINE` or use a unit "
+            f"that does not require VLE for this component."
+        )
     p = ANTOINE[species]
     T_C = T_K - 273.15
     log10_Psat_mmHg = p["A"] - p["B"] / (T_C + p["C"])
@@ -78,6 +92,13 @@ def rachford_rice(
     z = np.asarray(z, dtype=float)
     K = np.asarray(K, dtype=float)
 
+    # Trivial / degenerate K-vector handling. When all K_i are within a tiny
+    # tolerance of 1.0, the Rachford-Rice denominator 1 + V(K-1) collapses
+    # toward unity and the equation is satisfied identically — the flash is
+    # an azeotropic / ideal-mix situation with no unique vapour fraction.
+    if np.all(np.isclose(K, 1.0, atol=1e-9)):
+        return float("nan")
+
     # Michelsen bounds
     idx_gt1 = K > 1.0
     idx_lt1 = K < 1.0
@@ -90,7 +111,11 @@ def rachford_rice(
         return float("nan")  # single-phase condition
 
     def _rr(V: float) -> float:
-        return float(np.sum(z * (K - 1.0) / (1.0 + V * (K - 1.0))))
+        # Guard the denominator against degeneracy from the upstream caller
+        # passing an inconsistent K vector; clamp to a small positive number.
+        denom = 1.0 + V * (K - 1.0)
+        denom = np.where(np.abs(denom) < 1e-15, np.sign(denom) * 1e-15 + 1e-15, denom)
+        return float(np.sum(z * (K - 1.0) / denom))
 
     # Check that root exists in the bracket
     fa, fb = _rr(V_min), _rr(V_max)

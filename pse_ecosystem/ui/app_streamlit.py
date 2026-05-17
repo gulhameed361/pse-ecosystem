@@ -1,4 +1,4 @@
-"""PSE Ecosystem — multi-page Streamlit front-end (v0.3.0).
+"""PSE Ecosystem — multi-page Streamlit front-end (v1.4.0).
 
 Run with::
 
@@ -43,12 +43,61 @@ def _init_state(st) -> None:
     st.session_state.setdefault("selected_template", None)
     st.session_state.setdefault("template_params", {})
     st.session_state.setdefault("last_result", None)
+    st.session_state.setdefault("last_flowsheet", None)        # v1.4.0 audit M10
+    st.session_state.setdefault("custom_flowsheet", None)      # v1.4.0 audit M10
+    st.session_state.setdefault("objective_config", None)      # v1.4.0 audit M10
     st.session_state.setdefault("weather_ghi", None)
     st.session_state.setdefault("weather_wind", None)
     st.session_state.setdefault("weather_site", None)
 
 
 # ── SI-unit inference for Excel export ────────────────────────────────────────
+
+_SI_UNIT_SUFFIX_RULES = [
+    # Order matters: longest / most specific suffix first to avoid being
+    # short-circuited by a shorter match (e.g. `Y_H2_kg_per_h` must hit
+    # `_kg_per_h` before any single-token suffix). v1.4.0 audit M11.
+    ("_kg_per_h", "kg/h"),
+    ("_mol_per_s", "mol/s"),
+    ("_per_kWh",   "USD/kWh"),
+    ("_per_kg",    "USD/kg"),
+    ("_USD",       "USD"),
+    ("_Pa",        "Pa"),
+    ("_kPa",       "kPa"),
+    ("_bar",       "bar"),
+    ("_MW",        "MW"),
+    ("_kW",        "kW"),
+    ("_MJ",        "MJ"),
+    ("_kJ",        "kJ"),
+    ("_K",         "K"),
+    ("_C",         "°C"),
+]
+
+_SI_UNIT_PREFIX_RULES = [
+    ("F_", "kg/s"),
+    ("n_", "mol/s"),
+    ("X_", "—"),
+    ("Y_", "—"),
+]
+
+_SI_UNIT_EXACT = {
+    "T":         "K",
+    "T_in":      "K",
+    "T_out":     "K",
+    "T_avg":     "K",
+    "P":         "Pa",
+    "P_in":      "Pa",
+    "P_out":     "Pa",
+    "W":         "W",
+    "W_shaft":   "W",
+    "W_elec":    "W",
+    "Q":         "W",
+    "duty":      "W",
+    "duty_W":    "W",
+    "H":         "J/s",
+    "enthalpy":  "J/s",
+}
+
 
 def _infer_si_unit(var_name: str) -> str:
     """Best-effort guess at the SI unit of a solver variable from its name.
@@ -60,33 +109,28 @@ def _infer_si_unit(var_name: str) -> str:
     dimensionless conversion, ``W_shaft`` / ``W_elec`` for W shaft work, etc.
 
     Returns an empty string when no inference is possible — never raises.
+
+    Implementation: a longest-suffix-wins dispatch over `_SI_UNIT_SUFFIX_RULES`
+    eliminates the v1.3.x order-dependent bug where short suffixes shadowed
+    longer ones in compound variable names (audit M11).
     """
     if not var_name:
         return ""
     n = var_name.strip()
-    n_lower = n.lower()
 
-    # Explicit suffix tags (highest priority)
-    if n.endswith("_Pa"):       return "Pa"
-    if n.endswith("_K"):        return "K"
-    if n.endswith("_C"):        return "°C"
-    if n.endswith("_kg_per_h"): return "kg/h"
-    if n.endswith("_kW"):       return "kW"
-    if n.endswith("_MW"):       return "MW"
-    if n.endswith("_kJ"):       return "kJ"
-    if n.endswith("_MJ"):       return "MJ"
+    # Exact bare names first.
+    if n in _SI_UNIT_EXACT:
+        return _SI_UNIT_EXACT[n]
 
-    # Prefix conventions
-    if n.startswith("F_"):      return "kg/s"   # species mass flow
-    if n.startswith("n_"):      return "mol/s"  # species molar flow
-    if n.startswith("X_"):      return "—"      # conversion / split fraction
-    if n.startswith("Y_"):      return "—"      # yield ratio
+    # Longest matching suffix wins (rules are pre-sorted longest-first).
+    for suffix, unit in _SI_UNIT_SUFFIX_RULES:
+        if n.endswith(suffix):
+            return unit
 
-    # Bare canonical names
-    if n in {"T", "T_in", "T_out", "T_avg"}:                   return "K"
-    if n in {"P", "P_in", "P_out"}:                            return "Pa"
-    if n in {"W_shaft", "W_elec", "W", "Q", "duty", "duty_W"}: return "W"
-    if n in {"H", "enthalpy"}:                                 return "J/s"
+    # Prefix conventions.
+    for prefix, unit in _SI_UNIT_PREFIX_RULES:
+        if n.startswith(prefix):
+            return unit
 
     return ""
 
@@ -599,9 +643,15 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
                                 label_visibility="visible",
                             )
                             _disp_default = from_native(float(_ps.default), _ps.unit, _disp_unit)
+                            # Physical lower bound for temperature inputs:
+                            # 0 K, -273.15 °C, -459.67 °F. v1.4.0 audit H10.
+                            _TEMP_FLOOR = {"K": 0.0, "°C": -273.15, "°F": -459.67}
+                            _min_val = _TEMP_FLOOR.get(_disp_unit)
+                            _kw = {"help": _ps.help, "key": _key}
+                            if _min_val is not None:
+                                _kw["min_value"] = float(_min_val)
                             _ui_value = _vc.number_input(
-                                f"{_ps.label}", value=float(_disp_default),
-                                help=_ps.help, key=_key,
+                                f"{_ps.label}", value=float(_disp_default), **_kw,
                             )
                             # Convert back to native ParamSpec unit before storing.
                             unit_params[_ps.name] = to_native(
