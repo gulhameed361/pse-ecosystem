@@ -1,9 +1,27 @@
-# PSE Ecosystem — Architecture Blueprint (v1.2.1)
+# PSE Ecosystem — Architecture Blueprint (v1.4.0)
 
 > Status: load-bearing document. The Layer 2 ↔ Layer 3 contract described
 > here is the lever that lets us scale from toy LP flowsheets to MINLP /
 > ML-surrogate workloads without rewriting the platform. Treat changes to
 > this document as architectural decisions.
+
+---
+
+## 0. v1.4.0 highlights
+
+- **Unrestricted custom flowsheet scaling.** Layer 1 imposes no hard cap on
+  the number of units in the Custom Flowsheet builder; the dynamic-loop
+  renderer in `pse_ecosystem/ui/app_streamlit.py` iterates over a runtime
+  session-state list. The downstream compile path (`build_custom_flowsheet`
+  → `BaseFlowsheet` → `Orchestrator.solve`) is linear in N and identical to
+  the path used by every pre-built industrial template, so numerical parity
+  between manual and template builds is structural, not asserted.
+- **Single source of truth for `__version__`.** `pse_ecosystem/__init__.py`
+  exports the canonical version string; `pyproject.toml`, the Dashboard
+  caption, and the test suite all read from this one location.
+- **Help Center is a Layer-1-only concern.** `_page_help_center` reads
+  `docs/*.md` via `pathlib` with mtime-keyed `@st.cache_data`. No new
+  cross-layer coupling.
 
 ---
 

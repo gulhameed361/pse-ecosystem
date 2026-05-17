@@ -1,4 +1,4 @@
-# PSE Ecosystem (v1.3.0)
+# PSE Ecosystem (v1.4.0)
 
 Application-centric Knowledge Ecosystem for Process Systems Engineering.  
 **Private — University of Surrey.**
@@ -10,10 +10,11 @@ Application-centric Knowledge Ecosystem for Process Systems Engineering.
 - **Explainable physics.** Every unit model ships its exact algebraic residuals and analytical Jacobian. Regulators, auditors, and partners can inspect every equation — no black-box solver.
 - **Analytical Jacobians throughout.** The SLP solver linearises using exact ∂f/∂x, not finite differences. Faster convergence, provable gradient accuracy.
 - **3-layer separation.** UI / Solver / Knowledge are strictly decoupled via the Handshake Protocol. Swap the solver without touching the physics; swap the UI without touching the solver.
-- **Modular Assembly Freedom.** Aspen-style Custom Flowsheet builder with dynamic parameter forms — pre-filled engineering defaults per unit type. 16+ unit types supported.
-- **Analytical Verification.** Every unit exposes exact Jacobians; 7-unit workshop chain validated via 169 automated tests.
-- **Excel Export.** Download KPIs and solution variables to `.xlsx` from the Solver Monitor.
-- **Progressive Solver Tightening.** New SLP strategy for complex chains; Max Iterations slider extended to 1000.
+- **Unrestricted Assembly Freedom (v1.4.0).** Aspen-style Custom Flowsheet builder — no hard cap on unit count. 3-column specification grid with pre-filled engineering defaults; smart Unit ID dropdown re-seeds on Type change. 16+ unit types supported.
+- **Analytical Verification.** Every unit exposes exact Jacobians; 7-unit workshop chain validated via the automated test suite (170+ pytest functions).
+- **Live Help Center (v1.4.0).** A 6th nav page renders the workspace `docs/` markdown directly in the app — User Manual, 7-Unit Workshop with answer key, Theory Reference, Architecture, Developer Guide. Edits to source markdown refresh on the next render.
+- **Excel Export.** Download a 3-sheet ledger (Stream Table / Unit Performance / Optimization Summary) to `.xlsx` from the Solver Monitor.
+- **Progressive Solver Tightening (default ON in v1.4.0).** SLP starts with loose tolerances (≈1e-3) and tightens to precision (≈1e-7) as iterations progress. Max Iterations slider extended to **1500**.
 
 ---
 
@@ -23,7 +24,7 @@ Three strictly separated layers:
 
 | Layer | Location | Responsibility |
 |---|---|---|
-| **1 — UI** | `pse_ecosystem/ui/` | 4-page Streamlit app; `flowsheet_service.py` is the sole bridge to Layer 3 |
+| **1 — UI** | `pse_ecosystem/ui/` | 5-page Streamlit app (incl. Help Center); `flowsheet_service.py` is the sole bridge to Layer 3 |
 | **2 — Solver** | `pse_ecosystem/solvers/` | SLP / NLP / Trust-Region drivers; adaptive cascade orchestration |
 | **3 — Knowledge** | `pse_ecosystem/models/` + `flowsheets/` | Unit models supplying residuals + analytical Jacobians via the Handshake Protocol |
 
@@ -48,7 +49,7 @@ python -m venv $HOME\.venvs\pse_ecosystem
 pip install -e ".[dev,solvers,gui,weather]"
 
 # Run tests
-pytest tests\ -q                       # 146 unit tests
+pytest tests\ -q                       # 170+ pytest functions
 
 # Launch the Streamlit UI
 streamlit run pse_ecosystem/ui/app_streamlit.py
@@ -70,14 +71,15 @@ Opens at **http://localhost:8501**.
 
 ## UI Overview
 
-Four pages:
+Five pages:
 
 | Page | What it does |
 |---|---|
 | **Dashboard** | Solver status, template gallery (14 templates), last solve result |
-| **Flowsheet Builder** | Category filter → template → Mermaid topology → parameter form → **Apply & Select**. 1D Sensitivity Sweep. Custom flowsheet assembler (1–10 units, shared component set, composite super-unit option). |
+| **Flowsheet Builder** | Category filter → template → Mermaid topology → parameter form → **Apply & Select**. 1D Sensitivity Sweep. Objective Function tab (Feasibility / OPEX / Energy / TAC / LCOH / H₂ Yield). Custom flowsheet assembler (**any number of units** in v1.4.0, shared component set, composite super-unit option, 3-column specification grid). |
 | **GPS Weather** | pvlib clearsky solar GHI + Weibull wind profiles for any lat/lon/year |
-| **Solver Monitor** | Solver mode selector (SLP / NLP / Trust-Region / Adaptive) → **Run Solve** → live convergence chart → KPI cards + solution table |
+| **Solver Monitor** | Active-objective mirror at the top. Solver mode selector (SLP / NLP / Trust-Region / Adaptive) → **Run Solve** → live convergence chart → KPI cards + solution table → 3-sheet Excel export. Iteration slider 1–1500; progressive tightening default ON. |
+| **Help Center** | Live-loaded `docs/` markdown — User Manual, 7-Unit Workshop, Theory Reference, Architecture, Developer Guide. |
 
 ---
 
@@ -173,20 +175,26 @@ CEPCI data (2001–2024) and costing defaults live in `data/economics.json` and 
 | [`docs/USER_MANUAL.md`](docs/USER_MANUAL.md) | **Single funder-ready manual** — Part 1 (Basics), Part 2 (Intermediate: 3-unit chain proof + DACU sensitivity), Part 3 (Advanced Showcase: investor walkthrough, Grand Challenge 10-unit validation, Q&A, key equations) |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 3-layer split, Handshake Protocol, hybrid-connection logic (v1.3.0), layer boundary enforcement |
 | [`docs/THEORY_REFERENCE.md`](docs/THEORY_REFERENCE.md) | VLE, Rachford-Rice, SLP / Trust-Region theory, §10 Grand Challenge analytical derivation |
-| [`docs/UI_GUIDE.md`](docs/UI_GUIDE.md) | Full UI reference: page walkthrough, template catalogue, parameter table, custom flowsheet, sensitivity sweep |
+| [`docs/WORKSHOP_7UNIT.md`](docs/WORKSHOP_7UNIT.md) | **v1.4.0 — Canonical 7-unit biomass → H₂ workshop**: chain diagram, per-unit input matrix, UI walkthrough, theoretical answer key |
 | [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md) | Adding units, flowsheets, testing patterns |
 | [`docs/SYSTEM_STATE.md`](docs/SYSTEM_STATE.md) | Source of truth: what exists, test counts, known limitations |
 
 ---
 
-## Test Suite (128 checks)
+## Test Suite (170+ pytest + audit scripts)
 
 ```powershell
-pytest tests\ -q                        # 128 pytest (9 new Grand Challenge tests)
-python tests/ui_audit.py                # 15 service + layer checks
-python tests/system_audit.py            # 17 system checks
-python tests/industrial_audit.py        # 11 physics checks
+pytest tests\ -q                        # 170+ pytest (incl. v1.4.0 unrestricted-flowsheet suite)
+python tests/ui_audit.py                # service + layer checks
+python tests/system_audit.py            # cross-layer / registry checks
+python tests/industrial_audit.py        # physics & KPI convergence checks
 ```
+
+The new `tests/test_unrestricted_flowsheet.py` guards: uncapped builder
+(N up to 15), N-1 connection count, openpyxl 3-sheet round-trip,
+custom-path solve determinism, slider bounds (1–1500), progressive-tightening
+default `True`, and version-string consistency across `__init__.py`,
+`pyproject.toml`, and the Dashboard caption.
 
 ---
 

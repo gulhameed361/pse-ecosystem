@@ -7,6 +7,35 @@
 
 ---
 
+## 0. v1.4.0 — Conventions you must know before extending
+
+### 0.1 Versioning — single source of truth
+
+`pse_ecosystem/__init__.py` exports `__version__`. Every other place that
+displays a version (`pyproject.toml`, the Streamlit Dashboard caption, the
+test suite) reads it from there. To cut a new release, edit `__init__.py`
+and `pyproject.toml` and update the doc banners; the UI follows
+automatically. The test `tests/test_unrestricted_flowsheet.py::test_pyproject_version_matches_package`
+will fail if these drift.
+
+### 0.2 Help Center loader
+
+`pse_ecosystem/ui/app_streamlit.py::_load_doc(name)` reads `docs/<name>.md`
+via `pathlib` and caches the result with `@st.cache_data` keyed on the
+file's `mtime`. To add a new doc to the Help Center: drop the markdown into
+`docs/`, then append `(tab title, filename)` to the `_tabs`/`_files` lists
+in `_page_help_center()`. No imports from Layer 2 or Layer 3.
+
+### 0.3 Custom flowsheet scaling
+
+The Custom Flowsheet builder accepts arbitrarily many units. When adding a
+new unit type to `AVAILABLE_UNITS`, make sure its `UNIT_PARAM_SPECS` entries
+include `help` text — the 3-column grid relies on tooltips for pedagogy.
+The `TYPE_ID_SUGGESTIONS` slug feeds the smart Unit ID dropdown; the widget
+keys embed `{utype}` so the dropdown resets when the user switches the Type.
+
+---
+
 ## 1. Repo Layout & Layer Map
 
 ### 1.1 Folder-by-folder tour

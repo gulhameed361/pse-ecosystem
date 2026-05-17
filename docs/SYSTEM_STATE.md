@@ -1,8 +1,75 @@
 # PSE Ecosystem — System State Ledger
 
-**Version:** 1.3.2
-**Date:** 2026-05-15
-**Status:** v1.3.2 — Proper economic objectives (LCOH, TAC, OPEX, Energy, Feasibility) using real capex/opex methods; force_feasibility flag; 169 tests
+**Version:** 1.4.0
+**Date:** 2026-05-17
+**Status:** v1.4.0 — Industrial Production Release. Unrestricted scaling, Help Center, single-source `__version__`, progressive tightening default ON.
+
+---
+
+## What's New in v1.4.0 — Industrial Production Release
+
+### Unrestricted custom flowsheet (`app_streamlit.py`)
+
+- **Unit count cap removed.** `st.number_input("Number of units", …)` no longer
+  declares `max_value`; the dynamic-loop builder scales to whatever hardware
+  allows. A caption past unit 7 nudges users to set each Type explicitly
+  (the default `index=min(i, len(unit_types)-1)` saturates at the last entry).
+- **Connection count display fixed.** The Build & Select banner now headlines
+  `N units, (N-1) connection(s)` for sequential chains; the internal
+  port-variable equality count (e.g. 31 for the 7-unit workshop) is demoted
+  to a small caption labelled "Internal port-variable equalities".
+- **Smart Unit ID widget no longer sticky.** Widget keys at lines 504 and 510
+  now embed `{utype}` so changing a unit's Type re-seeds the ID dropdown.
+- **3-column specification grid.** The per-unit parameter form renders in
+  `st.columns(3)` rows for Aspen-style density; help-text tooltips, units,
+  and `float`/`int`/`select` dtype dispatch all preserved.
+
+### Solver tuning (`app_streamlit.py`)
+
+- **Max iterations slider 1–1500** (was 5–1000). `SLPConfig.max_iter` already
+  has no hard upper bound — only the UI clipped.
+- **Progressive tightening defaults ON.** The checkbox at the Solver Monitor
+  flips to `value=True`; help text updated to reflect the recommended
+  loose-to-tight schedule (≈1e-3 → ≈1e-7).
+- **Solver Monitor active-objective mirror.** A read-only `st.info` block at
+  the top of the Solver Monitor page renders `st.session_state["objective_config"]`
+  so users always see which objective is active before clicking Run Solve.
+
+### Help Center & live documentation (`app_streamlit.py`, `docs/`)
+
+- **New 6th nav page: Help Center.** `_page_help_center()` renders
+  `docs/USER_MANUAL.md`, the new `docs/WORKSHOP_7UNIT.md`,
+  `docs/THEORY_REFERENCE.md`, `docs/ARCHITECTURE.md`, and
+  `docs/DEVELOPER_GUIDE.md` in tabs.
+- **Loader is mtime-cached.** `_load_doc(name)` uses `@st.cache_data` keyed on
+  the file's `mtime`, so edits to the source markdown refresh automatically.
+- **`docs/WORKSHOP_7UNIT.md` (new).** Canonical 7-unit biomass → H₂ workshop:
+  chain diagram, per-unit input matrix, UI walkthrough, theoretical answer key
+  cross-linked to `THEORY_REFERENCE.md` §11.
+
+### Version single-source-of-truth (`pse_ecosystem/__init__.py`, `pyproject.toml`, `app_streamlit.py`)
+
+- `pse_ecosystem/__init__.py:3` now exports `__version__ = "1.4.0"` (was the
+  orphaned `"0.0.1"`).
+- `pyproject.toml:7` bumped to `1.4.0`.
+- The Dashboard caption imports `__version__` from the package instead of
+  hardcoding `"v1.3.2"`. All future bumps require editing exactly one file.
+- README banner, `ARCHITECTURE.md`, and `USER_MANUAL.md` synced to v1.4.0.
+
+### Tests (`tests/test_unrestricted_flowsheet.py`, new)
+
+13 new pytest functions covering: 8/12/15-unit chain builds, N-1 connection
+count, 3-sheet Excel openpyxl round-trip, custom-path solve determinism,
+slider-bounds source guard (1/1500), uncapped `number_input` source guard,
+progressive-tightening default `True`, and version-string consistency across
+`__init__.py` + `pyproject.toml` + `app_streamlit.py`.
+
+### Known issues (carry-forward)
+
+- **session_state widget bloat.** When `n_units` shrinks, leftover widget keys
+  (`param_{i}_{name}`) linger. Mitigation deferred to a future release.
+- **Streamlit rerun latency.** Past ~20 units, each interaction takes 2–4 s.
+  Pyomo model construction is linear in N; the bottleneck is widget rendering.
 
 ---
 

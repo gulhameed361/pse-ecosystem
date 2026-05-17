@@ -1,0 +1,137 @@
+# 7-Unit Aspen-Style Workshop — Biomass → H₂
+
+**Version:** 1.4.0 | **Date:** 2026-05-17 | **Status:** Canonical Workshop
+
+> Step-by-step build of the validated 7-unit biomass-to-hydrogen chain using the
+> Custom Flowsheet builder. Use this file as the answer key: the input matrices
+> and expected KPIs below are reproduced from the test fixture
+> `tests/test_ui_assembly_logic.py::SEVEN_UNIT_CONFIG` and the symbolic
+> derivations in `THEORY_REFERENCE.md` §11.
+
+---
+
+## 1. Chain Topology
+
+```
+[1] BiomassStorageHF
+        │  dry biomass (Pine Wood, MC = 0.17)
+        ▼
+[2] BiomassGasifierHF        (steam-gasification, 800 °C)
+        │  raw syngas + char/ash
+        ▼
+[3] SeparatorHF (Cyclone)    (99 % particulate removal)
+        │  clean syngas
+        ▼
+[4] WGSReactorHF             (400 °C, K_WGS ≈ 8.9, X_CO ≈ 0.75)
+        │  shifted syngas (H₂-enriched)
+        ▼
+[5] CoolerHF                 (T_out = 310 K)
+        │  cool gas
+        ▼
+[6] SeparatorHF (PSA proxy)  (H₂ split = 0.85, others = 0.05)
+        │  high-purity H₂ stream
+        ▼
+[7] Compressor               (P_out = 5 MPa, η_is = 0.78)
+        │
+        ▼
+     H₂ product
+```
+
+Shared component set: `H2, CO, CO2, H2O, CH4, N2` (6 species).
+
+---
+
+## 2. Per-Unit Input Matrix
+
+| # | Unit Type             | Unit ID    | Key Parameters                                   |
+|---|-----------------------|------------|--------------------------------------------------|
+| 1 | `BiomassStorageHF`    | `storage`  | (defaults; Pine Wood feedstock, MC = 0.17)       |
+| 2 | `BiomassGasifierHF`   | `gasifier` | `T_gasifier_C = 800.0`, `gasifying_agent = Steam`|
+| 3 | `SeparatorHF`         | `cyclone`  | `components = [H2,CO,CO2,H2O,CH4,N2]`, `n_outlets = 2` |
+| 4 | `WGSReactorHF`        | `wgs`      | `T_wgs_C = 400.0`                                |
+| 5 | `CoolerHF`            | `cooler`   | `components = [...]`, `T_out_K = 310.0`          |
+| 6 | `SeparatorHF`         | `psa`      | `components = [...]`, `n_outlets = 2`            |
+| 7 | `Compressor`          | `comp`     | `components = [...]`, `P_out_Pa = 5e6`           |
+
+Connections (sequential, one outlet per unit):
+
+```
+storage → gasifier → cyclone → wgs → cooler → psa → comp
+```
+
+UI headline: **7 units, 6 connection(s).**
+Internal port-variable equalities: **31** (one per shared species + T + P per connection; see `THEORY_REFERENCE.md` §11.8 for the breakdown).
+
+---
+
+## 3. UI Walkthrough — Build It Step by Step
+
+1. **Open** the app → **Flowsheet Builder** page.
+2. In the template selector pick **"Custom — User-defined"**.
+3. **Shared component set:** type `H2, CO, CO2, H2O, CH4, N2`.
+4. **Number of units:** `7`.
+5. For each unit expander (Unit 1 … Unit 7):
+   - Pick the **Type** from row 2 of the matrix above.
+   - The **Unit ID** dropdown re-seeds when you change the Type — pick the suggested slug (`storage`, `gasifier_1`, etc.) or choose *custom…* to type the canonical id from the matrix.
+   - Set the parameters listed in the matrix (defaults are already pre-filled).
+6. **Connections:** the assembler defaults to a sequential chain (`Unit 1 → Unit 2 → … → Unit 7`). Leave the dropdowns as-is.
+7. Click **Build & Select**. The success banner should read **"7 units, 6 connection(s)"** with the internal equality count underneath.
+8. (Optional, recommended) Switch to the **Objective Function** sub-tab and pick **Maximize H₂ Yield** → click **Apply Objective**.
+9. Switch to the **Solver Monitor** page. The active objective should mirror at the top.
+10. Solver Mode: leave on **Adaptive (SLP → NLP → Trust-Region cascade)**; ensure **Progressive tightening** is checked (it is by default in v1.4.0).
+11. **Max iterations:** 200 is plenty for this chain; raise to 600+ only if convergence stalls.
+12. Click **Run Solve**. Watch the live residual / objective chart.
+13. After convergence, click **⬇ Download Results (XLSX)** to export the 3-sheet ledger (Stream Table / Unit Performance / Optimization Summary).
+
+---
+
+## 4. Theoretical Answer Key
+
+For 1.0 kg/s wet Pine Wood feed (Moisture content 0.17 → 0.83 kg/s dry):
+
+| Quantity                                  | Symbol             | Expected value           | Source                                    |
+|-------------------------------------------|--------------------|--------------------------|-------------------------------------------|
+| Dry biomass to gasifier                   | Ḟ_dry              | 0.83 kg/s                | `THEORY_REFERENCE.md` §11.1               |
+| Gasifier outlet H₂ (steam-gasification)   | ṅ_H₂,gas           | ≈ 0.022 kmol/s           | §11.2 (element balance + K_WGS at 1073 K) |
+| Cyclone H₂ split to clean syngas (Unit 3) | s_H₂               | 0.99                     | §11.3                                     |
+| WGS CO conversion at 673 K                | X_CO               | ≈ 0.75                   | §11.4 (K_WGS(673) ≈ 8.9)                  |
+| Cooler outlet temperature                 | T_out              | 310 K (fixed parameter)  | §11.5                                     |
+| PSA H₂ enrichment split                   | s_H₂,PSA           | 0.85 to outlet_0         | §11.6                                     |
+| Compressor outlet (P_out / P_in)^((γ−1)/γ)| (P_r)^0.286        | ≈ 3.35                   | §11.7 (γ ≈ 1.4 mixture)                   |
+| Compressor outlet temperature             | T_out,comp         | ≈ 1243 K (multi-species) | §11.7                                     |
+| Total connection equalities (LP)          | n_eq               | 31                       | §11.8                                     |
+| User-visible connection count             | n_streams          | 6                        | Builder display                           |
+
+H₂ overall yield depends on the gasifier element balance, the WGS conversion, and the PSA split. Treat this column as the analytical reference; small deviations (< 2 %) from solver output are expected because the LP linearises the equilibrium constraints.
+
+---
+
+## 5. Common Issues
+
+- **"Connection skipped: missing port"** — the flow-only fallback engaged because two adjacent units exposed different port-variable counts. Fine for this chain; the link is still established on the shared species flows.
+- **Solver stalls past iteration 150** — turn **Progressive tightening** off if you suspect the loose-stage tolerances are masking a residual, or raise the iteration ceiling (1500 max in v1.4.0).
+- **"Inconsistent component set"** — every unit's `components` parameter must equal the shared component list. The Cyclone, Cooler, PSA, and Compressor matrices above all spell out the same 6-species list explicitly to prevent drift.
+
+---
+
+## 6. Reproducing the Workshop Programmatically
+
+The canonical configuration is encoded in
+[`tests/test_ui_assembly_logic.py`](../tests/test_ui_assembly_logic.py)
+as the `SEVEN_UNIT_CONFIG` dict (lines 21–58). Re-run the workshop end-to-end
+without the UI:
+
+```python
+from pse_ecosystem.ui.flowsheet_service import build_custom_flowsheet
+from pse_ecosystem.solvers.orchestrator import Orchestrator
+from pse_ecosystem.core.contracts import SolveMode
+from tests.test_ui_assembly_logic import SEVEN_UNIT_CONFIG
+
+fs = build_custom_flowsheet(SEVEN_UNIT_CONFIG)
+result = Orchestrator(fs, SolveMode.ADAPTIVE).solve()
+print(result.status, result.objective)
+```
+
+---
+
+*Workshop v1.4.0 — PSE Ecosystem | Private — University of Surrey*

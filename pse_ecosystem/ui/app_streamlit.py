@@ -56,8 +56,10 @@ def _page_dashboard():
 
     from pse_ecosystem.ui.flowsheet_service import list_templates
 
+    from pse_ecosystem import __version__ as _pse_version
+
     st.title("PSE Ecosystem")
-    st.caption("v1.3.2  |  Private — University of Surrey")
+    st.caption(f"v{_pse_version}  |  Private — University of Surrey")
 
     # ── LP solver check ────────────────────────────────────────────────────
     try:
@@ -455,8 +457,9 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
     from pse_ecosystem.ui.flowsheet_service import AVAILABLE_UNITS, build_custom_flowsheet
 
     st.info(
-        "Pick up to 8 units, set their parameters, declare connections, "
-        "then click **Build & Select**."
+        "Pick any number of units, set their parameters, declare connections, "
+        "then click **Build & Select**. The builder scales to whatever your "
+        "hardware can carry — past ~20 units expect noticeably slower reruns."
     )
 
     raw_comps = st.text_input(
@@ -467,7 +470,12 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
     )
     shared_components = [c.strip() for c in raw_comps.split(",") if c.strip()]
 
-    n_units = st.number_input("Number of units", min_value=1, max_value=10, value=2, step=1)
+    n_units = st.number_input("Number of units", min_value=1, value=2, step=1)
+    if int(n_units) > 7:
+        st.caption(
+            "ℹ Past unit 7 the Type dropdown defaults to the last category entry — "
+            "set each unit's Type explicitly to avoid duplicate-type chains."
+        )
 
     from pse_ecosystem.ui.flowsheet_service import (
         get_unit_param_specs, UNIT_CATEGORIES, TYPE_ID_SUGGESTIONS,
@@ -501,41 +509,46 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
             _id_sel = st.selectbox(
                 "Unit ID", _id_options,
                 index=0,
-                key=f"custom_unit_id_sel_{i}",
+                key=f"custom_unit_id_sel_{i}_{utype}",
                 help=f"Suggested IDs for '{utype}'. Choose 'custom...' to type your own.",
             )
             if _id_sel == "custom...":
                 uid = st.text_input(
                     "Custom ID", value=_base_id,
-                    key=f"custom_unit_id_txt_{i}",
+                    key=f"custom_unit_id_txt_{i}_{utype}",
                 )
             else:
                 uid = _id_sel
 
             # Dynamic parameter form — renders pre-filled inputs per unit type
+            # in a 3-column Aspen-style specification grid.
             unit_params: dict = {}
             _specs = get_unit_param_specs(utype)
             if _specs:
-                st.caption("Unit parameters (pre-filled with engineering defaults)")
-                for _ps in _specs:
-                    _key = f"param_{i}_{_ps.name}"
-                    _label = f"{_ps.label} [{_ps.unit}]" if _ps.unit else _ps.label
-                    if _ps.dtype == "float":
-                        unit_params[_ps.name] = st.number_input(
-                            _label, value=float(_ps.default),
-                            help=_ps.help, key=_key,
-                        )
-                    elif _ps.dtype == "int":
-                        unit_params[_ps.name] = int(st.number_input(
-                            _label, value=int(_ps.default),
-                            step=1, help=_ps.help, key=_key,
-                        ))
-                    elif _ps.dtype == "select":
-                        unit_params[_ps.name] = st.selectbox(
-                            _label, _ps.options,
-                            index=_ps.options.index(_ps.default) if _ps.default in _ps.options else 0,
-                            help=_ps.help, key=_key,
-                        )
+                st.caption("Specification Sheet (pre-filled with engineering defaults)")
+                _NCOL = 3
+                for _row_start in range(0, len(_specs), _NCOL):
+                    _row_specs = _specs[_row_start:_row_start + _NCOL]
+                    _cols = st.columns(_NCOL)
+                    for _col, _ps in zip(_cols, _row_specs):
+                        _key = f"param_{i}_{_ps.name}"
+                        _label = f"{_ps.label} [{_ps.unit}]" if _ps.unit else _ps.label
+                        if _ps.dtype == "float":
+                            unit_params[_ps.name] = _col.number_input(
+                                _label, value=float(_ps.default),
+                                help=_ps.help, key=_key,
+                            )
+                        elif _ps.dtype == "int":
+                            unit_params[_ps.name] = int(_col.number_input(
+                                _label, value=int(_ps.default),
+                                step=1, help=_ps.help, key=_key,
+                            ))
+                        elif _ps.dtype == "select":
+                            unit_params[_ps.name] = _col.selectbox(
+                                _label, _ps.options,
+                                index=_ps.options.index(_ps.default) if _ps.default in _ps.options else 0,
+                                help=_ps.help, key=_key,
+                            )
 
             unit_configs.append({
                 "type": utype,
@@ -615,8 +628,11 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
             n_equalities = len(fs.connections)   # variable equality constraints (internal)
             st.success(
                 f"Custom flowsheet built: {len(fs.units)} units, "
-                f"{n_streams} stream link(s) ({n_equalities} variable equalities). "
-                f"Go to **Solver Monitor** to run."
+                f"{n_streams} connection(s). Go to **Solver Monitor** to run."
+            )
+            st.caption(
+                f"Internal port-variable equalities: {n_equalities} "
+                f"(one per shared species + T + P per connection — used by the LP solver)."
             )
         except Exception as exc:
             st.error(f"Build failed: {exc}")
@@ -751,11 +767,27 @@ def _page_solver_monitor():
     st.subheader(f"Template: {spec.display_name}")
     st.caption(f"Key: `{selected_key}` | Category: {spec.category}")
 
+    # ── Active objective mirror (read-only) ──────────────────────────────────
+    _active_obj = st.session_state.get("objective_config")
+    if _active_obj:
+        st.info(
+            f"**Active objective:** {_active_obj.get('mode', 'Feasibility Only')}  |  "
+            f"elec {_active_obj.get('elec_price', 0.05):.3f} USD/kWh  |  "
+            f"{int(_active_obj.get('op_hours', 8000))} h/yr  |  "
+            f"CRF {_active_obj.get('crf', 0.10):.2f}  "
+            f"_(set on the Flowsheet Builder → Objective Function tab)_"
+        )
+    else:
+        st.info(
+            "**Active objective:** Feasibility Only (default). "
+            "Set a different objective on the Flowsheet Builder → Objective Function tab."
+        )
+
     # ── Solver settings ──────────────────────────────────────────────────────
     with st.expander("Solver Settings", expanded=True):
         col_a, col_b = st.columns(2)
         with col_a:
-            max_iter = st.slider("Max iterations", 5, 1000, 200)
+            max_iter = st.slider("Max iterations", 1, 1500, 200)
             eps_x    = st.number_input("Step tolerance (eps_x)", value=1e-4,
                                         format="%.2e", min_value=1e-10, max_value=1.0)
         with col_b:
@@ -771,9 +803,10 @@ def _page_solver_monitor():
             verbose = st.checkbox("Verbose solver output", value=False)
             prog_tighten = st.checkbox(
                 "Progressive tightening",
-                value=False,
-                help="Starts with loose convergence tolerances and tightens them as "
-                     "iterations progress. Recommended for 7–10 unit non-linear chains.",
+                value=True,
+                help="Recommended. Starts with loose convergence tolerances (≈1e-3) and "
+                     "tightens to precision (≈1e-7) as iterations progress. Uncheck to "
+                     "enforce strict tolerance from iteration 0.",
             )
 
         with st.expander("Advanced solver settings", expanded=False):
@@ -1115,6 +1148,60 @@ def _page_solver_monitor():
         st.json(result.technology_selection)
 
 
+# ── Page 6: Help Center & Documentation ───────────────────────────────────────
+
+def _docs_dir():
+    """Resolve the absolute docs/ folder regardless of CWD."""
+    from pathlib import Path
+    return Path(__file__).resolve().parent.parent.parent / "docs"
+
+
+def _load_doc(rel_name: str) -> str:
+    """Read a markdown file from docs/ with caching keyed on file mtime."""
+    import streamlit as st  # already imported by caller; safe re-import for cache scope
+
+    @st.cache_data(show_spinner=False)
+    def _read(path_str: str, mtime: float) -> str:
+        from pathlib import Path
+        return Path(path_str).read_text(encoding="utf-8")
+
+    path = _docs_dir() / rel_name
+    if not path.exists():
+        return f"_Document `{rel_name}` is not yet available in this build._"
+    return _read(str(path), path.stat().st_mtime)
+
+
+def _page_help_center():
+    st = _require_streamlit()
+    _init_state(st)
+
+    from pse_ecosystem import __version__ as _pse_version
+
+    st.title("Help Center & Documentation")
+    st.caption(
+        f"PSE Ecosystem v{_pse_version} — live-loaded from the workspace `docs/` "
+        f"folder. Edits to the source markdown refresh on the next page render."
+    )
+
+    _tabs = st.tabs([
+        "User Manual",
+        "7-Unit Workshop",
+        "Theory Reference",
+        "Architecture",
+        "Developer Guide",
+    ])
+    _files = [
+        "USER_MANUAL.md",
+        "WORKSHOP_7UNIT.md",
+        "THEORY_REFERENCE.md",
+        "ARCHITECTURE.md",
+        "DEVELOPER_GUIDE.md",
+    ]
+    for _tab, _fname in zip(_tabs, _files):
+        with _tab:
+            st.markdown(_load_doc(_fname))
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -1132,6 +1219,7 @@ def main() -> None:
         st.Page(_page_flowsheet_builder,  title="Flowsheet Builder", icon="🔧"),
         st.Page(_page_gps_weather,        title="GPS Weather",       icon="🌍"),
         st.Page(_page_solver_monitor,     title="Solver Monitor",    icon="📊"),
+        st.Page(_page_help_center,        title="Help Center",       icon="📖"),
     ]
     pg = st.navigation(pages)
     pg.run()

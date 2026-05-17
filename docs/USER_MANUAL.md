@@ -1,10 +1,34 @@
 # PSE Ecosystem — User Manual
 
-**Version:** 1.3.0-Phase6 | **Date:** 2026-05-15 | **Status:** Industrial Ready
+**Version:** 1.4.0 | **Date:** 2026-05-17 | **Status:** Industrial Production Release
 
 > Single source of truth for PSE Ecosystem users. Replaces `UI_GUIDE.md` (merged here in Phase 6)
 > and `SHOWCASE_WALKTHROUGH.md` (merged in Phase 5). For architecture details see `ARCHITECTURE.md`;
 > for equation derivations see `THEORY_REFERENCE.md`; for code extensions see `DEVELOPER_GUIDE.md`.
+> For a step-by-step build of the 7-unit biomass → H₂ workshop with full answer key,
+> see [`WORKSHOP_7UNIT.md`](WORKSHOP_7UNIT.md).
+
+---
+
+## What's new in v1.4.0
+
+- **Unrestricted custom flowsheet.** No hard cap on the number of units in the
+  Custom Flowsheet builder — scale to whatever your hardware allows. Past
+  ~20 units expect noticeably slower Streamlit reruns.
+- **Connection count display fixed.** A 7-unit sequential chain headlines as
+  **"7 units, 6 connection(s)"**. The internal port-variable equality count
+  (one per shared species + T + P per link) is shown underneath as a caption.
+- **Smart Unit ID is no longer sticky.** Changing a unit's Type re-seeds the
+  ID dropdown with the new type's suggested slug.
+- **3-column specification grid.** The per-unit parameter form renders in
+  three columns for Aspen-style density.
+- **Max iterations slider 1–1500** (was 5–1000). Progressive tightening
+  (loose ≈1e-3 → tight ≈1e-7) is **on by default**.
+- **Active-objective mirror** appears at the top of the Solver Monitor page.
+- **New 6th page: Help Center.** Live-loads `USER_MANUAL.md`, `WORKSHOP_7UNIT.md`,
+  `THEORY_REFERENCE.md`, `ARCHITECTURE.md`, and `DEVELOPER_GUIDE.md` from the
+  workspace `docs/` folder — edits to the source markdown refresh on the
+  next render.
 
 ---
 
@@ -22,7 +46,7 @@ python -m venv $HOME\.venvs\pse_ecosystem
 # Install with all extras
 pip install -e ".[dev,solvers,gui,weather]"
 
-# Verify — all 146 tests must pass
+# Verify — 170+ pytest functions must pass
 pytest tests\ -q
 
 # Launch
@@ -54,7 +78,7 @@ macOS/Linux: replace `Activate.ps1` → `source ~/.venvs/pse_ecosystem/bin/activ
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│  ⚗ PSE Ecosystem                                 v1.3.0             │
+│  ⚗ PSE Ecosystem                                 v1.4.0             │
 │  Private — University of Surrey                                      │
 ├──────────────┬──────────────┬──────────────┬───────────────────────┤
 │  Templates   │  Unit Models │  LP Solver   │  Last Solve           │
@@ -1045,4 +1069,4 @@ You can edit any value directly in the form before clicking **Build & Select**.
 
 ---
 
-*User Manual v1.3.0-Phase7 — PSE Ecosystem | Private — University of Surrey*
+*User Manual v1.4.0 — PSE Ecosystem | Private — University of Surrey*
