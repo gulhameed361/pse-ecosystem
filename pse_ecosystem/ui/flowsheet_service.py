@@ -118,6 +118,116 @@ def get_unit_param_specs(utype: str) -> List[ParamSpec]:
     return UNIT_PARAM_SPECS.get(utype, [])
 
 
+# ── Unit Management System (UMS) — Layer-1 display↔native conversion ─────────
+#
+# Backend Layer-3 models accept parameters in the unit each ParamSpec declares
+# (e.g. "°C" for T_gasifier_C, "Pa" for P_out_Pa, "atm" for P_atm). Internally
+# every model converts to SI before evaluating residuals / Jacobians, so the
+# numerical core is SI-native even though parameter intake is mixed.
+#
+# The UMS lets the user pick a *display unit* for any float parameter; the UI
+# stores the user's value in that display unit, then converts to the
+# ParamSpec's native unit before passing to ``build_custom_flowsheet``. Nothing
+# downstream of this module sees display units.
+
+# Each family lists units in canonical order: first key is the SI baseline.
+# Each value is a (to_si, from_si) lambda pair operating on float values.
+_TEMP_K = {
+    "K":  (lambda x: x,                     lambda x: x),
+    "°C": (lambda x: x + 273.15,            lambda x: x - 273.15),
+    "°F": (lambda x: (x - 32) * 5 / 9 + 273.15, lambda x: (x - 273.15) * 9 / 5 + 32),
+}
+_PRESS_Pa = {
+    "Pa":  (lambda x: x,           lambda x: x),
+    "kPa": (lambda x: x * 1e3,     lambda x: x / 1e3),
+    "bar": (lambda x: x * 1e5,     lambda x: x / 1e5),
+    "atm": (lambda x: x * 101325.0, lambda x: x / 101325.0),
+    "psi": (lambda x: x * 6894.757, lambda x: x / 6894.757),
+}
+_MASS_FLOW_kgps = {
+    "kg/s": (lambda x: x,         lambda x: x),
+    "kg/h": (lambda x: x / 3600.0, lambda x: x * 3600.0),
+    "t/h":  (lambda x: x / 3.6,    lambda x: x * 3.6),
+}
+_MASS_kg = {
+    "kg": (lambda x: x,          lambda x: x),
+    "t":  (lambda x: x * 1000.0, lambda x: x / 1000.0),
+}
+_POWER_W = {
+    "W":  (lambda x: x,         lambda x: x),
+    "kW": (lambda x: x * 1e3,   lambda x: x / 1e3),
+    "MW": (lambda x: x * 1e6,   lambda x: x / 1e6),
+}
+_ENERGY_J = {
+    "J":  (lambda x: x,         lambda x: x),
+    "kJ": (lambda x: x * 1e3,   lambda x: x / 1e3),
+    "MJ": (lambda x: x * 1e6,   lambda x: x / 1e6),
+}
+
+UNIT_FAMILIES: Dict[str, Dict[str, Tuple[Callable[[float], float], Callable[[float], float]]]] = {
+    "temperature": _TEMP_K,
+    "pressure":    _PRESS_Pa,
+    "mass_flow":   _MASS_FLOW_kgps,
+    "mass":        _MASS_kg,
+    "power":       _POWER_W,
+    "energy":      _ENERGY_J,
+}
+
+
+def _family_of(unit: str) -> Optional[str]:
+    """Return the family name (e.g. 'temperature') containing *unit*, or None."""
+    for fam_name, table in UNIT_FAMILIES.items():
+        if unit in table:
+            return fam_name
+    return None
+
+
+def supported_display_units(native_unit: str) -> List[str]:
+    """All display units the user may pick for a parameter whose native unit is *native_unit*.
+
+    Returns an empty list if the unit has no recognised conversion family
+    (e.g. "—" for dimensionless, "W/K" for UA products, "mol/s" — these
+    stay as-is in the UI).
+    """
+    fam = _family_of(native_unit)
+    if not fam:
+        return []
+    return list(UNIT_FAMILIES[fam].keys())
+
+
+def to_native(value: float, display_unit: str, native_unit: str) -> float:
+    """Convert *value* from *display_unit* into *native_unit*.
+
+    No-op when display_unit == native_unit or when no conversion path exists.
+    """
+    if display_unit == native_unit:
+        return value
+    fam = _family_of(native_unit)
+    if not fam or display_unit not in UNIT_FAMILIES[fam]:
+        return value
+    table = UNIT_FAMILIES[fam]
+    to_si, _   = table[display_unit]
+    _, from_si = table[native_unit]
+    return from_si(to_si(value))
+
+
+def from_native(value: float, native_unit: str, display_unit: str) -> float:
+    """Convert *value* from *native_unit* into *display_unit* (inverse of to_native)."""
+    return to_native(value, display_unit=native_unit, native_unit=display_unit)
+
+
+def si_baseline_of(unit: str) -> Optional[str]:
+    """Return the SI baseline unit for the family containing *unit* (e.g. 'K' for '°C').
+
+    Used by the Excel exporter to annotate variable columns with the canonical
+    SI tag the solver internally operates on.
+    """
+    fam = _family_of(unit)
+    if not fam:
+        return None
+    return next(iter(UNIT_FAMILIES[fam]))
+
+
 # ── Type-specific Unit ID suggestions ────────────────────────────────────────
 
 def build_objective_extra(

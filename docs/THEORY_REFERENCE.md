@@ -8,6 +8,33 @@
 
 ---
 
+## 0. v1.4.0 — Numerical foundations relevant to the UMS
+
+The Unit Management System (v1.4.0) lives at Layer 1 and is invisible to
+the solver. Every equation in this document is stated in SI units (K, Pa,
+kg/s, J, W) because that is what the Layer-3 unit models actually
+manipulate when they evaluate residuals and Jacobians. The display units
+exposed to the end user (°C, atm, kW, t/h, …) are converted to the native
+intake unit at the UI boundary, and each unit model then performs its own
+internal conversion to SI before doing any math.
+
+Why this matters numerically:
+
+- **Jacobian scaling.** When variables span very different magnitudes
+  (e.g. P ≈ 5×10⁶ Pa next to T ≈ 700 K next to F ≈ 1 kg/s), the SLP
+  driver's LP subproblem becomes ill-conditioned. Keeping the entire
+  computation in SI avoids drift in column scales.
+- **Trust-Region radii.** The TR driver maintains a single scalar radius Δ
+  on the step in `x`. Mixed units (some entries in K, others in °C) would
+  collapse the radius to whichever variable had the largest absolute
+  magnitude. SI-only internals keep Δ meaningful across variables.
+- **Progressive tightening (v1.4.0 default ON).** The loose-to-tight
+  schedule (`eps_x` 1e-3 → 1e-7, `eps_f` 1e-3 → 1e-7) assumes consistent
+  units throughout. Mixing display units mid-solve would invalidate the
+  tightening schedule.
+
+---
+
 ## 1. Scope of the v0 Theory
 
 ### 1.1 Steady-state, single-period, deterministic

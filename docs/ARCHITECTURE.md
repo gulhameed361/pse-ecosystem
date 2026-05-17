@@ -22,6 +22,13 @@
 - **Help Center is a Layer-1-only concern.** `_page_help_center` reads
   `docs/*.md` via `pathlib` with mtime-keyed `@st.cache_data`. No new
   cross-layer coupling.
+- **Unit Management System (UMS).** The conversion registry (`UNIT_FAMILIES`,
+  `to_native`, `from_native`, `supported_display_units`, `si_baseline_of`)
+  lives in `pse_ecosystem/ui/flowsheet_service.py` — Layer 1 only. The
+  pipeline is `display unit (UI dropdown) → native ParamSpec unit → SI
+  (model internals)`. Layer 2 and Layer 3 are unaware of display units;
+  Jacobian scaling and Trust-Region radii remain well-conditioned because
+  the numerical core never sees mixed-unit values.
 
 ---
 

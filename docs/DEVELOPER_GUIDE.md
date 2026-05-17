@@ -34,6 +34,44 @@ include `help` text — the 3-column grid relies on tooltips for pedagogy.
 The `TYPE_ID_SUGGESTIONS` slug feeds the smart Unit ID dropdown; the widget
 keys embed `{utype}` so the dropdown resets when the user switches the Type.
 
+### 0.4 Unit Management System (UMS) — backend handling
+
+The UMS lives entirely at Layer 1, in `pse_ecosystem/ui/flowsheet_service.py`:
+
+- `UNIT_FAMILIES` (module-level dict). One sub-dict per physical dimension
+  — `temperature`, `pressure`, `mass_flow`, `mass`, `power`, `energy`. Each
+  sub-dict maps a unit string (e.g. `"°C"`, `"atm"`, `"kW"`) to a
+  `(to_si, from_si)` lambda pair. The **first key in each sub-dict is the SI
+  baseline** (`K`, `Pa`, `kg/s`, `kg`, `W`, `J`) — relied upon by
+  `si_baseline_of()`. Preserve that ordering when extending the table.
+- `supported_display_units(native_unit)` — returns the list of display
+  alternatives for a given native unit, or `[]` for dimensionless and
+  compound units. Drives the Streamlit unit-picker dropdown.
+- `to_native(value, display_unit, native_unit)` — converts user input to
+  the unit each `ParamSpec` declares. **This is the only place** the
+  display→native conversion happens; nothing downstream sees display units.
+- `from_native` is the inverse, used to seed the UI input box with the
+  ParamSpec default expressed in the user's selected display unit.
+
+The Streamlit Excel exporter calls `app_streamlit._infer_si_unit(var_name)`
+to annotate each row of the Stream Table and Unit Performance sheets with
+the SI tag of its value. The heuristic is name-based — `T*` → K, `P*` → Pa,
+`F_*` → kg/s, `n_*` → mol/s, `W_shaft` / `duty_kW` etc. — keep variable
+naming conventions stable to avoid breaking inference.
+
+**Extending the UMS:** to add a new conversion family (e.g. molar flow
+families, length units, time units):
+
+1. Define `_FAMILY_<NAME>` at module scope in `flowsheet_service.py`.
+2. Register it under a new key in `UNIT_FAMILIES`.
+3. Add the relevant suffix to `_infer_si_unit` in `app_streamlit.py` so the
+   Excel exporter recognises the new dimension.
+4. Add round-trip tests in `tests/test_unrestricted_flowsheet.py::TestUnitConversions`.
+
+**Do not** push UMS logic into Layer 2 or Layer 3. The backend stays in SI;
+the UMS is an input-side convenience that lives behind the Layer-1
+flowsheet service.
+
 ---
 
 ## 1. Repo Layout & Layer Map

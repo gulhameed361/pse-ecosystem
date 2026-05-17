@@ -22,6 +22,13 @@
   ID dropdown with the new type's suggested slug.
 - **3-column specification grid.** The per-unit parameter form renders in
   three columns for Aspen-style density.
+- **Unit Management System (UMS).** Every float parameter with a convertible
+  unit (T, P, mass flow, mass, power, energy) shows a unit-picker next to its
+  value: pick °C, °F, bar, atm, psi, kW, MW, t/h, etc. Backend stores SI; you
+  type in whatever unit suits you. See "Unit Management System" below.
+- **Unit-aware Excel export.** The 3-sheet `.xlsx` now carries an explicit
+  `SI Unit` column on the Stream Table and Unit Performance sheets so no
+  value is ever ambiguous.
 - **Max iterations slider 1–1500** (was 5–1000). Progressive tightening
   (loose ≈1e-3 → tight ≈1e-7) is **on by default**.
 - **Active-objective mirror** appears at the top of the Solver Monitor page.
@@ -29,6 +36,73 @@
   `THEORY_REFERENCE.md`, `ARCHITECTURE.md`, and `DEVELOPER_GUIDE.md` from the
   workspace `docs/` folder — edits to the source markdown refresh on the
   next render.
+
+---
+
+## Unit Management System (UMS)
+
+### The model
+
+The PSE Ecosystem solver core and every Layer-3 unit model operate
+**internally in SI** (Kelvin, Pascal, kilograms per second, Joules) so that
+Jacobian scaling and Trust-Region radii stay numerically well-conditioned.
+The Layer-1 UI lets you enter parameters in *any* preferred unit; the
+Custom Flowsheet builder converts those inputs to the parameter's **native**
+unit (as declared by the `ParamSpec.unit` field) before handing them to the
+solver. Every unit model then performs its own conversion from the native
+intake unit to pure SI internally.
+
+In short:
+
+```
+[ display unit (UI dropdown) ]  →  [ native unit (ParamSpec) ]  →  [ SI internals (model math) ]
+```
+
+### What you'll see
+
+In the Custom Flowsheet Builder's Specification Sheet (3-column grid), every
+float parameter that has a recognised conversion family renders as a
+side-by-side **value input + unit dropdown**. Examples:
+
+| Parameter         | Native unit | Display alternatives        |
+|-------------------|-------------|-----------------------------|
+| `T_gasifier_C`    | °C          | K, °C, °F                   |
+| `T_out_K`         | K           | K, °C, °F                   |
+| `P_out_Pa`        | Pa          | Pa, kPa, bar, atm, psi      |
+| `P_atm`           | atm         | Pa, kPa, bar, atm, psi      |
+| `eta_isentropic`  | —           | (no alternatives — dimensionless) |
+| `UA_W_per_K`      | W/K         | (no alternatives — compound)|
+
+Parameters whose native unit is dimensionless (`—`) or compound (`W/K`,
+`mol/s`) render as plain number inputs without a dropdown, matching the
+v1.3.x behaviour.
+
+### What gets exported
+
+The 3-sheet Excel report now includes an explicit **`SI Unit`** column on the
+Stream Table and Unit Performance sheets. Variable names are mapped to their
+SI baseline by a heuristic (`F_H2` → kg/s, `T` → K, `P_out_Pa` → Pa, etc.)
+so every numeric value carries its dimension. The solver continues to write
+SI values into the result dict; the UMS does **not** convert outputs back to
+display units (yet).
+
+### Caveats
+
+1. **The UMS is an input convenience, not a re-scaling of the solver.**
+   Changing the display unit affects only the number you type/see; the
+   solver always works on the native ParamSpec value and the internal SI
+   conversion that each unit model performs.
+2. **Don't change a parameter's display unit mid-solve.** If you build a
+   flowsheet with `T_gasifier` = 800 °C and then switch the dropdown to K
+   *without re-applying*, the next solve will use whatever the input box
+   shows in the new unit. Rebuild after every unit change.
+3. **Compound units stay as-is.** `W/K`, `mol/s`, `m/s`, etc., have no
+   conversion family — they're either canonical or sufficiently rare that
+   adding a dropdown would clutter the form. Edit `UNIT_FAMILIES` in
+   `flowsheet_service.py` if you need to extend coverage.
+4. **The output side is SI-tagged, not unit-converted.** The Excel `SI Unit`
+   column tells you the unit of the *Value* column for that row; the values
+   themselves remain in their internal SI representation.
 
 ---
 

@@ -48,6 +48,49 @@ def _init_state(st) -> None:
     st.session_state.setdefault("weather_site", None)
 
 
+# ── SI-unit inference for Excel export ────────────────────────────────────────
+
+def _infer_si_unit(var_name: str) -> str:
+    """Best-effort guess at the SI unit of a solver variable from its name.
+
+    Used to annotate the Stream Table sheet so every numeric value carries an
+    explicit unit. Variable names follow the project's port convention:
+    ``F_<species>`` for kg/s mass flow, ``T`` / ``T_in`` / ``T_out`` for K,
+    ``P`` / ``P_in`` / ``P_out`` / ``P_out_Pa`` for Pa, ``X_<reaction>`` for
+    dimensionless conversion, ``W_shaft`` / ``W_elec`` for W shaft work, etc.
+
+    Returns an empty string when no inference is possible — never raises.
+    """
+    if not var_name:
+        return ""
+    n = var_name.strip()
+    n_lower = n.lower()
+
+    # Explicit suffix tags (highest priority)
+    if n.endswith("_Pa"):       return "Pa"
+    if n.endswith("_K"):        return "K"
+    if n.endswith("_C"):        return "°C"
+    if n.endswith("_kg_per_h"): return "kg/h"
+    if n.endswith("_kW"):       return "kW"
+    if n.endswith("_MW"):       return "MW"
+    if n.endswith("_kJ"):       return "kJ"
+    if n.endswith("_MJ"):       return "MJ"
+
+    # Prefix conventions
+    if n.startswith("F_"):      return "kg/s"   # species mass flow
+    if n.startswith("n_"):      return "mol/s"  # species molar flow
+    if n.startswith("X_"):      return "—"      # conversion / split fraction
+    if n.startswith("Y_"):      return "—"      # yield ratio
+
+    # Bare canonical names
+    if n in {"T", "T_in", "T_out", "T_avg"}:                   return "K"
+    if n in {"P", "P_in", "P_out"}:                            return "Pa"
+    if n in {"W_shaft", "W_elec", "W", "Q", "duty", "duty_W"}: return "W"
+    if n in {"H", "enthalpy"}:                                 return "J/s"
+
+    return ""
+
+
 # ── Page 1: Dashboard ─────────────────────────────────────────────────────────
 
 def _page_dashboard():
@@ -479,6 +522,7 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
 
     from pse_ecosystem.ui.flowsheet_service import (
         get_unit_param_specs, UNIT_CATEGORIES, TYPE_ID_SUGGESTIONS,
+        supported_display_units, to_native, from_native,
     )
 
     # Dynamic category filter — narrows the unit type dropdown
@@ -521,34 +565,66 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
                 uid = _id_sel
 
             # Dynamic parameter form — renders pre-filled inputs per unit type
-            # in a 3-column Aspen-style specification grid.
+            # in a 3-column Aspen-style specification grid. Float params whose
+            # native unit belongs to a recognised conversion family (T, P, mass
+            # flow, mass, power, energy) get an inline display-unit dropdown
+            # — see the Unit Management System in flowsheet_service.py.
             unit_params: dict = {}
             _specs = get_unit_param_specs(utype)
             if _specs:
-                st.caption("Specification Sheet (pre-filled with engineering defaults)")
+                st.caption(
+                    "Specification Sheet (pre-filled with engineering defaults). "
+                    "Float parameters with a convertible unit show a dropdown so you can "
+                    "enter values in your preferred unit — the backend stores SI internally."
+                )
                 _NCOL = 3
                 for _row_start in range(0, len(_specs), _NCOL):
                     _row_specs = _specs[_row_start:_row_start + _NCOL]
                     _cols = st.columns(_NCOL)
                     for _col, _ps in zip(_cols, _row_specs):
                         _key = f"param_{i}_{_ps.name}"
-                        _label = f"{_ps.label} [{_ps.unit}]" if _ps.unit else _ps.label
-                        if _ps.dtype == "float":
-                            unit_params[_ps.name] = _col.number_input(
-                                _label, value=float(_ps.default),
+                        _alt_units = (
+                            supported_display_units(_ps.unit)
+                            if _ps.dtype == "float" else []
+                        )
+
+                        if _ps.dtype == "float" and _alt_units:
+                            # Two-column cell: value input (wider) + unit picker (narrower).
+                            _vc, _uc = _col.columns([2, 1])
+                            _disp_key = f"unit_{i}_{_ps.name}_{utype}"
+                            _disp_unit = _uc.selectbox(
+                                "Unit", _alt_units,
+                                index=_alt_units.index(_ps.unit) if _ps.unit in _alt_units else 0,
+                                key=_disp_key,
+                                label_visibility="visible",
+                            )
+                            _disp_default = from_native(float(_ps.default), _ps.unit, _disp_unit)
+                            _ui_value = _vc.number_input(
+                                f"{_ps.label}", value=float(_disp_default),
                                 help=_ps.help, key=_key,
                             )
-                        elif _ps.dtype == "int":
-                            unit_params[_ps.name] = int(_col.number_input(
-                                _label, value=int(_ps.default),
-                                step=1, help=_ps.help, key=_key,
-                            ))
-                        elif _ps.dtype == "select":
-                            unit_params[_ps.name] = _col.selectbox(
-                                _label, _ps.options,
-                                index=_ps.options.index(_ps.default) if _ps.default in _ps.options else 0,
-                                help=_ps.help, key=_key,
+                            # Convert back to native ParamSpec unit before storing.
+                            unit_params[_ps.name] = to_native(
+                                float(_ui_value), _disp_unit, _ps.unit,
                             )
+                        else:
+                            _label = f"{_ps.label} [{_ps.unit}]" if _ps.unit else _ps.label
+                            if _ps.dtype == "float":
+                                unit_params[_ps.name] = _col.number_input(
+                                    _label, value=float(_ps.default),
+                                    help=_ps.help, key=_key,
+                                )
+                            elif _ps.dtype == "int":
+                                unit_params[_ps.name] = int(_col.number_input(
+                                    _label, value=int(_ps.default),
+                                    step=1, help=_ps.help, key=_key,
+                                ))
+                            elif _ps.dtype == "select":
+                                unit_params[_ps.name] = _col.selectbox(
+                                    _label, _ps.options,
+                                    index=_ps.options.index(_ps.default) if _ps.default in _ps.options else 0,
+                                    help=_ps.help, key=_key,
+                                )
 
             unit_configs.append({
                 "type": utype,
@@ -1074,7 +1150,7 @@ def _page_solver_monitor():
             hide_index=True,
         )
 
-    # ── Excel download (3 sheets) ─────────────────────────────────────────────
+    # ── Excel download (3 sheets, unit-tagged) ────────────────────────────────
     try:
         import io
         import pandas as _pd
@@ -1082,39 +1158,52 @@ def _page_solver_monitor():
         _buf = io.BytesIO()
         with _pd.ExcelWriter(_buf, engine="openpyxl") as _writer:
 
-            # Sheet 1: Stream Table — variables parsed from unit.port.variable format
+            # Sheet 1: Stream Table — variables parsed from unit.port.variable format.
+            # Every row carries the inferred SI unit so the value is never ambiguous.
             _stream_rows = []
             for k, v in result.x.items():
                 _parts = k.split(".")
-                if len(_parts) >= 3:
-                    _stream_rows.append({
-                        "Unit": _parts[0],
-                        "Port": _parts[1],
-                        "Variable": ".".join(_parts[2:]),
-                        "Value": v,
-                    })
-                else:
-                    _stream_rows.append({"Unit": "", "Port": "", "Variable": k, "Value": v})
+                _var_name = ".".join(_parts[2:]) if len(_parts) >= 3 else k
+                _si = _infer_si_unit(_var_name)
+                _row = {
+                    "Equipment": _parts[0] if len(_parts) >= 3 else "",
+                    "Port":      _parts[1] if len(_parts) >= 3 else "",
+                    "Variable":  _var_name,
+                    "Value":     v,
+                    "SI Unit":   _si,
+                }
+                _stream_rows.append(_row)
             _pd.DataFrame(_stream_rows).to_excel(_writer, sheet_name="Stream Table", index=False)
 
-            # Sheet 2: Unit Performance — per-unit KPIs + capex where available
+            # Sheet 2: Unit Performance — per-unit KPIs + capex where available.
+            # KPI names already embed their unit by convention (e.g. duty_kW,
+            # Y_H2_kg_per_h); we surface that suffix into its own column.
             _perf_rows = []
             if _last_fs is not None:
                 for _unit in _last_fs.units:
                     try:
                         for kk, vv in _unit.kpis(result.x).items():
-                            _perf_rows.append({"Unit": _unit.unit_id, "KPI": kk, "Value": vv})
+                            _perf_rows.append({
+                                "Equipment": _unit.unit_id,
+                                "KPI":       kk,
+                                "Value":     vv,
+                                "SI Unit":   _infer_si_unit(kk),
+                            })
                         _capex = getattr(_unit, "capex_USD", lambda _x: 0.0)(result.x)
                         if _capex:
                             _perf_rows.append({
-                                "Unit": _unit.unit_id, "KPI": "capex_USD", "Value": _capex,
+                                "Equipment": _unit.unit_id,
+                                "KPI":       "capex_USD",
+                                "Value":     _capex,
+                                "SI Unit":   "USD",
                             })
                     except Exception:
                         pass
             if not _perf_rows:
-                # Fallback: aggregated KPIs
-                _perf_rows = [{"Unit": "all", "KPI": k, "Value": v}
-                              for k, v in result.kpis.items()]
+                _perf_rows = [
+                    {"Equipment": "all", "KPI": k, "Value": v, "SI Unit": _infer_si_unit(k)}
+                    for k, v in result.kpis.items()
+                ]
             _pd.DataFrame(_perf_rows).to_excel(_writer, sheet_name="Unit Performance", index=False)
 
             # Sheet 3: Optimization Summary
@@ -1132,7 +1221,11 @@ def _page_solver_monitor():
             data=_buf.getvalue(),
             file_name="pse_results.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            help="Sheet 1: Stream Table | Sheet 2: Unit Performance | Sheet 3: Optimization Summary",
+            help=(
+                "Sheet 1: Stream Table (Equipment | Port | Variable | Value | SI Unit) | "
+                "Sheet 2: Unit Performance (Equipment | KPI | Value | SI Unit) | "
+                "Sheet 3: Optimization Summary"
+            ),
         )
     except ImportError:
         st.caption("Install `openpyxl` to enable Excel export: `pip install openpyxl`")

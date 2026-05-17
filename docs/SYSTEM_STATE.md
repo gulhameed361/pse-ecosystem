@@ -6,6 +6,68 @@
 
 ---
 
+## What's New in v1.4.0-UMS — Unit Management System
+
+### Layer-1 unit conversion registry (`flowsheet_service.py`)
+
+New module-level table `UNIT_FAMILIES` covering 6 physical dimensions:
+
+| Family       | SI baseline | Display alternatives                 |
+|--------------|-------------|--------------------------------------|
+| temperature  | K           | K, °C, °F                            |
+| pressure     | Pa          | Pa, kPa, bar, atm, psi               |
+| mass_flow    | kg/s        | kg/s, kg/h, t/h                      |
+| mass         | kg          | kg, t                                |
+| power        | W           | W, kW, MW                            |
+| energy       | J           | J, kJ, MJ                            |
+
+Public helpers: `supported_display_units(native_unit)`,
+`to_native(value, display_unit, native_unit)`,
+`from_native(value, native_unit, display_unit)`, `si_baseline_of(unit)`.
+
+### UI integration — per-param unit picker (`app_streamlit.py`)
+
+In `_render_custom_assembler`, every float `ParamSpec` whose native unit
+belongs to a recognised family now renders as a nested 2-column cell:
+the value input on the left, a unit dropdown on the right. Default
+selection mirrors the `ParamSpec.unit`. The UI converts user input back to
+the ParamSpec's native unit before storing it in `unit_params`; nothing
+downstream sees display units.
+
+### Unit-aware Excel export (`app_streamlit.py`)
+
+- New helper `_infer_si_unit(var_name)` maps solver variable names to SI
+  tags using project naming conventions (`F_*` → kg/s, `T*` → K, `P*` → Pa,
+  `W_shaft` → W, `duty_kW` → kW, etc.).
+- The Stream Table sheet now has columns `Equipment | Port | Variable |
+  Value | SI Unit` (was `Unit | Port | Variable | Value`).
+- The Unit Performance sheet now has columns `Equipment | KPI | Value |
+  SI Unit` (was `Unit | KPI | Value`).
+- Optimization Summary unchanged.
+
+### Tests (`tests/test_unrestricted_flowsheet.py`)
+
+20 new pytest functions across three test classes:
+`TestUnitConversions` (round-trip math for T / P / mass flow / power /
+energy + dimensionless no-op), `TestSupportedDisplayUnits` (family
+coverage + SI-baseline lookup), `TestExcelUnitInference` (variable-name
+heuristic correctness). Excel round-trip test extended to assert the
+`SI Unit` column is present on both numeric sheets.
+
+Total: **34 pytest functions** in `test_unrestricted_flowsheet.py`,
+**203+ pytest functions** project-wide.
+
+### Scope notes
+
+- The UMS is **input-side only**. Excel values remain in SI; the `SI Unit`
+  column documents the unit of each row's value rather than converting it.
+  Per-row output conversion is a future track.
+- Layer 3 unit models continue to perform their own SI conversion at the
+  parameter-intake boundary (`T_gasifier_C` is still accepted as °C, etc.);
+  the UMS lives strictly at the UI ↔ ParamSpec boundary.
+
+---
+
 ## What's New in v1.4.0 — Industrial Production Release
 
 ### Unrestricted custom flowsheet (`app_streamlit.py`)

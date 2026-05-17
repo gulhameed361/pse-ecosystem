@@ -27,7 +27,13 @@ from pse_ecosystem import __version__ as PSE_VERSION
 from pse_ecosystem.core.contracts import SolveMode
 from pse_ecosystem.solvers.orchestrator import Orchestrator
 from pse_ecosystem.solvers.slp import SLPConfig
-from pse_ecosystem.ui.flowsheet_service import build_custom_flowsheet
+from pse_ecosystem.ui.flowsheet_service import (
+    build_custom_flowsheet,
+    from_native,
+    si_baseline_of,
+    supported_display_units,
+    to_native,
+)
 
 # ── Reuse the canonical 7-unit fixture from the assembly-logic suite ──────────
 from tests.test_ui_assembly_logic import SEVEN_UNIT_CONFIG, SYNGAS_6
@@ -67,32 +73,40 @@ def _build_xlsx_bytes(result, flowsheet) -> bytes:
     without booting Streamlit. Any change to the UI exporter should be mirrored
     here — this test exists to catch round-trip regressions.
     """
+    from pse_ecosystem.ui.app_streamlit import _infer_si_unit
+
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         stream_rows = []
         for k, v in result.x.items():
             parts = k.split(".")
-            if len(parts) >= 3:
-                stream_rows.append({
-                    "Unit": parts[0],
-                    "Port": parts[1],
-                    "Variable": ".".join(parts[2:]),
-                    "Value": v,
-                })
-            else:
-                stream_rows.append({"Unit": "", "Port": "", "Variable": k, "Value": v})
+            var_name = ".".join(parts[2:]) if len(parts) >= 3 else k
+            stream_rows.append({
+                "Equipment": parts[0] if len(parts) >= 3 else "",
+                "Port":      parts[1] if len(parts) >= 3 else "",
+                "Variable":  var_name,
+                "Value":     v,
+                "SI Unit":   _infer_si_unit(var_name),
+            })
         pd.DataFrame(stream_rows).to_excel(writer, sheet_name="Stream Table", index=False)
 
         perf_rows = []
         for unit in flowsheet.units:
             try:
                 for kk, vv in unit.kpis(result.x).items():
-                    perf_rows.append({"Unit": unit.unit_id, "KPI": kk, "Value": vv})
+                    perf_rows.append({
+                        "Equipment": unit.unit_id,
+                        "KPI":       kk,
+                        "Value":     vv,
+                        "SI Unit":   _infer_si_unit(kk),
+                    })
             except Exception:
                 pass
         if not perf_rows:
-            perf_rows = [{"Unit": "all", "KPI": k, "Value": v}
-                         for k, v in result.kpis.items()]
+            perf_rows = [
+                {"Equipment": "all", "KPI": k, "Value": v, "SI Unit": _infer_si_unit(k)}
+                for k, v in result.kpis.items()
+            ]
         pd.DataFrame(perf_rows).to_excel(writer, sheet_name="Unit Performance", index=False)
 
         summary = [
@@ -140,7 +154,11 @@ def test_sequential_chain_yields_n_minus_one_stream_links(n_units: int):
 
 
 def test_excel_export_3_sheets_roundtrip():
-    """Build a 7-unit chain, solve it, export to xlsx, reopen via openpyxl."""
+    """Build a 7-unit chain, solve it, export to xlsx, reopen via openpyxl.
+
+    Also asserts the v1.4.0 UMS-tagged columns: every numeric sheet carries
+    an explicit 'SI Unit' column so values are never ambiguous.
+    """
     openpyxl = pytest.importorskip("openpyxl")
 
     fs = build_custom_flowsheet(SEVEN_UNIT_CONFIG)
@@ -158,6 +176,23 @@ def test_excel_export_3_sheets_roundtrip():
         assert len(rows) >= 2, (
             f"Sheet '{name}' has only {len(rows)} row(s) (header + data expected)."
         )
+
+    # UMS: Stream Table must carry an SI Unit column.
+    ws = wb["Stream Table"]
+    header = [c for c in next(ws.iter_rows(values_only=True))]
+    assert "SI Unit" in header, (
+        f"Stream Table missing 'SI Unit' column (v1.4.0 UMS). Header: {header}"
+    )
+    assert "Equipment" in header, (
+        f"Stream Table missing 'Equipment' column. Header: {header}"
+    )
+
+    # UMS: Unit Performance must also carry an SI Unit column.
+    ws = wb["Unit Performance"]
+    header = [c for c in next(ws.iter_rows(values_only=True))]
+    assert "SI Unit" in header, (
+        f"Unit Performance missing 'SI Unit' column (v1.4.0 UMS). Header: {header}"
+    )
 
 
 # ── Tests: custom-path determinism (parity surrogate) ─────────────────────────
@@ -277,3 +312,114 @@ def test_app_streamlit_caption_uses_imported_version():
     assert 'st.caption("v1.3.2' not in src, (
         "Stale 'v1.3.2' literal still present in app_streamlit.py caption."
     )
+
+
+# ── Tests: Unit Management System (UMS) ───────────────────────────────────────
+
+
+class TestUnitConversions:
+    """Round-trip checks for the Layer-1 display↔native conversion helpers."""
+
+    def test_temperature_celsius_to_kelvin(self):
+        assert to_native(25.0, "°C", "K") == pytest.approx(298.15, abs=1e-9)
+
+    def test_temperature_kelvin_to_celsius(self):
+        assert to_native(298.15, "K", "°C") == pytest.approx(25.0, abs=1e-9)
+
+    def test_temperature_fahrenheit_to_kelvin(self):
+        # 32 °F = 273.15 K, 212 °F = 373.15 K
+        assert to_native(32.0,  "°F", "K") == pytest.approx(273.15, abs=1e-9)
+        assert to_native(212.0, "°F", "K") == pytest.approx(373.15, abs=1e-9)
+
+    def test_temperature_round_trip_through_three_units(self):
+        v0 = 800.0  # °C, like T_gasifier_C default
+        v_k = to_native(v0, "°C", "K")
+        v_f = from_native(v_k, "K", "°F")
+        v_back = to_native(v_f, "°F", "°C")
+        assert v_back == pytest.approx(v0, abs=1e-6)
+
+    def test_pressure_atm_to_pa(self):
+        assert to_native(1.0, "atm", "Pa") == pytest.approx(101325.0, abs=1e-6)
+
+    def test_pressure_bar_to_pa(self):
+        assert to_native(5.0, "bar", "Pa") == pytest.approx(5e5, abs=1e-6)
+
+    def test_pressure_psi_to_bar(self):
+        # 14.5038 psi ≈ 1 bar
+        assert to_native(14.5038, "psi", "bar") == pytest.approx(1.0, rel=1e-4)
+
+    def test_mass_flow_t_per_h_to_kg_per_s(self):
+        assert to_native(3.6, "t/h", "kg/s") == pytest.approx(1.0, abs=1e-9)
+
+    def test_power_kw_to_w(self):
+        assert to_native(5.0, "kW", "W") == pytest.approx(5000.0, abs=1e-9)
+
+    def test_energy_mj_to_kj(self):
+        assert to_native(1.0, "MJ", "kJ") == pytest.approx(1000.0, abs=1e-9)
+
+    def test_same_unit_is_identity(self):
+        for u, val in [("K", 350.0), ("Pa", 101325.0), ("kg/s", 2.5), ("kW", 100.0)]:
+            assert to_native(val, u, u) == val
+
+    def test_no_conversion_path_returns_value(self):
+        # "—" (dimensionless), "W/K" (UA product), "mol/s" — not in any family.
+        assert to_native(0.78, "—",      "—")      == 0.78
+        assert to_native(5000.0, "W/K",  "W/K")    == 5000.0
+        assert to_native(50.0, "mol/s",  "mol/s")  == 50.0
+
+
+class TestSupportedDisplayUnits:
+    def test_temperature_family_has_three_units(self):
+        units = supported_display_units("°C")
+        assert set(units) == {"K", "°C", "°F"}
+
+    def test_pressure_family_has_five_units(self):
+        units = supported_display_units("Pa")
+        assert set(units) == {"Pa", "kPa", "bar", "atm", "psi"}
+
+    def test_dimensionless_has_no_alternatives(self):
+        assert supported_display_units("—") == []
+        assert supported_display_units("W/K") == []
+        assert supported_display_units("mol/s") == []
+
+    def test_si_baseline_for_celsius_is_kelvin(self):
+        assert si_baseline_of("°C") == "K"
+
+    def test_si_baseline_for_atm_is_pa(self):
+        assert si_baseline_of("atm") == "Pa"
+
+    def test_si_baseline_for_unknown_is_none(self):
+        assert si_baseline_of("—") is None
+        assert si_baseline_of("W/K") is None
+
+
+class TestExcelUnitInference:
+    """The Excel exporter's _infer_si_unit() heuristic for variable names."""
+
+    def test_inference_for_canonical_names(self):
+        from pse_ecosystem.ui.app_streamlit import _infer_si_unit
+        cases = {
+            "T":         "K",
+            "T_in":      "K",
+            "T_out":     "K",
+            "P":         "Pa",
+            "P_out":     "Pa",
+            "P_out_Pa":  "Pa",
+            "T_out_K":   "K",
+            "F_H2":      "kg/s",
+            "F_CO2":     "kg/s",
+            "n_H2":      "mol/s",
+            "X_CO":      "—",
+            "W_shaft":   "W",
+            "duty_kW":   "kW",
+            "Y_H2_kg_per_h": "kg/h",
+        }
+        for var, expected in cases.items():
+            assert _infer_si_unit(var) == expected, (
+                f"_infer_si_unit({var!r}) returned {_infer_si_unit(var)!r}, expected {expected!r}"
+            )
+
+    def test_inference_empty_for_unrecognised(self):
+        from pse_ecosystem.ui.app_streamlit import _infer_si_unit
+        assert _infer_si_unit("foo") == ""
+        assert _infer_si_unit("") == ""
