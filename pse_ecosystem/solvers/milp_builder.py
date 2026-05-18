@@ -103,6 +103,7 @@ def build_milp(
         gating[tech.unit_id] = (tech.name, float(tech.big_M))
 
     # ── Per-unit linearised equalities (big-M relaxed when gated) ────────
+    import warnings as _warn
     model.unit_constraints = pyo.ConstraintList()
     model.unit_relax_lo = pyo.ConstraintList()
     model.unit_relax_hi = pyo.ConstraintList()
@@ -115,9 +116,23 @@ def build_milp(
             row = lin.J[row_idx, :]
             nonzero = np.flatnonzero(np.abs(row) > 0.0)
             if nonzero.size == 0:
-                if abs(rhs_vec[row_idx]) > 1e-9 and gate is None:
-                    raise ValueError(
-                        f"Unit '{lin.unit_id}' row {row_idx} infeasible."
+                if abs(rhs_vec[row_idx]) > 1e-9:
+                    if gate is None:
+                        raise ValueError(
+                            f"Unit '{lin.unit_id}' row {row_idx} infeasible."
+                        )
+                    # v1.4.0 audit N7 — gated units with a non-zero RHS on a
+                    # zero Jacobian row were silently relaxed away under the
+                    # y=0 branch. Surface a warning so the operator knows
+                    # the linearisation has a structural issue at this point.
+                    _warn.warn(
+                        f"MILP gated unit {lin.unit_id!r} row {row_idx} has "
+                        f"zero Jacobian but non-zero residual "
+                        f"({rhs_vec[row_idx]:.3g}). Row is being relaxed away "
+                        f"in the y=0 branch — verify the linearisation "
+                        f"point is feasible for this technology.",
+                        RuntimeWarning,
+                        stacklevel=2,
                     )
                 continue
             expr = sum(
@@ -131,8 +146,20 @@ def build_milp(
                 # Sized so the constraint is fully slack when y = 0 — covers
                 # any residual the linearisation could produce inside the
                 # variable bounds.
+                # v1.4.0 audit N6 — also incorporate the actual aggregated
+                # bound widths on each non-zero column, so structural
+                # variables with wide ranges (e.g. P ∈ [0, 1e8]) cannot
+                # blow the row past the technology big-M.
+                _bound_contrib = 0.0
+                for j in nonzero:
+                    v_name = lin.variables[j]
+                    v_lo, v_hi = bounds.get(v_name, (0.0, residual_M))
+                    v_lo = v_lo if v_lo > -_PYOMO_INF else 0.0
+                    v_hi = v_hi if v_hi <  _PYOMO_INF else residual_M
+                    _bound_contrib += abs(row[j]) * max(abs(v_lo), abs(v_hi))
                 row_M = max(
                     residual_M,
+                    abs(rhs) + _bound_contrib,
                     abs(rhs) + float(np.sum(np.abs(row)) * residual_M),
                     1.0,
                 )

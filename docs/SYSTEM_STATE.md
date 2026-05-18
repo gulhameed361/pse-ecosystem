@@ -6,6 +6,168 @@
 
 ---
 
+## What's New in v1.4.0-AUDIT2 — Second-Pass Hardening
+
+A second five-agent code audit was run after the first round of fixes. It
+focused on DAC/Power Layer-3 (uncovered by the first audit), the LP/MILP
+internals, flowsheet templates, and cross-cutting concerns — and looked
+explicitly for regressions introduced by the first hardening pass. The
+audit returned 37 new findings; this release closes 35 of them. Suite now
+stands at **259 passed, 1 pre-existing skip, 1 documented xfail, 0
+failures** (was 240). 19 of the new pytest functions live in the brand-
+new `tests/test_dac_power_units.py`.
+
+### Physics correctness
+
+- **N1** — `solvers/lp_builder.py:78` now raises `ValueError` when two
+  contributors declare conflicting variable bounds whose intersection is
+  empty. Pre-fix the merge silently produced an inverted interval that
+  Pyomo reported as opaque infeasibility.
+- **N2** — `models/dac/tvsa_contactor.py` exposed `T_in` and `P_in` as
+  port variables but never used them in the residual. The LP picked
+  ambient T/P arbitrarily inside `(270, 320) K` and `(95, 105) kPa`. Two
+  pin rows (`T_in − 298.15 = 0`, `P_in − 101.325 = 0`) now anchor the
+  variables to ambient defaults; analytical Jacobian extended to 7×8.
+- **N3** — `models/power/chp_unit.py` docstring overloaded the symbol
+  `Q_comb` between "raw fuel energy" and "post-combustor heat release".
+  Rewritten to distinguish `Q_fuel` (raw) from `Q_comb` (post-combustor)
+  and trace the η_comb × η_turb × η_hrec chain explicitly. No physics
+  change.
+
+### UI / UMS
+
+- **N4** — `models/dac/electrolyser_hf.py` now clamps `eta_elec` to
+  `[0.30, 0.95]` at constructor time. Pre-fix accepted 0.05 → 2858 kW
+  per mol/s H₂ (unphysical).
+- **N5** — `models/dac/tvsa_contactor.py` ambient CO₂ mole fraction is
+  now a per-instance parameter (`y_co2_atm`) with the 415 ppm default,
+  validated to `[1e-6, 0.05]` (1 ppm – 5 %). Lets pilot DAC studies use
+  current ambient (425 ppm) or indoor-air HVAC loops (1200 ppm).
+- **N12** — `ui/app_streamlit.py:496` and `:1250` swallowed every
+  exception silently in the sweep loop and the capex extractor.
+  Replaced with `st.warning(...)` so users see the failure.
+- **N31** — Excel exporter's `getattr(_unit, "capex_USD", lambda)` was
+  dead code post-H6 (no unit defines a `capex_USD()` method anymore).
+  Switched to `capex` per the `BaseUnit` contract; deduplicated rows so
+  units whose `kpis()` dict already reports `capex_USD` aren't doubled.
+
+### Solver internals
+
+- **N6** — `solvers/milp_builder.py` row-M sizing now incorporates the
+  actual aggregated bound widths of each non-zero column, so a row
+  spanning flow variables (gated big-M) and structural ones (wide P/T
+  ranges) is correctly relaxed under `y = 0`.
+- **N7** — Gated rows with non-zero RHS on a zero Jacobian row now emit
+  a `RuntimeWarning` instead of being silently relaxed.
+- **N8** — `solvers/lp_builder.py:140` trust-region anchor fallback for
+  variables missing from `x_anchor` is now the bound midpoint (was
+  `0.0`, which collapsed the TR box outside feasibility for variables
+  bounded `(1e4, 1e7)` Pa).
+- **N9** — `flowsheets/base_flowsheet.py::initial_guess()` half-bounded
+  fallback now scales with `0.1 × |bound|` (was a flat `±1.0` offset).
+  For a pressure variable bounded `(1e4, ∞)` Pa the starting point is
+  now 1.1e4 Pa instead of 1.0001e4 Pa.
+
+### Silent fallbacks → logged warnings
+
+- **N10** — `models/separators/distillation_hf.py:163` and
+  `models/reactors/gibbs_reactor.py:169` now cache the inner-solve
+  exception on the unit instance (`_last_underwood_error`,
+  `_last_inner_error`) so downstream KPI / status reports can surface
+  the root cause instead of reporting a plausible-looking but wrong
+  result.
+- **N11** — `BaseFlowsheet.validate()` cross-checks every variable
+  referenced in `extra_equalities`, `extra_bounds`, and
+  `objective_extra` against `all_variables()`. Called from the top of
+  `build_lp` so a typo in a template surfaces with a helpful error
+  before Pyomo's opaque `KeyError`.
+- **N20** — `ui/flowsheet_service.py::_instantiate_unit DistillationHF`
+  no longer silently rewrites user-supplied `hk` / `lk` to first/last
+  VLE species when they're absent from `components`. Raises with a
+  clear error instead.
+- **N30** — TRF feasibility-restore caught bare `Exception:`; narrowed
+  to `RuntimeError | ValueError | ArithmeticError` so programming bugs
+  propagate.
+
+### DAC / Power polish + dedicated tests
+
+- **N13** — Sabatier `K_Sab(T) = exp(4786/T − 4.92)` now carries
+  references (Vannice 1976, Lunde & Kester 1973, NIST JANAF) and notes
+  the calibration range (600–1000 K, low pressure).
+- **N15** — KPI specific-energy divisions in `TVSAContactor` and
+  `MethanationReactor` now use `1e-6 mol/s` and `1e-3 mol/s` floors
+  (was `1e-9`), preventing the 1e13 kWh/tonne nonsense at trace flows.
+  TVSA's KPI dict adds a `_warning_low_feed` flag at the floor.
+- **N16** — `ElectrolyserHF.kpis()` no longer reports `eta_elec * 100`
+  as if it were a per-iteration KPI; clarified as a nameplate constant.
+- **N32** — New `tests/test_dac_power_units.py` provides 19 direct
+  contract checks: residual shapes, Jacobian dimensions, KPI near-zero
+  handling, η clamps, ambient-CO₂ clamps, energy-balance ratios.
+
+### Packaging completeness
+
+- **N28** — `pyproject.toml` now declares `include-package-data = true`
+  and `[tool.setuptools.package-data] "pse_ecosystem" = ["data/*.json"]`.
+  New `MANIFEST.in` ships `docs/*.md` and `data/*.json` in the sdist
+  and wheel so pip installs expose them to the Help Center loader and
+  the EconomicEngine CEPCI loader.
+- **N29** — `scripts/package_app.py` pre-flight now checks `openpyxl`
+  in the required-packages list; packaged apps without it crashed on
+  Excel download.
+
+### Template + infrastructure polish
+
+- **N21** — `flowsheets/industrial/syngas_production.py` asserts that
+  `gasifier.v_h2` is a string before using it as a dict key.
+- **N22** — `flowsheets/industrial/green_hydrogen.py` `kg_h_to_mol_s`
+  coefficient is now flagged as H₂-specific so a future generalisation
+  to multi-species mixers doesn't reuse the H₂ molar-mass coefficient.
+- **N23** — `flowsheets/small/adiabatic_cstr_flash.py` no longer
+  overwrites a caller-supplied `cstr_params.reactions`.
+- **N24** — `flowsheets/small/mixer_settler.py` deep-copies the caller's
+  `mixer_params` / `sep_params` before mutation.
+- **N26** — Help Center loader's `@st.cache_data` cache key switched
+  from file `mtime` to SHA-1 content hash. Robust to symlink mtime
+  inconsistencies; invalidates only when the bytes actually change.
+- **N27** — `_load_doc(rel_name)` now resolves the candidate path and
+  asserts it lives under `docs/`, refusing directory-traversal inputs.
+- **N33** — `CompositeUnit.__init__` validates that every name in
+  `exposed_inputs` / `exposed_outputs` exists in the inner flowsheet's
+  `all_variables()`.
+- **N35** — Module-load self-check in `flowsheet_service.py` asserts
+  every `_REGISTRY` entry has a corresponding loader in `_LOADER_MAP`
+  or `_MILP_LOADER_MAP`. Dead loaders trigger a `RuntimeWarning`.
+- **N36** — Builder's Build & Select banner now warns when the user
+  has picked the same Type for ≥3 units (a typo footprint from the
+  saturating default Type index past unit 7).
+- **N37** — Site Weather page tz input changed from free text to a
+  curated `selectbox` populated from `zoneinfo.available_timezones()`,
+  so typos like `"Europe/Lonon"` are impossible.
+
+### Skipped (false positives on close reading)
+
+- **N18** — TRF funnel switching test uses `theta_old`; the agent
+  flagged it as needing paper verification. On re-reading the comment
+  at `trf/funnel.py:30`, the notation matches Eason & Biegler 2016
+  intent (measuring reduction relative to a high baseline). Left as-is.
+- **N19** — Filter invariant validation. The filter is correct on
+  insertion; corruption would require upstream code violation that is
+  not exposed.
+- **N34** — `objective_kpi` field validation. Deferred; the field is
+  advisory metadata and the LP builder ignores invalid values
+  gracefully.
+
+### Carry-forward into v1.5.x
+
+- Numerical-noise gating in `milp_builder` (the row-M now also accounts
+  for variable bounds, but the noise threshold `1e-9` is still hard-
+  coded — could become a `TRFConfig`-style parameter).
+- Symbolic Sabatier K_eq validation against an external thermodynamic
+  reference (NIST WebBook query) as a regression-guard test.
+- The xfailed biomass-to-hydrogen test still needs SLP re-tuning.
+
+---
+
 ## What's New in v1.4.0-CARRYFORWARD — Audit Polish + CI Integration
 
 Closes the remaining items flagged in the v1.4.0 audit punch list. Suite

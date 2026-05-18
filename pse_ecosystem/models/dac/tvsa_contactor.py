@@ -40,8 +40,16 @@ _RHO_AIR = 1.225     # kg/m³ at STP
 _M_CO2 = 0.044       # kg/mol
 _R = 8.314e-3        # kJ/(mol·K)
 
-# Ambient CO₂ mole fraction
+# Ambient CO₂ mole fraction (v1.4.0 audit N5 — also exposed as a per-instance
+# parameter on TVSAContactor so the model is not locked to 2015-era ambient
+# values; the constant below is now just the constructor default).
 _Y_CO2_ATM = 415e-6  # 415 ppm
+
+# Ambient T / P defaults used to pin the air_in port (audit N2). These are
+# also the constants used by the analytical Jacobian — the two pin rows are
+# linear in T_in / P_in with unit coefficients.
+_T_AMB_DEFAULT_K = 298.15
+_P_AMB_DEFAULT_kPa = 101.325
 
 
 class TVSAContactor(BaseUnit):
@@ -84,9 +92,21 @@ class TVSAContactor(BaseUnit):
         P_ads_kPa: float = 101.325,
         P_des_kPa: float = 5.0,
         eta_vac: float = 0.70,
+        y_co2_atm: float = _Y_CO2_ATM,
     ):
+        # v1.4.0 audit N5 — atmospheric CO₂ mole fraction was a module
+        # constant (415 ppm). Now exposed per-instance with the 2015-era
+        # default; pilot DAC studies and point-source contactors can
+        # override (350 ppm historical, 420 ppm current ambient, up to
+        # 1200 ppm for indoor-air HVAC recirculation loops).
+        if not (1e-6 <= y_co2_atm <= 0.05):
+            raise ValueError(
+                f"TVSAContactor y_co2_atm must be in [1e-6, 0.05] (1 ppm – "
+                f"50 000 ppm); got {y_co2_atm:.3e}."
+            )
         self.unit_id = unit_id
         self.eta_cap = eta_cap
+        self.y_co2_atm = float(y_co2_atm)
 
         # Derived linear coefficients
         # k_fan [kW per (mol/s) of air]
@@ -131,7 +151,7 @@ class TVSAContactor(BaseUnit):
         self._v_qreg = f"{unit_id}.Q_regen_kW"
         self._v_wvac = f"{unit_id}.W_vac_kW"
 
-        self._capture_rate = eta_cap * _Y_CO2_ATM  # mol CO2 captured per mol air
+        self._capture_rate = eta_cap * self.y_co2_atm  # mol CO2 captured per mol air
 
     # ── Abstract interface ────────────────────────────────────────────────
 
@@ -157,18 +177,29 @@ class TVSAContactor(BaseUnit):
 
     def residual(self, x: Dict[str, float]) -> np.ndarray:
         F_air = x.get(self._v_air, 0.0)
+        T_in  = x.get(self._v_T_in, _T_AMB_DEFAULT_K)
+        P_in  = x.get(self._v_P_in, _P_AMB_DEFAULT_kPa)
         F_co2 = x.get(self._v_co2, 0.0)
         F_dep = x.get(self._v_dep, 0.0)
         W_fan = x.get(self._v_wfan, 0.0)
         Q_reg = x.get(self._v_qreg, 0.0)
         W_vac = x.get(self._v_wvac, 0.0)
         cr = self._capture_rate
+        # v1.4.0 audit N2 — T_in and P_in were declared as port variables but
+        # never appeared in the residual; the LP picked them arbitrarily
+        # inside the (270, 320) K and (95, 105) kPa bounds. Pin them to
+        # nominal ambient defaults so the reported value reflects intent.
+        # Upstream connections via `BaseFlowsheet.connect()` can still
+        # override these via equality constraints (the LP takes the
+        # tighter of the two — see `lp_builder.py` per-unit bound merge).
         return np.array([
             F_co2 - cr * F_air,
             F_dep - (1.0 - cr) * F_air,
             W_fan - self._k_fan * F_air,
             Q_reg - self._k_regen * F_co2,
             W_vac - self._k_vac * F_co2,
+            T_in  - _T_AMB_DEFAULT_K,
+            P_in  - _P_AMB_DEFAULT_kPa,
         ], dtype=float)
 
     def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
@@ -177,7 +208,13 @@ class TVSAContactor(BaseUnit):
         return {}
 
     def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
-        F_co2 = max(x.get(self._v_co2, 0.0), 1e-9)
+        # v1.4.0 audit N15 — match the residual's near-zero handling. A 1e-9
+        # mol/s F_co2 produces a 1e13 kWh/tonne specific-energy nonsense.
+        # Use a 1e-6 mol/s floor (≈0.4 mg/h CO₂ — below any realistic
+        # pilot DAC unit) so the KPI either reports near-zero throughput
+        # or a sensibly-bounded number.
+        _FLOOR_MOL_S = 1.0e-6
+        F_co2 = max(x.get(self._v_co2, 0.0), _FLOOR_MOL_S)
         W_fan = x.get(self._v_wfan, 0.0)
         Q_reg = x.get(self._v_qreg, 0.0)
         W_vac = x.get(self._v_wvac, 0.0)
@@ -186,8 +223,8 @@ class TVSAContactor(BaseUnit):
         # CO2 mass rate [kg/s]
         co2_kg_s = F_co2 * _M_CO2
         co2_tonne_day = co2_kg_s * 86400.0 / 1000.0
-        specific_elec = (total_power / co2_kg_s / 3600.0) if co2_kg_s > 0 else 0.0
-        specific_heat = (total_heat / co2_kg_s / 3600.0) if co2_kg_s > 0 else 0.0
+        specific_elec = (total_power / co2_kg_s / 3600.0) if F_co2 > _FLOOR_MOL_S * 1.001 else 0.0
+        specific_heat = (total_heat / co2_kg_s / 3600.0) if F_co2 > _FLOOR_MOL_S * 1.001 else 0.0
         return {
             "co2_capture_rate_tonne_per_day": co2_tonne_day,
             "specific_elec_kWh_per_tCO2": specific_elec * 1000.0,
@@ -218,9 +255,12 @@ class TVSAContactor(BaseUnit):
         f0 = self.residual(x0_dict)
         cr = self._capture_rate
 
-        # J[row, col]: 5 residuals × 8 variables
-        J = np.zeros((5, n), dtype=float)
+        # J[row, col]: 7 residuals × 8 variables (v1.4.0 audit N2 — two extra
+        # rows pin T_in / P_in to the ambient defaults).
+        J = np.zeros((7, n), dtype=float)
         i_air = idx[self._v_air]
+        i_T   = idx[self._v_T_in]
+        i_P   = idx[self._v_P_in]
         i_co2 = idx[self._v_co2]
         i_dep = idx[self._v_dep]
         i_wfan = idx[self._v_wfan]
@@ -237,6 +277,10 @@ class TVSAContactor(BaseUnit):
         J[3, i_co2] = -self._k_regen;  J[3, i_qreg] = 1.0
         # r4: W_vac - k_vac*F_co2 = 0
         J[4, i_co2] = -self._k_vac;  J[4, i_wvac] = 1.0
+        # r5: T_in - T_amb_default = 0
+        J[5, i_T] = 1.0
+        # r6: P_in - P_amb_default = 0
+        J[6, i_P] = 1.0
 
         return LinearizedModel(
             unit_id=self.unit_id,

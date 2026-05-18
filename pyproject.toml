@@ -55,6 +55,20 @@ pse-ecosystem = "pse_ecosystem.ui.entry:main"
 where = ["."]
 include = ["pse_ecosystem*"]
 
+# v1.4.0 audit N28 — ship docs/ and data/ as package data so pip installs
+# expose them to the Help Center loader and the EconomicEngine CEPCI
+# loader. Without these entries the Help Center falls back to "doc
+# missing" and the EconomicEngine quietly uses its hardcoded CEPCI
+# defaults instead of data/economics.json.
+[tool.setuptools.package-data]
+"pse_ecosystem" = ["data/*.json"]
+
+# Top-level data files (docs/) shipped via MANIFEST.in for sdist; for wheel
+# we expose them via the data_files mechanism so pip installs preserve them
+# alongside the package.
+[tool.setuptools]
+include-package-data = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"

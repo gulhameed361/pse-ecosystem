@@ -83,7 +83,10 @@ def check() -> int:
     print()
 
     print("Required packages:")
-    for pkg in ["streamlit", "plotly", "pyomo", "numpy", "pse_ecosystem"]:
+    # v1.4.0 audit N29 — openpyxl is required for the Excel-export feature
+    # (Solver Monitor → Download Results) and was previously not in the
+    # pre-flight check; packaged apps without it crashed on download.
+    for pkg in ["streamlit", "plotly", "pyomo", "numpy", "openpyxl", "pse_ecosystem"]:
         ok &= _check_import(pkg)
     print()
 

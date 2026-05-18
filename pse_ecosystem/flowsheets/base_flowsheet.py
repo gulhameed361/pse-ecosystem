@@ -67,6 +67,44 @@ class BaseFlowsheet:
     finds any feasible point satisfying all residuals without cost pressure.
     Useful for debugging port connectivity and checking mass-balance closure."""
 
+    # ── Validation ───────────────────────────────────────────────────────────
+
+    def validate(self) -> None:
+        """Pre-solve self-check (v1.4.0 audit N11).
+
+        Templates and the Custom Builder add ``extra_equalities`` /
+        ``extra_bounds`` / ``objective_extra`` *after* dataclass construction,
+        so a true ``__post_init__`` check would always fire too early. The
+        LP builder calls this at the top of ``build_lp`` so a typo in a
+        flowsheet-level constraint produces a helpful error naming the
+        variable and the template, rather than a generic Pyomo error.
+
+        Raises
+        ------
+        ValueError
+            If any variable name referenced in extras is not produced by
+            any unit. Caught only after construction is complete.
+        """
+        known = set(self.all_variables())
+        offenders: List[Tuple[str, str]] = []
+        for i, (coeffs, _rhs) in enumerate(self.extra_equalities):
+            for v in coeffs:
+                if v not in known:
+                    offenders.append((f"extra_equalities[{i}]", v))
+        for v in self.extra_bounds:
+            if v not in known:
+                offenders.append(("extra_bounds", v))
+        for v in self.objective_extra:
+            if v not in known:
+                offenders.append(("objective_extra", v))
+        if offenders:
+            details = ", ".join(f"{loc}:{v!r}" for loc, v in offenders[:10])
+            raise ValueError(
+                f"Flowsheet {self.name!r} references {len(offenders)} unknown "
+                f"variable(s) in extras (not produced by any unit). "
+                f"First: {details}. Fix the template or unit registration."
+            )
+
     # ── Port connectivity ────────────────────────────────────────────────────
 
     def connect(
@@ -137,7 +175,12 @@ class BaseFlowsheet:
     # ── Convenience for the SLP driver ──────────────────────────────────────
 
     def initial_guess(self) -> Dict[str, float]:
-        """Midpoint of bounds (with sane fallbacks for unbounded variables).
+        """Midpoint of bounds (with scale-aware fallbacks for unbounded vars).
+
+        v1.4.0 audit N9 — the half-bounded fallback now scales the offset to
+        the magnitude of the finite bound rather than using a flat ±1.0
+        (which produced 1.0001e4 Pa for a pressure variable bounded at
+        ``(1e4, ∞)`` — physically nonsense as a starting point).
 
         If ``self.initial_x0`` is set, those values override the midpoint for
         the named variables, providing a heuristic warm-start.
@@ -147,9 +190,14 @@ class BaseFlowsheet:
             if lo > -1e18 and hi < 1e18:
                 guess[v] = 0.5 * (lo + hi)
             elif lo > -1e18:
-                guess[v] = lo + 1.0
+                # Half-bounded above: step off the lower bound by a scale-aware
+                # offset (10 % of |lo|, minimum 1.0). For a pressure floor of
+                # 1e4 Pa this yields 1.1e4 Pa instead of 1.0001e4 Pa.
+                offset = max(0.1 * abs(lo), 1.0)
+                guess[v] = lo + offset
             elif hi < 1e18:
-                guess[v] = hi - 1.0
+                offset = max(0.1 * abs(hi), 1.0)
+                guess[v] = hi - offset
             else:
                 guess[v] = 0.0
         for v in self.all_variables():
@@ -217,6 +265,21 @@ class CompositeUnit(BaseUnit):
         self.exposed_inputs = list(exposed_inputs)
         self.exposed_outputs = list(exposed_outputs)
         self._slp_config = slp_config
+
+        # v1.4.0 audit N33 — validate exposed variable names against the
+        # inner flowsheet's actual variable set. A typo here would silently
+        # default to 0 on every residual evaluation, making the composite
+        # unit a no-op that the parent treats as legitimate.
+        _inner_vars = set(inner_flowsheet.all_variables())
+        _unknown = [v for v in (self.exposed_inputs + self.exposed_outputs)
+                    if v not in _inner_vars]
+        if _unknown:
+            raise ValueError(
+                f"CompositeUnit {unit_id!r}: exposed variable(s) "
+                f"{_unknown} not in inner flowsheet "
+                f"{inner_flowsheet.name!r}. Available variables: "
+                f"{sorted(_inner_vars)[:10]}{'…' if len(_inner_vars) > 10 else ''}"
+            )
 
     def variables(self) -> List[str]:
         return self.exposed_inputs + self.exposed_outputs

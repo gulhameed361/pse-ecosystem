@@ -339,7 +339,11 @@ class TrustRegionDriver:
                     "Feasibility restored via NLP after TRF trust-region exhaustion."
                 )
             return result
-        except Exception:  # noqa: BLE001
+        except (RuntimeError, ValueError, ArithmeticError) as exc:
+            # v1.4.0 audit N30 — pre-fix this was a bare `except Exception:`
+            # that swallowed every error type including KeyboardInterrupt
+            # and AttributeError. Narrow to numerical / runtime errors so
+            # genuine programming bugs still propagate.
             return SolveResult(
                 status=SolverStatus.INFEASIBLE,
                 mode=SolveMode.TRUST_REGION,
@@ -348,7 +352,10 @@ class TrustRegionDriver:
                 iterations=k,
                 objective=last_obj,
                 history=history,
-                message="TRF hit minimum trust-region; feasibility restoration failed.",
+                message=(
+                    f"TRF hit minimum trust-region; feasibility restoration "
+                    f"failed: {type(exc).__name__}: {exc}"
+                ),
             )
 
     # ── Internals ─────────────────────────────────────────────────────────

@@ -7,14 +7,29 @@ The model is linear at fixed efficiency parameters — ``is_linear=True``.
 
 Physics
 -------
-Combustion heat release:
-    Q_comb = η_comb × Σ_c (LHV_c × F_c)   [kW]
+Fuel chemical input (raw, pre-combustor):
+    Q_fuel = Σ_c (LHV_c × F_c)             [kW]
+
+Combustor output (after combustion losses):
+    Q_comb = η_comb × Q_fuel                [kW]
 
 Electricity output (turbine + generator):
-    W_elec = η_is × η_mech × Q_comb        [kW]
+    W_elec = η_turb × Q_comb                [kW]
+            = η_comb × η_turb × Q_fuel
 
-Process heat (HRSG recovery):
-    Q_process = η_hrec × (Q_comb − W_elec) [kW]
+Process heat (HRSG recovery from gas-turbine exhaust):
+    Q_process = η_hrec × (Q_comb − W_elec)  [kW]
+              = η_comb × (1 − η_turb) × η_hrec × Q_fuel
+
+Audit N3 alignment (v1.4.0): the residual code computes ``W_elec`` and
+``Q_process`` directly from the raw fuel input ``Q_fuel`` using the
+collapsed coefficients ``_q_elec = η_comb × η_turb`` and
+``_q_heat = η_comb × (1 − η_turb) × η_hrec``. The two formulations are
+algebraically identical — earlier docstrings overloaded the symbol
+``Q_comb`` between "pre-combustor raw fuel" and "post-combustor heat
+release", which the audit flagged as a physics-mismatch. There is no
+physics bug; this header now uses ``Q_fuel`` / ``Q_comb`` distinctly to
+make the chain explicit.
 
 Air stoichiometry (λ = excess air ratio):
     F_O2_air = λ × O2_stoich

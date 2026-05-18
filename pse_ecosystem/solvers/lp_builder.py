@@ -67,6 +67,12 @@ def build_lp(
     linearizations = list(linearizations)
     model = pyo.ConcreteModel(name=f"LP::{flowsheet.name}")
 
+    # v1.4.0 audit N11 — pre-solve self-check on flowsheet-level extras.
+    # Surfaces typos in extra_equalities / extra_bounds / objective_extra
+    # with a helpful error before Pyomo's opaque KeyError fires.
+    if hasattr(flowsheet, "validate"):
+        flowsheet.validate()
+
     # ── Collect variables and bounds ──────────────────────────────────────
     all_vars = flowsheet.all_variables()
     bounds = flowsheet.aggregated_bounds()
@@ -75,8 +81,25 @@ def build_lp(
     for lin in linearizations:
         for v, (lo, hi) in lin.bounds.items():
             if v in bounds:
-                bounds[v] = (max(bounds[v][0], lo), min(bounds[v][1], hi))
+                merged_lo = max(bounds[v][0], lo)
+                merged_hi = min(bounds[v][1], hi)
+                # v1.4.0 audit N1 — flag the inverted-bounds case explicitly
+                # instead of letting Pyomo silently report infeasibility.
+                if merged_lo > merged_hi:
+                    raise ValueError(
+                        f"Conflicting bounds for variable {v!r}: "
+                        f"flowsheet/aggregated bound {bounds[v]} vs. unit "
+                        f"{lin.unit_id!r} bound ({lo}, {hi}). Result of "
+                        f"tightest-wins merge is ({merged_lo}, {merged_hi}) "
+                        f"which is empty — fix one of the two declarations."
+                    )
+                bounds[v] = (merged_lo, merged_hi)
             else:
+                if lo > hi:
+                    raise ValueError(
+                        f"Unit {lin.unit_id!r} declares inverted bounds for "
+                        f"{v!r}: ({lo}, {hi}). Lower must be ≤ upper."
+                    )
                 bounds[v] = (lo, hi)
 
     def _var_init(_m, name: str):  # pragma: no cover - trivial closure
@@ -137,7 +160,19 @@ def build_lp(
                 continue
             radius = float(lin.trust_region) * float(tr_multiplier)
             for v in lin.variables:
-                anchor = x_anchor.get(v, 0.0)
+                if v in x_anchor:
+                    anchor = x_anchor[v]
+                else:
+                    # v1.4.0 audit N8 — pre-fix fallback was `x_anchor.get(v, 0.0)`,
+                    # which anchored missing variables at 0. For pressures
+                    # bounded at (1e4, 1e7) Pa this collapses the TR box to a
+                    # region that is far outside feasibility. Use the
+                    # variable's bound midpoint as a sane fallback.
+                    lo, hi = bounds.get(v, (-_PYOMO_INF, _PYOMO_INF))
+                    if lo > -_PYOMO_INF and hi < _PYOMO_INF:
+                        anchor = 0.5 * (lo + hi)
+                    else:
+                        anchor = 0.0
                 model.trust_region_lo.add(model.x[v] >= anchor - radius)
                 model.trust_region_hi.add(model.x[v] <= anchor + radius)
 

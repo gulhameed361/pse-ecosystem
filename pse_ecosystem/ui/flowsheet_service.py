@@ -1303,8 +1303,22 @@ def _instantiate_unit(utype: str, uid: str, params: dict) -> Any:
             components = vle_species
         hk = params.get("hk", "toluene")
         lk = params.get("lk", "benzene")
-        if hk not in components: hk = vle_species[-1]
-        if lk not in components: lk = vle_species[0]
+        # v1.4.0 audit N20 — pre-fix this silently rewrote user-selected
+        # hk/lk to the first/last VLE species when they were missing from
+        # the component list. The user's intent was lost. Now we raise so
+        # the caller knows the mismatch and can pass valid keys.
+        if hk not in components:
+            raise ValueError(
+                f"DistillationHF heavy key {hk!r} not in components "
+                f"{components!r}. Pass a 'hk' that names one of the unit's "
+                f"declared species."
+            )
+        if lk not in components:
+            raise ValueError(
+                f"DistillationHF light key {lk!r} not in components "
+                f"{components!r}. Pass a 'lk' that names one of the unit's "
+                f"declared species."
+            )
         dp = DistillationHFParams(
             species_vle=vle_species,
             lk=lk,
@@ -1941,3 +1955,36 @@ _LOADER_MAP: Dict[str, Callable] = {
 _MILP_LOADER_MAP: Dict[str, Callable] = {
     "hydrogen.electrolysis_or_gasification":   _load_electrolysis_or_gasification_milp,
 }
+
+
+# v1.4.0 audit N35 — at module-load time assert that every entry in
+# _REGISTRY (except the special "custom.user_flowsheet" key which is
+# handled via build_custom_flowsheet rather than a loader) has a matching
+# entry in either _LOADER_MAP or _MILP_LOADER_MAP. A typo or omission
+# would otherwise surface only when the user picks the broken template.
+def _validate_registry_loader_sync() -> None:
+    _all_loaders = set(_LOADER_MAP) | set(_MILP_LOADER_MAP)
+    _CUSTOM_KEYS = {"custom.user_flowsheet"}
+    missing = [
+        spec.key for spec in _REGISTRY
+        if spec.key not in _all_loaders and spec.key not in _CUSTOM_KEYS
+    ]
+    if missing:
+        raise RuntimeError(
+            f"flowsheet_service: _REGISTRY entries without a loader: {missing}. "
+            f"Add a corresponding entry to _LOADER_MAP or _MILP_LOADER_MAP."
+        )
+    # Reverse direction: loaders without registry entries are dead code.
+    _registry_keys = {spec.key for spec in _REGISTRY}
+    orphan = [k for k in _all_loaders if k not in _registry_keys]
+    if orphan:
+        import warnings as _w
+        _w.warn(
+            f"flowsheet_service: loaders without _REGISTRY entries (dead "
+            f"code, not user-reachable): {orphan}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+
+_validate_registry_loader_sync()

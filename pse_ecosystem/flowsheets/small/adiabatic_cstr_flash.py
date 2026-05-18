@@ -42,7 +42,11 @@ def make_adiabatic_cstr_flash(
     if cstr_params is None:
         cstr_params = CSTRHFParams(reactions=reactions, volume_m3=1.0)
     else:
-        cstr_params.reactions = reactions
+        # v1.4.0 audit N23 — respect a caller-supplied `cstr_params.reactions`
+        # rather than overwriting unconditionally. Only assign when the
+        # caller hasn't already set reactions on the params object.
+        if not cstr_params.reactions:
+            cstr_params.reactions = reactions
 
     if flash_params is None:
         flash_params = FlashVLHFParams(species_vle=species_vle)

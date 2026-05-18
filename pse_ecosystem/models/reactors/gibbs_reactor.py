@@ -166,7 +166,12 @@ class GibbsReactor(BaseUnit):
                 options={"maxiter": self.params.max_inner_iter, "ftol": self.params.inner_tol},
             )
             return np.maximum(result.x, 0.0)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            # v1.4.0 audit N10 — cache the failure reason on the unit so
+            # downstream code (kpis(), the Streamlit Solver Monitor) can
+            # surface that the Gibbs inner solve fell back to F_in instead
+            # of silently returning physically-implausible state.
+            self._last_inner_error = repr(exc)
             return F_in.copy()
 
     def residual(self, x: Dict[str, float]) -> np.ndarray:

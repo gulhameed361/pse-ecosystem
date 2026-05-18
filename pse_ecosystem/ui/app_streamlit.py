@@ -493,8 +493,18 @@ def _section_sensitivity_sweep(st, chosen_key: str, spec) -> None:
                     res = orch.solve()
                     row = {sweep_param: val, "converged": res.converged}
                     row.update(res.kpis)
-                except Exception:
-                    row = {sweep_param: val, "converged": False}
+                except Exception as _sweep_exc:  # noqa: BLE001 — surface to UI
+                    # v1.4.0 audit N12 — was a bare `except Exception: pass`
+                    # that hid every solve failure inside the sweep loop.
+                    st.warning(
+                        f"Sweep point {sweep_param}={val} failed: "
+                        f"{type(_sweep_exc).__name__}: {_sweep_exc}"
+                    )
+                    row = {
+                        sweep_param: val,
+                        "converged": False,
+                        "_error": f"{type(_sweep_exc).__name__}: {_sweep_exc}",
+                    }
                 results_rows.append(row)
                 sweep_bar.progress((idx + 1) / n_points, text=f"Point {idx+1}/{n_points}")
 
@@ -737,6 +747,21 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
         to_u   = col_b.selectbox("To",   ids, index=i+1, key=f"conn_to_{i}")
         connections.append({"from_unit": from_u, "to_unit": to_u})
 
+    # v1.4.0 audit N36 — surface a soft warning when the user has picked
+    # several units of the same Type. This is usually a typo (the caption
+    # past unit 7 nudges users to set Types explicitly because the default
+    # index saturates); a 5-unit chain of all "MixerHF" would silently
+    # build but is rarely what the user intended.
+    from collections import Counter
+    _type_counts = Counter(u["type"] for u in unit_configs)
+    _duplicated = [t for t, c in _type_counts.items() if c >= 3]
+    if _duplicated:
+        st.warning(
+            f"Heads-up: you picked the same Type for ≥3 units: "
+            f"{', '.join(_duplicated)}. If this is intentional, ignore. "
+            f"Otherwise re-check the Type dropdowns above."
+        )
+
     if st.button("Build & Select", type="primary"):
         try:
             config = {
@@ -785,7 +810,7 @@ def _page_gps_weather():
     st = _require_streamlit()
     _init_state(st)
 
-    st.title("GPS Weather")
+    st.title("Site Weather")
     st.caption("Fetch site-specific solar & wind profiles via pvlib.")
 
     col1, col2, col3 = st.columns(3)
@@ -796,7 +821,19 @@ def _page_gps_weather():
     with col3:
         alt = st.number_input("Altitude (m)", value=68.0, min_value=0.0, max_value=5000.0, format="%.1f")
 
-    tz   = st.text_input("Timezone (IANA)", value="Europe/London")
+    # v1.4.0 audit N37 — replace free-text tz with a curated IANA list to
+    # avoid pvlib raising on typos like "Europe/Lonon". The selectbox is
+    # populated from `zoneinfo.available_timezones()` so any zone the
+    # standard library knows about is selectable.
+    try:
+        from zoneinfo import available_timezones
+        _TZ_OPTIONS = sorted(available_timezones())
+        _default_tz = "Europe/London"
+        _default_idx = _TZ_OPTIONS.index(_default_tz) if _default_tz in _TZ_OPTIONS else 0
+        tz = st.selectbox("Timezone (IANA)", _TZ_OPTIONS, index=_default_idx)
+    except ImportError:
+        # Python < 3.9 fallback — keep the text input but validate.
+        tz = st.text_input("Timezone (IANA)", value="Europe/London")
     year = st.number_input("Year", value=2023, min_value=2000, max_value=2030, step=1)
 
     if st.button("Fetch Profiles", type="primary"):
@@ -1239,16 +1276,35 @@ def _page_solver_monitor():
                                 "Value":     vv,
                                 "SI Unit":   _infer_si_unit(kk),
                             })
-                        _capex = getattr(_unit, "capex_USD", lambda _x: 0.0)(result.x)
-                        if _capex:
+                        # v1.4.0 audit N31 — was `getattr(_unit, "capex_USD", …)`
+                        # which only matched the legacy CoolerHF method name
+                        # renamed in audit H6; now uses the BaseUnit.capex
+                        # contract so every unit that overrides capex() is
+                        # surfaced. Units that already report capex_USD via
+                        # their kpis() dict get reported once via that loop;
+                        # this block only adds a row when the BaseUnit
+                        # method returns a non-zero value AND the kpis() dict
+                        # did not already contribute one.
+                        _has_capex_in_kpis = any(
+                            r["Equipment"] == _unit.unit_id
+                            and "capex" in str(r["KPI"]).lower()
+                            for r in _perf_rows
+                        )
+                        _capex = getattr(_unit, "capex", lambda _x: 0.0)(result.x)
+                        if _capex and not _has_capex_in_kpis:
                             _perf_rows.append({
                                 "Equipment": _unit.unit_id,
                                 "KPI":       "capex_USD",
                                 "Value":     _capex,
                                 "SI Unit":   "USD",
                             })
-                    except Exception:
-                        pass
+                    except Exception as _kpi_exc:  # noqa: BLE001
+                        # v1.4.0 audit N12 — surface unit KPI failures
+                        # instead of swallowing them silently.
+                        st.warning(
+                            f"KPI extraction failed for {_unit.unit_id}: "
+                            f"{type(_kpi_exc).__name__}: {_kpi_exc}"
+                        )
             if not _perf_rows:
                 _perf_rows = [
                     {"Equipment": "all", "KPI": k, "Value": v, "SI Unit": _infer_si_unit(k)}
@@ -1300,18 +1356,46 @@ def _docs_dir():
 
 
 def _load_doc(rel_name: str) -> str:
-    """Read a markdown file from docs/ with caching keyed on file mtime."""
+    """Read a markdown file from docs/ with caching keyed on content hash.
+
+    v1.4.0 audit N26 — pre-fix the cache key was ``path.stat().st_mtime``,
+    which is unreliable for docs symlinked from a git checkout (some POSIX
+    filesystems don't propagate mtime through symlinks; Windows preserves
+    NTFS metadata but the value can lag by the filesystem's resolution).
+    Use a SHA-1 of the file content instead so the cache is invariant
+    under copies / symlinks but invalidates when the bytes actually change.
+
+    Audit N27 — validate ``rel_name`` against directory traversal even
+    though the Help Center only calls this with hardcoded names today;
+    future API callers must not be able to escape ``docs/``.
+    """
+    import hashlib
+    from pathlib import Path
     import streamlit as st  # already imported by caller; safe re-import for cache scope
 
+    # N27: reject any rel_name that resolves outside docs/ after symlink
+    # resolution. ``Path.resolve()`` collapses ".." segments.
+    docs_root = _docs_dir().resolve()
+    try:
+        candidate = (docs_root / rel_name).resolve()
+        candidate.relative_to(docs_root)
+    except (ValueError, RuntimeError):
+        return (
+            f"_Refused to load `{rel_name}` — path escapes the docs/ "
+            f"directory. Only filenames inside the workspace docs/ folder "
+            f"are accepted by the Help Center loader._"
+        )
+
+    if not candidate.exists():
+        return f"_Document `{rel_name}` is not yet available in this build._"
+
     @st.cache_data(show_spinner=False)
-    def _read(path_str: str, mtime: float) -> str:
-        from pathlib import Path
+    def _read(path_str: str, content_hash: str) -> str:
         return Path(path_str).read_text(encoding="utf-8")
 
-    path = _docs_dir() / rel_name
-    if not path.exists():
-        return f"_Document `{rel_name}` is not yet available in this build._"
-    return _read(str(path), path.stat().st_mtime)
+    raw = candidate.read_bytes()
+    digest = hashlib.sha1(raw).hexdigest()
+    return _read(str(candidate), digest)
 
 
 def _page_help_center():

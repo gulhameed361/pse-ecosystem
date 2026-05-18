@@ -60,6 +60,12 @@ def make_green_hydrogen_hub(
     # Units differ in mol/s vs kg/h; H2 MW = 2.016 g/mol, 1 kg/h = 1000/3600 g/s
     # F_H2 [mol/s] = h2_kg_per_h [kg/h] * 1000/3600 / 2.016
     # Coefficient on pem side: 1000/(3600*2.016) ≈ 0.13812
+    #
+    # v1.4.0 audit N22 — this coefficient is H₂-specific (uses MW_H2 only).
+    # If this template is ever generalised to mix in CO/CO₂/CH₄ via the same
+    # buffer, the equality below must be split into one row per species
+    # with the matching molar mass. Do NOT copy this pattern verbatim for
+    # multi-species mixers.
     h2_mw = 2.016  # g/mol
     kg_h_to_mol_s = 1000.0 / (3600.0 * h2_mw)
     fs.extra_equalities.append(

@@ -22,6 +22,21 @@ Pseudo-equilibrium approximation (H₂ in large excess):
 
 Analytical dX/dT:
     dX/dT = −A × X × (1−X) / T²
+
+References (v1.4.0 audit N13)
+-----------------------------
+The lumped form was fitted against:
+- Vannice (1976) "The Catalytic Synthesis of Hydrocarbons from H₂/CO Mixtures"
+  J. Catal. 44, 152–162 (calibration of Sabatier equilibrium 600–800 K).
+- Lunde & Kester (1973) "Kinetics of CO₂ methanation over Ru/Al₂O₃",
+  J. Catal. 30, 423–429 (high-T equilibrium limit).
+- NIST JANAF tables for ΔG°_f(CO₂, CH₄, H₂O) yielding K_eq(T) within ~10 % of
+  the lumped fit over 600–1000 K — appropriate for the SLP linearisation.
+
+Treat the fit as a calibrated *operational* equilibrium for v1.4.0 ranges
+(600–1000 K, low-pressure operation). For high-pressure (>10 bar) or
+strongly non-stoichiometric feeds, plug in a Gibbs minimisation via the
+``GibbsReactor`` unit instead.
 """
 
 from __future__ import annotations
@@ -152,19 +167,26 @@ class MethanationReactor(BaseUnit):
         return {}
 
     def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
-        F_co2 = max(x.get(self._v_co2_in, 0.0), 1e-9)
+        # v1.4.0 audit N15 — use the same near-zero floor (1e-3 mol/s) for any
+        # division-by-flow KPI so a 1e-10 trace flow does not blow specific
+        # energies to nonsense 1e13 levels.
+        _FLOOR = 1.0e-3
+        F_co2 = max(x.get(self._v_co2_in, 0.0), _FLOOR)
         F_ch4 = max(x.get(self._v_ch4, 0.0), 0.0)
         X = x.get(self._v_X, 0.0)
         T = x.get(self._v_T, self._T_default)
         Q_rx = abs(_DH_SAB) * F_ch4  # kW heat released
         sng_Nm3_h = F_ch4 * 22.414 * 3600.0 / 1000.0  # Nm³/h (22.414 L/mol)
-        return {
+        kpis = {
             "CH4_yield_pct": X * 100.0,
             "CH4_production_mol_s": F_ch4,
             "SNG_production_Nm3_h": sng_Nm3_h,
             "heat_released_kW": Q_rx,
             "T_rx_C": T - 273.15,
         }
+        if F_co2 <= _FLOOR * 1.001:
+            kpis["_warning_low_feed"] = 1.0  # flagged for downstream display
+        return kpis
 
     def capex(self, x: Dict[str, float]) -> float:
         from pse_ecosystem.models.costing.sslw_costing import vessel_purchase_cost_USD

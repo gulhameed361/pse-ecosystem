@@ -31,11 +31,18 @@ def make_mixer_settler(
     split_fractions : [N_comp × 2] split fractions for the separator.
                       Defaults to 50/50 split for each component.
     """
+    # v1.4.0 audit N24 — pre-fix this mutated the caller's `sep_params`
+    # object in place. Now deep-copy before any modification so re-using
+    # the same params dict in multiple factory calls works as expected.
+    import copy as _copy
     if mixer_params is None:
         mixer_params = MixerHFParams(n_inlets=2)
+    else:
+        mixer_params = _copy.deepcopy(mixer_params)
     if sep_params is None:
         sep_params = SeparatorHFParams(n_outlets=2, split_fractions=split_fractions)
     else:
+        sep_params = _copy.deepcopy(sep_params)
         if split_fractions is not None:
             sep_params.split_fractions = split_fractions
 

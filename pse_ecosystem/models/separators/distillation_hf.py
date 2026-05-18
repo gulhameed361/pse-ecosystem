@@ -160,7 +160,13 @@ class DistillationHF(BaseUnit):
         try:
             from scipy.optimize import brentq
             theta = brentq(underwood_f, theta_lo, theta_hi, xtol=1e-8)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            # v1.4.0 audit N10 — cache the failure reason on the unit. The
+            # bracket-midpoint fallback was masking root-finding failures
+            # caused by upstream T_op / alpha drift; downstream KPI rows
+            # now surface the issue rather than reporting a plausible-
+            # looking but wrong R_min.
+            self._last_underwood_error = repr(exc)
             theta = 0.5 * (theta_lo + theta_hi)
 
         # R_min = Σ_i α_i * x_Di / (α_i - θ) - 1  (simplified: use z for feed composition)

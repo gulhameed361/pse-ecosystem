@@ -85,15 +85,27 @@ def make_syngas_production(
         units=[gasifier, scrubber],
     )
 
+    # v1.4.0 audit N21 — assert that gasifier.v_h2 is a string before using
+    # it as a dict key. The pre-fix code relied on the GasifierToy class
+    # exposing v_h2 as a @property returning a string; if that changes to
+    # a method (callable), the dict would carry the method object as a
+    # key and the LP builder would never match it. Asserting now makes
+    # the contract explicit.
+    _v_h2_key = gasifier.v_h2
+    assert isinstance(_v_h2_key, str), (
+        f"GasifierToy.v_h2 must be a string (got {type(_v_h2_key).__name__}). "
+        f"Update this template if the unit's API changed."
+    )
+
     # Demand equality: gasifier must meet H2 target
     fs.extra_equalities.append(
-        ({gasifier.v_h2: 1.0}, h2_demand_kg_per_h)
+        ({_v_h2_key: 1.0}, h2_demand_kg_per_h)
     )
 
     # Wire gasifier H2 output → scrubber H2_syngas inlet
     # (flat-variable bridge via extra_equality, same pattern as green_hydrogen.py)
     fs.extra_equalities.append(
-        ({gasifier.v_h2: 1.0, "scrubber.inlet.F_H2_syngas": -1.0}, 0.0)
+        ({_v_h2_key: 1.0, "scrubber.inlet.F_H2_syngas": -1.0}, 0.0)
     )
 
     # CO2-proxy inlet is a fixed fraction of feed (simplified: proportional to steam)

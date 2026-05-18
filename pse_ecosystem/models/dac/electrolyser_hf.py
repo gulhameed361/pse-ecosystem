@@ -47,11 +47,22 @@ class ElectrolyserHF(BaseUnit):
     is_linear: bool = True
 
     def __init__(self, unit_id: str, *, eta_elec: float = 0.70):
+        # v1.4.0 audit N4 — clamp eta_elec to the physically realistic range
+        # for PEM / AEL electrolysers (about 0.55 to 0.85 HHV-basis on the
+        # stack alone; system-level can be lower). The pre-v1.4.0 model
+        # accepted any positive value, so a typo or aggressive optimiser
+        # could push it to 0.05 (→ 2858 kW/(mol/s) H₂, clearly unphysical).
+        if not (0.30 <= eta_elec <= 0.95):
+            raise ValueError(
+                f"ElectrolyserHF eta_elec must be in [0.30, 0.95]; got "
+                f"{eta_elec:.4f}. Typical PEM HHV-basis range is 0.55–0.85; "
+                f"low-temp AEL down to ~0.45."
+            )
         self.unit_id = unit_id
-        self.eta_elec = eta_elec
+        self.eta_elec = float(eta_elec)
 
         # Derived coefficient
-        self._k_elec = _HHV_H2 / eta_elec  # kW per (mol/s) H2
+        self._k_elec = _HHV_H2 / self.eta_elec  # kW per (mol/s) H2
 
         # Port definitions (no T/P — electrolyser operates at fixed conditions)
         self.water_in_port = StreamPort(
@@ -104,7 +115,13 @@ class ElectrolyserHF(BaseUnit):
         return {}
 
     def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
-        F_h2 = max(x.get(self._v_h2, 0.0), 1e-9)
+        # v1.4.0 audit N15 — match the residual's floor convention and
+        # report eta_elec as a *parameter* (the unit's nameplate stack
+        # efficiency, fixed at construction) rather than as a per-iteration
+        # KPI. The pre-v1.4.0 dict put eta_elec * 100 in here verbatim,
+        # which looked like a KPI but was actually a constant.
+        _FLOOR = 1.0e-3
+        F_h2 = max(x.get(self._v_h2, 0.0), _FLOOR)
         W = x.get(self._v_w, 0.0)
         h2_kg_h = F_h2 * _M_H2 * 3600.0
         specific_kWh_kg = W / (F_h2 * _M_H2 * 3600.0) if F_h2 > 0 else 0.0
