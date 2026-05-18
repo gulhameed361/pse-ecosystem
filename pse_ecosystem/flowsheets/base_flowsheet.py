@@ -82,11 +82,26 @@ class BaseFlowsheet:
         Raises
         ------
         ValueError
-            If any variable name referenced in extras is not produced by
-            any unit. Caught only after construction is complete.
+            If any variable name referenced in extras or connections is not
+            produced by any unit. Caught only after construction is complete.
         """
+        # Unit-only variable set — does NOT include connection vars, so phantom
+        # connections (wrong port names) are detected here rather than silently
+        # creating unconstrained LP variables that let units solve independently.
+        unit_var_set: set = set()
+        for u in self.units:
+            unit_var_set.update(u.variables())
+
         known = set(self.all_variables())
         offenders: List[Tuple[str, str]] = []
+
+        # Check connection variable names against unit-produced variables.
+        for i, conn in enumerate(self.connections):
+            if conn.var_a not in unit_var_set:
+                offenders.append((f"connections[{i}].var_a", conn.var_a))
+            if conn.var_b not in unit_var_set:
+                offenders.append((f"connections[{i}].var_b", conn.var_b))
+
         for i, (coeffs, _rhs) in enumerate(self.extra_equalities):
             for v in coeffs:
                 if v not in known:
@@ -101,7 +116,7 @@ class BaseFlowsheet:
             details = ", ".join(f"{loc}:{v!r}" for loc, v in offenders[:10])
             raise ValueError(
                 f"Flowsheet {self.name!r} references {len(offenders)} unknown "
-                f"variable(s) in extras (not produced by any unit). "
+                f"variable(s) (not produced by any unit). "
                 f"First: {details}. Fix the template or unit registration."
             )
 

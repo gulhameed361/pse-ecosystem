@@ -631,6 +631,27 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
                     "Float parameters with a convertible unit show a dropdown so you can "
                     "enter values in your preferred unit — the backend stores SI internally."
                 )
+                def _make_unit_callback(
+                    value_key: str, prev_key: str, disp_key: str, native_unit: str
+                ):
+                    """Return a Streamlit on_change closure for a unit dropdown.
+
+                    When the user switches display units (e.g. °C → K) the
+                    closure converts the paired numeric value in session_state
+                    so the displayed number stays physically correct.
+                    """
+                    def _cb() -> None:
+                        new_u = st.session_state.get(disp_key, native_unit)
+                        old_u = st.session_state.get(prev_key, native_unit)
+                        if old_u != new_u and value_key in st.session_state:
+                            old_v = float(st.session_state[value_key])
+                            nat_v = to_native(old_v, old_u, native_unit)
+                            st.session_state[value_key] = from_native(
+                                nat_v, native_unit, new_u
+                            )
+                        st.session_state[prev_key] = new_u
+                    return _cb
+
                 _NCOL = 3
                 for _row_start in range(0, len(_specs), _NCOL):
                     _row_specs = _specs[_row_start:_row_start + _NCOL]
@@ -646,11 +667,17 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
                             # Two-column cell: value input (wider) + unit picker (narrower).
                             _vc, _uc = _col.columns([2, 1])
                             _disp_key = f"unit_{i}_{_ps.name}_{utype}"
+                            _prev_unit_key = f"prev_unit_{i}_{_ps.name}_{utype}"
+                            if _prev_unit_key not in st.session_state:
+                                st.session_state[_prev_unit_key] = _ps.unit
                             _disp_unit = _uc.selectbox(
                                 "Unit", _alt_units,
                                 index=_alt_units.index(_ps.unit) if _ps.unit in _alt_units else 0,
                                 key=_disp_key,
                                 label_visibility="visible",
+                                on_change=_make_unit_callback(
+                                    _key, _prev_unit_key, _disp_key, _ps.unit
+                                ),
                             )
                             _disp_default = from_native(float(_ps.default), _ps.unit, _disp_unit)
                             # Physical lower bound for temperature inputs:

@@ -653,3 +653,131 @@ def test_template_path_and_custom_path_yield_identical_solution():
         f"Template/custom parity broken on {len(mismatches)} variable(s). "
         f"First few: {mismatches[:5]}"
     )
+
+
+# ── v1.4.0-HOTFIX: flowsheet connection validation (general fix) ──────────────
+
+
+class TestFlowsheetValidateConnections:
+    """validate() must reject connections whose variable names are not produced
+    by any unit in the flowsheet.  This prevents silent phantom-connection
+    failures where units solve independently and the SLP reports CONVERGED
+    despite inter-unit mass/energy balances being completely violated.
+    """
+
+    def _single_cooler_fs(self):
+        from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
+        from pse_ecosystem.models.heat_exchangers.cooler_hf import CoolerHF
+        unit = CoolerHF("cooler", ["H2", "CO"])
+        return BaseFlowsheet(name="test_fs", units=[unit])
+
+    def test_valid_flowsheet_with_no_connections_passes(self):
+        fs = self._single_cooler_fs()
+        fs.validate()  # must not raise
+
+    def test_valid_connection_between_real_variables_passes(self):
+        from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet, Connection
+        from pse_ecosystem.models.heat_exchangers.cooler_hf import CoolerHF
+        a = CoolerHF("cooler_a", ["H2"])
+        b = CoolerHF("cooler_b", ["H2"])
+        fs = BaseFlowsheet(name="chain", units=[a, b])
+        fs.connections.append(
+            Connection(var_a="cooler_a.outlet.F_H2", var_b="cooler_b.inlet.F_H2")
+        )
+        fs.validate()  # must not raise — both vars exist in unit variable lists
+
+    def test_phantom_var_a_raises_value_error(self):
+        from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet, Connection
+        from pse_ecosystem.models.heat_exchangers.cooler_hf import CoolerHF
+        unit = CoolerHF("cooler", ["H2"])
+        fs = BaseFlowsheet(name="bad", units=[unit])
+        fs.connections.append(
+            Connection(var_a="phantom.outlet.F_H2", var_b="cooler.inlet.F_H2")
+        )
+        with pytest.raises(ValueError, match="connections"):
+            fs.validate()
+
+    def test_phantom_var_b_raises_value_error(self):
+        from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet, Connection
+        from pse_ecosystem.models.heat_exchangers.cooler_hf import CoolerHF
+        unit = CoolerHF("cooler", ["H2"])
+        fs = BaseFlowsheet(name="bad", units=[unit])
+        fs.connections.append(
+            Connection(var_a="cooler.outlet.F_H2", var_b="phantom.inlet.F_H2")
+        )
+        with pytest.raises(ValueError, match="connections"):
+            fs.validate()
+
+    def test_error_message_names_the_bad_variable(self):
+        from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet, Connection
+        from pse_ecosystem.models.heat_exchangers.cooler_hf import CoolerHF
+        unit = CoolerHF("cooler", ["H2"])
+        fs = BaseFlowsheet(name="bad", units=[unit])
+        fs.connections.append(
+            Connection(var_a="typo.outlet.F_H2", var_b="cooler.inlet.F_H2")
+        )
+        with pytest.raises(ValueError) as exc_info:
+            fs.validate()
+        assert "typo.outlet.F_H2" in str(exc_info.value)
+
+    def test_multiple_bad_connections_all_reported(self):
+        from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet, Connection
+        from pse_ecosystem.models.heat_exchangers.cooler_hf import CoolerHF
+        unit = CoolerHF("cooler", ["H2"])
+        fs = BaseFlowsheet(name="bad", units=[unit])
+        fs.connections.append(Connection(var_a="ghost_a.outlet.F_H2", var_b="ghost_b.inlet.F_H2"))
+        with pytest.raises(ValueError) as exc_info:
+            fs.validate()
+        msg = str(exc_info.value)
+        assert "ghost_a.outlet.F_H2" in msg or "ghost_b.inlet.F_H2" in msg
+
+
+# ── v1.4.0-HOTFIX: on_change unit auto-conversion callback logic ──────────────
+
+
+class TestUnitAutoConversionCallback:
+    """Verify the conversion logic that backs the on_change callback.
+
+    The callback does:
+        nat_v  = to_native(old_v,  old_unit, native_unit)
+        new_v  = from_native(nat_v, native_unit, new_unit)
+
+    These tests confirm the composition is correct for the cases that
+    matter in the Custom Flowsheet Builder (temperature, pressure, mass flow).
+    """
+
+    def test_celsius_to_kelvin_800(self):
+        nat = to_native(800.0, "°C", "°C")    # native_unit == display_unit → no-op
+        new = from_native(nat, "°C", "K")
+        assert new == pytest.approx(1073.15, abs=1e-9)
+
+    def test_kelvin_to_celsius_1073(self):
+        nat = to_native(1073.15, "K", "°C")   # K displayed, native is °C
+        new = from_native(nat, "°C", "°C")    # going back to °C
+        assert new == pytest.approx(800.0, abs=1e-9)
+
+    def test_bar_to_pa_5bar(self):
+        nat = to_native(5.0, "bar", "Pa")
+        new = from_native(nat, "Pa", "Pa")
+        assert new == pytest.approx(500_000.0, abs=1.0)
+
+    def test_pa_to_bar_500000(self):
+        nat = to_native(500_000.0, "Pa", "Pa")
+        new = from_native(nat, "Pa", "bar")
+        assert new == pytest.approx(5.0, rel=1e-6)
+
+    def test_kgh_to_kgs_3600(self):
+        nat = to_native(3600.0, "kg/h", "kg/s")
+        new = from_native(nat, "kg/s", "kg/s")
+        assert new == pytest.approx(1.0, abs=1e-9)
+
+    def test_kgs_to_kgh_1(self):
+        nat = to_native(1.0, "kg/s", "kg/s")
+        new = from_native(nat, "kg/s", "kg/h")
+        assert new == pytest.approx(3600.0, abs=1e-6)
+
+    def test_same_unit_no_change(self):
+        for val, unit in [(800.0, "°C"), (101325.0, "Pa"), (1.0, "kg/s")]:
+            nat = to_native(val, unit, unit)
+            new = from_native(nat, unit, unit)
+            assert new == pytest.approx(val, rel=1e-9)
