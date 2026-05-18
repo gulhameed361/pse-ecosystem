@@ -17,6 +17,7 @@ contract surface.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
@@ -132,6 +133,15 @@ class SLPConfig:
 
     Used by the Streamlit Solver Monitor to stream live convergence data
     without creating a Layer-1 dependency inside the solver.
+    """
+
+    fail_on_bound_saturation: bool = False
+    """When True, an otherwise-CONVERGED solve is downgraded to
+    ``NUMERICAL_ERROR`` if any non-fixed variable sits at one of its bounds.
+    Default False (warn-not-fail) because some flowsheets legitimately operate
+    at a bound (e.g. a compressor at its rated W_max). Opt in per-flowsheet
+    when you want CI to catch bound-saturated 'solutions' such as the
+    v1.4.0 Excel anomaly where every cooler outlet pinned at feed_max=1000.
     """
 
 
@@ -335,6 +345,25 @@ class SLPDriver:
                 and res_norm < _ef
                 and dkpi < _ekpi
             ):
+                bound_active = self._detect_bound_active(x_kp1)
+                if self.config.fail_on_bound_saturation and bound_active:
+                    sample = ", ".join(bound_active[:5])
+                    extra = f" (+{len(bound_active) - 5} more)" if len(bound_active) > 5 else ""
+                    return SolveResult(
+                        status=SolverStatus.NUMERICAL_ERROR,
+                        mode=SolveMode.FIXED_LP,
+                        x=x_kp1,
+                        kpis=self._aggregate_kpis(x_kp1),
+                        iterations=k + 1,
+                        objective=lp_obj,
+                        history=history,
+                        bound_active=bound_active,
+                        message=(
+                            f"SLP converged with {len(bound_active)} variable(s) "
+                            f"saturating a non-fixed bound (fail_on_bound_saturation=True). "
+                            f"First: {sample}{extra}."
+                        ),
+                    )
                 return SolveResult(
                     status=SolverStatus.CONVERGED,
                     mode=SolveMode.FIXED_LP,
@@ -343,6 +372,7 @@ class SLPDriver:
                     iterations=k + 1,
                     objective=lp_obj,
                     history=history,
+                    bound_active=bound_active,
                     message="SLP converged.",
                 )
 
@@ -400,6 +430,24 @@ class SLPDriver:
             )
         x = extract_solution(model)
         obj = float(pyo.value(model.objective))
+        bound_active = self._detect_bound_active(x)
+        if self.config.fail_on_bound_saturation and bound_active:
+            sample = ", ".join(bound_active[:5])
+            extra = f" (+{len(bound_active) - 5} more)" if len(bound_active) > 5 else ""
+            return SolveResult(
+                status=SolverStatus.NUMERICAL_ERROR,
+                mode=SolveMode.FIXED_LP,
+                x=x,
+                kpis=self._aggregate_kpis(x),
+                iterations=1,
+                objective=obj,
+                bound_active=bound_active,
+                message=(
+                    f"LP solved with {len(bound_active)} variable(s) "
+                    f"saturating a non-fixed bound (fail_on_bound_saturation=True). "
+                    f"First: {sample}{extra}."
+                ),
+            )
         return SolveResult(
             status=SolverStatus.CONVERGED,
             mode=SolveMode.FIXED_LP,
@@ -407,6 +455,7 @@ class SLPDriver:
             kpis=self._aggregate_kpis(x),
             iterations=1,
             objective=obj,
+            bound_active=bound_active,
             message="Linear flowsheet solved in a single LP iteration.",
         )
 
@@ -417,6 +466,32 @@ class SLPDriver:
             r = np.asarray(unit.residual(x), dtype=float).reshape(-1)
             chunks.append(r)
         return np.concatenate(chunks) if chunks else np.zeros(0)
+
+    def _detect_bound_active(self, x: Dict[str, float]) -> List[str]:
+        """Return variable names whose value sits at (or within tol of) a
+        non-fixed bound at the converged solution.
+
+        Excludes intentionally fixed variables (lb == ub) — those are not a
+        physics concern; the user pinned them on purpose. A non-empty list at
+        CONVERGED is a strong signal that a default unit bound (e.g.
+        ``CoolerHFParams.feed_max=1000``) is overriding the physics rather
+        than enforcing it. This is the safety net for the v1.4.0 Excel
+        anomaly pattern where the LP capped flows at the bound silently.
+        """
+        bounds = self.flowsheet.aggregated_bounds()
+        flagged: List[str] = []
+        for name, val in x.items():
+            if name not in bounds:
+                continue
+            lb, ub = bounds[name]
+            # Skip intentionally fixed variables (lb == ub).
+            if math.isfinite(lb) and math.isfinite(ub) and abs(ub - lb) < 1e-12:
+                continue
+            def _at(v: float, b: float) -> bool:
+                return math.isfinite(b) and abs(v - b) <= max(1e-6, 1e-6 * abs(b))
+            if _at(val, lb) or _at(val, ub):
+                flagged.append(name)
+        return flagged
 
     def _aggregate_kpis(self, x: Dict[str, float]) -> Dict[str, float]:
         kpis: Dict[str, float] = {}

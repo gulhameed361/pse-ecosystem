@@ -781,3 +781,54 @@ class TestUnitAutoConversionCallback:
             nat = to_native(val, unit, unit)
             new = from_native(nat, unit, unit)
             assert new == pytest.approx(val, rel=1e-9)
+
+
+# ── v1.4.1: Physics Safety Net — bound-saturation guard ──────────────────────
+
+
+class TestBoundSaturationGuard:
+    """Guard against the v1.4.0 Excel anomaly pattern: the LP saturates a
+    variable at a default unit bound (e.g. CoolerHFParams.feed_max=1000) and
+    the SLP reports CONVERGED on what is actually a bound-capped, possibly
+    non-physical solution. The SLP now populates SolveResult.bound_active
+    with the offending names; SLPConfig.fail_on_bound_saturation=True
+    upgrades that warning to a NUMERICAL_ERROR status.
+    """
+
+    def _saturated_cooler_fs(self):
+        from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
+        from pse_ecosystem.models.heat_exchangers.cooler_hf import (
+            CoolerHF, CoolerHFParams,
+        )
+        unit = CoolerHF("c", ["H2"], CoolerHFParams(feed_max=10.0))
+        fs = BaseFlowsheet(name="sat", units=[unit])
+        fs.extra_bounds = {"c.inlet.F_H2": (10.0, 10.0)}  # pin inlet at the cap
+        return fs
+
+    def test_solveresult_field_defaults_to_empty(self):
+        from pse_ecosystem.core.contracts import SolveResult, SolverStatus, SolveMode
+        r = SolveResult(status=SolverStatus.CONVERGED, mode=SolveMode.FIXED_LP)
+        assert r.bound_active == []
+
+    def test_outlet_at_feed_max_is_flagged(self):
+        """Cooler inlet pinned at 10 (lb==ub) forces outlet up to ub=10 via
+        the mass-balance equality. Outlet is flagged; inlet is excluded
+        because intentionally-fixed variables don't count as physics
+        violations."""
+        result = Orchestrator(self._saturated_cooler_fs(), SolveMode.FIXED_LP).solve()
+        assert result.status.name == "CONVERGED"
+        assert "c.outlet.F_H2" in result.bound_active
+        assert "c.inlet.F_H2" not in result.bound_active  # lb == ub excluded
+
+    def test_fail_on_bound_saturation_opt_in(self):
+        """With the opt-in flag, the same scenario returns NUMERICAL_ERROR
+        and the message names the offending variable so the user can act."""
+        from pse_ecosystem.solvers.slp import SLPConfig
+        cfg = SLPConfig(fail_on_bound_saturation=True)
+        result = Orchestrator(
+            self._saturated_cooler_fs(), SolveMode.FIXED_LP, slp_config=cfg
+        ).solve()
+        assert result.status.name == "NUMERICAL_ERROR"
+        assert "c.outlet.F_H2" in result.message
+        # bound_active is still populated so the UI can show details.
+        assert "c.outlet.F_H2" in result.bound_active

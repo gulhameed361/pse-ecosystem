@@ -217,6 +217,18 @@ def _page_dashboard():
                 f"{last_result.message}"
             )
 
+        # Physics safety net: warn when the converged solution sits at a
+        # default unit bound (e.g. CoolerHFParams.feed_max=1000). v1.4.1.
+        _bound_active = getattr(last_result, "bound_active", []) or []
+        if _bound_active:
+            st.warning(
+                f"⚠ {len(_bound_active)} variable(s) saturated a non-fixed bound — "
+                "inspect before trusting the KPIs. A default unit bound may be "
+                "overriding the physics."
+            )
+            with st.expander("Show bound-saturated variables"):
+                st.write(_bound_active)
+
 
 # ── Page 2: Flowsheet Builder ─────────────────────────────────────────────────
 
@@ -1346,8 +1358,32 @@ def _page_solver_monitor():
                 {"Field": "Objective",  "Value": result.objective},
                 {"Field": "Converged",  "Value": result.converged},
                 {"Field": "Message",    "Value": result.message},
+                {"Field": "BoundActiveCount", "Value": len(getattr(result, "bound_active", []) or [])},
             ]
             _pd.DataFrame(_summary).to_excel(_writer, sheet_name="Optimization Summary", index=False)
+
+            # Sheet 4: Bound Saturation — v1.4.1 physics safety net.
+            # One row per variable whose converged value sits at a non-fixed
+            # bound. Always emitted (headers-only when no saturation) so the
+            # export shape stays consistent across runs.
+            _bound_rows = []
+            _bound_active_list = getattr(result, "bound_active", []) or []
+            _bounds_map = _last_fs.aggregated_bounds() if _last_fs is not None else {}
+            for _v in _bound_active_list:
+                _val = float(result.x.get(_v, float("nan")))
+                _lb, _ub = _bounds_map.get(_v, (float("-inf"), float("inf")))
+                _hit = "lo" if abs(_val - _lb) < abs(_val - _ub) else "hi"
+                _bound_rows.append({
+                    "Variable":     _v,
+                    "Value":        _val,
+                    "Lower":        _lb,
+                    "Upper":        _ub,
+                    "Hit":          _hit,
+                })
+            if not _bound_rows:
+                _bound_rows = [{"Variable": "", "Value": "", "Lower": "",
+                                "Upper": "", "Hit": "(none — physics OK)"}]
+            _pd.DataFrame(_bound_rows).to_excel(_writer, sheet_name="Bound Saturation", index=False)
 
         st.download_button(
             label="⬇ Download Results (XLSX)",
@@ -1357,7 +1393,8 @@ def _page_solver_monitor():
             help=(
                 "Sheet 1: Stream Table (Equipment | Port | Variable | Value | SI Unit) | "
                 "Sheet 2: Unit Performance (Equipment | KPI | Value | SI Unit) | "
-                "Sheet 3: Optimization Summary"
+                "Sheet 3: Optimization Summary | "
+                "Sheet 4: Bound Saturation (Variable | Value | Lower | Upper | Hit)"
             ),
         )
     except ImportError:

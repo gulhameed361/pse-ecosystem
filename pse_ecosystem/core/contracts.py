@@ -261,6 +261,13 @@ class SolveResult:
     technology_selection: Dict[str, bool] = field(default_factory=dict)
     history: List[Dict[str, Any]] = field(default_factory=list)
     message: str = ""
+    bound_active: List[str] = field(default_factory=list)
+    """Variable names whose solution value sits at (or within tol of) a
+    non-fixed bound. Excludes intentionally fixed variables (lb == ub) such
+    as targeted outlet temperatures or pinned feed rates. A non-empty list
+    at CONVERGED is a STRONG signal that the physics may be overridden by a
+    default bound (e.g. CoolerHFParams.feed_max=1000) — inspect each entry
+    before trusting the KPIs. Populated by the SLP driver."""
 
     @property
     def converged(self) -> bool:
