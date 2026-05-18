@@ -1,4 +1,4 @@
-"""PSE Ecosystem — multi-page Streamlit front-end (v1.4.0).
+"""PSE Ecosystem — multi-page Streamlit front-end (v1.4.1).
 
 Run with::
 

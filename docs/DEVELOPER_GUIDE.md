@@ -7,7 +7,32 @@
 
 ---
 
-## 0. v1.4.0 — Conventions you must know before extending
+## 0. v1.4.1 — Conventions you must know before extending
+
+### 0.0 v1.4.1 developer notes
+
+Three new patterns you must be aware of when extending the platform:
+
+**Bound-saturation guard.** `SolveResult.bound_active` is populated on every
+CONVERGED return from the SLP driver. If your new unit model's default bounds
+are too tight relative to the expected operating range, users will see the
+yellow warning banner and the "Bound Saturation" Excel sheet. Fix by widening
+the default `feed_max`/`P_max`/`W_max` in the unit's `Params` dataclass to
+cover the full engineering envelope, not just a toy default.
+
+**Connection validation.** `BaseFlowsheet.validate()` now checks every
+`Connection.var_a` and `Connection.var_b` against the union of unit-produced
+variables. When writing a new template in `flowsheets/industrial/`, use
+`fs.connect(unit_a.outlet_port, unit_b.inlet_port)` (which generates the
+correct variable names via `StreamPort.variable_names()`) instead of
+hand-coding variable name strings in `Connection(var_a=..., var_b=...)`.
+A typo in a hand-coded string will now raise a clear `ValueError` at solve time.
+
+**UI unit callback factory.** If you add a new float `ParamSpec` with a unit
+in a recognised conversion family (`UNIT_FAMILIES` in `flowsheet_service.py`),
+the on_change callback is wired automatically — no extra code required in
+`app_streamlit.py`. If you add a new conversion family, also add a round-trip
+test to `TestUnitConversions` and `TestUnitAutoConversionCallback`.
 
 ### 0.1 Versioning — single source of truth
 

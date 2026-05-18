@@ -1,12 +1,45 @@
 # PSE Ecosystem — User Manual
 
-**Version:** 1.4.0 | **Date:** 2026-05-17 | **Status:** Industrial Production Release
+**Version:** 1.4.1 | **Date:** 2026-05-19 | **Status:** Physics Safety Net release
 
 > Single source of truth for PSE Ecosystem users. Replaces `UI_GUIDE.md` (merged here in Phase 6)
 > and `SHOWCASE_WALKTHROUGH.md` (merged in Phase 5). For architecture details see `ARCHITECTURE.md`;
 > for equation derivations see `THEORY_REFERENCE.md`; for code extensions see `DEVELOPER_GUIDE.md`.
 > For a step-by-step build of the 7-unit biomass → H₂ workshop with full answer key,
 > see [`WORKSHOP_7UNIT.md`](WORKSHOP_7UNIT.md).
+
+---
+
+## What's new in v1.4.1
+
+### Unit auto-conversion in the Custom Builder
+
+When you change a unit dropdown (e.g. from **°C** to **K**), the adjacent
+numeric value now converts automatically. Entering `800 °C` and switching to K
+immediately shows `1073.15` — you never need to recalculate by hand. The
+conversion uses the same UMS engine as the solver, so the backend always
+receives values in the correct native unit regardless of what unit you chose
+to display.
+
+### Bound-saturation warning
+
+After every solve the platform checks whether any variable hit a non-fixed
+bound at the converged solution. If so, a **yellow warning banner** appears on
+the Dashboard listing the affected variables. This warns you that a default
+capacity limit (e.g. maximum flow through a cooler) may be overriding the
+physics rather than enforcing it.
+
+The Excel export now includes a **4th sheet — "Bound Saturation"** — with
+columns: Variable | Value | Lower | Upper | Hit. When the solution is clean
+the sheet is present but empty (headers only), keeping the export shape
+consistent across runs.
+
+### Flowsheet connection validation
+
+A wrong port name in a flowsheet definition now raises a clear `ValueError`
+*before* the LP is built, naming the bad connection index and variable.
+Previously a misnamed connection created a phantom LP constraint and the
+solver could report `CONVERGED` on a physically meaningless solution.
 
 ---
 
@@ -1143,4 +1176,4 @@ You can edit any value directly in the form before clicking **Build & Select**.
 
 ---
 
-*User Manual v1.4.0 — PSE Ecosystem | Private — University of Surrey*
+*User Manual v1.4.1 — PSE Ecosystem | Private — University of Surrey*

@@ -1,4 +1,4 @@
-# PSE Ecosystem — Architecture Blueprint (v1.4.0)
+# PSE Ecosystem — Architecture Blueprint (v1.4.1)
 
 > Status: load-bearing document. The Layer 2 ↔ Layer 3 contract described
 > here is the lever that lets us scale from toy LP flowsheets to MINLP /
@@ -7,7 +7,23 @@
 
 ---
 
-## 0. v1.4.0 highlights
+## 0. v1.4.1 highlights (Physics Safety Net)
+
+- **Bound-saturation guard.** `SolveResult.bound_active: List[str]` names
+  every variable whose converged value sits at a non-fixed bound. Populated
+  by the SLP driver (`pse_ecosystem/solvers/slp.py:_detect_bound_active`).
+  Opt-in failure mode via `SLPConfig.fail_on_bound_saturation=True`.
+  Surfaced in the Dashboard (yellow banner) and the Excel export (4th sheet).
+- **Connection-validation extension.** `BaseFlowsheet.validate()` now audits
+  every `Connection.var_a`/`var_b` against the union of unit-produced
+  variables. Wrong port names raise `ValueError` before the LP is built,
+  preventing phantom-connection silent failures.
+- **UI unit auto-conversion.** The unit dropdown in the Custom Flowsheet
+  Builder now fires an `on_change` callback (`_make_unit_callback`) that
+  converts the paired numeric value via `to_native → from_native` before
+  Streamlit re-renders.
+
+## Previous: v1.4.0 highlights
 
 - **Unrestricted custom flowsheet scaling.** Layer 1 imposes no hard cap on
   the number of units in the Custom Flowsheet builder; the dynamic-loop
