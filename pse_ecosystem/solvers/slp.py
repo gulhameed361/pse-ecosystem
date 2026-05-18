@@ -148,10 +148,24 @@ class _IterationLog:
 def _tighten(cfg: SLPConfig, k: int) -> tuple:
     """Return (eps_x, eps_f, eps_kpi) for iteration k under progressive tightening.
 
-    The schedule is:
-      k < 20% max_iter  →  100× loose tolerances (accept coarse initial steps)
-      k < 60% max_iter  →  10× loose  (intermediate refinement)
-      k ≥ 60% max_iter  →  standard cfg defaults (enforce tight convergence)
+    Schedule (all bands relative to cfg.max_iter):
+
+    | k / max_iter | eps_x   | eps_f   | eps_kpi |
+    |--------------|---------|---------|---------|
+    | < 0.20       | × 100   | × 100   | × 10    |
+    | < 0.60       | × 10    | × 10    | × 3     |
+    | ≥ 0.60       | × 1     | × 1     | × 1     |
+
+    Why eps_kpi uses smaller multipliers (v1.4.0 audit M1)
+    -------------------------------------------------------
+    The default ``cfg.eps_kpi = 1e-3`` is already an order of magnitude
+    looser than ``eps_x = eps_f = 1e-4``. Applying the ×100 / ×10 schedule
+    to ``eps_kpi`` would push the band-1 KPI tolerance to 0.1, which is so
+    loose that the SLP would routinely declare convergence on the first
+    iteration where the LP residual was below 1e-2. The ×10 / ×3 multiplier
+    keeps the *effective tolerance* of all three signals in the same
+    decade across each band: at k=0, eps_x / eps_f / eps_kpi all sit near
+    1e-2; at the mid band, all sit near 1e-3.
     """
     frac = k / max(cfg.max_iter, 1)
     if frac < 0.20:

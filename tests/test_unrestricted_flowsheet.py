@@ -590,3 +590,66 @@ def test_every_available_unit_instantiates_with_defaults():
         "AVAILABLE_UNITS entries that failed to instantiate with empty params:\n"
         + "\n".join(f"  - {u}: {e}" for u, e in failures)
     )
+
+
+# ── v1.4.0 audit — template-vs-custom numerical parity (M12) ──────────────────
+
+
+def test_template_path_and_custom_path_yield_identical_solution():
+    """A flowsheet built via direct Layer-3 factory and one built via
+    ``build_custom_flowsheet`` with matching params must produce a
+    bit-identical solver result.
+
+    Pre-v1.4.0 the audit only checked custom-path determinism (build the
+    same custom config twice → same output). This is a stronger test:
+    the two *different* construction paths converge at the same
+    ``BaseFlowsheet`` and so must yield identical Orchestrator output.
+    Confirms the audit M12 guarantee that the docs claim is structural.
+    """
+    import math
+    from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
+    from pse_ecosystem.models.heat_exchangers.cooler_hf import CoolerHF, CoolerHFParams
+
+    components = ["H2", "CO", "CO2"]
+
+    # Path A — pre-built / direct factory construction (what load_template does).
+    cooler_direct = CoolerHF(
+        "cooler_A", components, CoolerHFParams(T_out_K=310.0, feed_max=1_000.0),
+    )
+    fs_direct = BaseFlowsheet(
+        name="parity.direct", units=[cooler_direct], connections=[],
+    )
+
+    # Path B — Custom Builder route through _instantiate_unit + build_custom_flowsheet.
+    fs_custom = build_custom_flowsheet({
+        "units": [{
+            "type": "CoolerHF",
+            "id": "cooler_A",
+            "params": {"components": components, "T_out_K": 310.0, "feed_max": 1_000.0},
+        }],
+        "connections": [],
+    })
+
+    cfg = SLPConfig(max_iter=20)
+    res_direct = Orchestrator(fs_direct, SolveMode.FIXED_LP, slp_config=cfg).solve()
+    res_custom = Orchestrator(fs_custom, SolveMode.FIXED_LP, slp_config=cfg).solve()
+
+    # Status, objective, and the full solution vector must agree.
+    assert res_direct.status == res_custom.status, (
+        f"status drift: direct={res_direct.status}, custom={res_custom.status}"
+    )
+    assert set(res_direct.x.keys()) == set(res_custom.x.keys()), (
+        "Variable name sets diverge between template and custom paths — "
+        "the Layer-3 unit instance was not configured identically."
+    )
+    mismatches = []
+    for name, vd in res_direct.x.items():
+        vc = res_custom.x[name]
+        if isinstance(vd, float) and isinstance(vc, float) and math.isnan(vd) and math.isnan(vc):
+            continue
+        if not (abs(vd - vc) <= max(1e-9, 1e-9 * max(abs(vd), abs(vc)))):
+            mismatches.append((name, vd, vc))
+    assert not mismatches, (
+        f"Template/custom parity broken on {len(mismatches)} variable(s). "
+        f"First few: {mismatches[:5]}"
+    )

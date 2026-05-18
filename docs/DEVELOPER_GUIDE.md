@@ -910,10 +910,12 @@ should not require contract changes in `core/`.
 
 ---
 
-## 12. Registering a New Unit in an Industrial Category (v1.3.0)
+## 12. Registering a New Unit in an Industrial Category (v1.4.0)
 
-The Template Library uses 6 industrial sectors. When you add a new unit and want it to be
-available in the Custom Flowsheet builder, register it in **three places** in
+The Template Library uses **8 industrial sectors** (v1.4.0 audit H11 added
+3 new categories' worth of units and expanded the catalogue to 23 entries).
+When you add a new unit and want it to be available in the Custom Flowsheet
+builder, register it in **four places** in
 `pse_ecosystem/ui/flowsheet_service.py`:
 
 ### Step 1 — Add to `AVAILABLE_UNITS`
@@ -927,19 +929,36 @@ AVAILABLE_UNITS: Dict[str, str] = {
 
 ### Step 2 — Add to `UNIT_CATEGORIES`
 
-Choose the appropriate sector. The 6 sectors and their current members:
+Choose the appropriate sector. The 8 sectors and their current v1.4.0 members:
 
 | Sector | Current Unit Types |
 |---|---|
-| `"Biomass"` | `BiomassStorageHF`, `BiomassGasifierHF`, `WGSReactorHF` |
-| `"Cooling"` | `CoolerHF` |
 | `"Feed/Product"` | `PEMToy`, `GasifierToy` |
-| `"Reactors"` | `StoichiometricReactor`, `MethanationReactor` |
-| `"Separation/DAC"` | `SeparatorHF`, `FlashVLHF`, `TVSAContactor` |
-| `"Heat Exchange"` | `HeatExchangerNTU`, `CoolerHF` |
+| `"Biomass"` | `BiomassStorageHF`, `BiomassGasifierHF`, `WGSReactorHF` |
+| `"Reactors"` | `StoichiometricReactor`, `MethanationReactor`, `EquilibriumReactor`, `GibbsReactor` |
+| `"Separation/DAC"` | `SeparatorHF`, `FlashVLHF`, `TVSAContactor`, `H2SeparatorPSA`, `DistillationHF` |
+| `"Heat Exchange"` | `HeatExchangerNTU`, `ShellTubeHX`, `CoolerHF` |
 | `"Power/CHP"` | `ElectrolyserHF`, `CHPUnit` |
 | `"Mixing"` | `MixerHF` |
-| `"Pressure Changers"` | `Compressor` |
+| `"Pressure Changers"` | `Compressor`, `Pump`, `Valve` |
+
+### Step 2a — Add a `TYPE_ID_SUGGESTIONS` slug (v1.3.1+)
+
+The slug feeds the smart Unit ID dropdown in the Custom Builder
+(e.g. `comp` → `comp_1`, `comp_2`, …). Keep it short, lower-snake-case,
+and unique across the registry:
+
+```python
+TYPE_ID_SUGGESTIONS: Dict[str, str] = {
+    # ... existing entries ...
+    "MyNewUnit": "myu",
+}
+```
+
+If you omit this step, the UI falls back to a generic ``u1`` / ``u2``
+slug — functional but unhelpful in a multi-unit chain. The smart-ID
+widget key embeds ``{utype}`` (v1.4.0 audit H11) so the suggestion
+refreshes when the user switches Type.
 
 ```python
 UNIT_CATEGORIES: Dict[str, List[str]] = {

@@ -67,7 +67,14 @@ class GibbsReactorParams:
 
 
 class GibbsReactor(BaseUnit):
-    """Gibbs free energy minimisation reactor (SLSQP inner solve)."""
+    """Gibbs free energy minimisation reactor (SLSQP inner solve).
+
+    **Isothermal only.** ``T_out`` is constrained to equal ``T_in`` (no
+    energy balance, no heat duty Q). For adiabatic or with-Q operation use
+    :class:`pse_ecosystem.models.reactors.EquilibriumReactor` instead, or
+    pair this unit with an upstream/downstream heat exchanger to set T.
+    Audit L8 clarification.
+    """
 
     is_linear = False
 

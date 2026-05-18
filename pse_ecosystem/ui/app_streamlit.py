@@ -1360,7 +1360,7 @@ def main() -> None:
     pages = [
         st.Page(_page_dashboard,         title="Dashboard",         icon="🏠"),
         st.Page(_page_flowsheet_builder,  title="Flowsheet Builder", icon="🔧"),
-        st.Page(_page_gps_weather,        title="GPS Weather",       icon="🌍"),
+        st.Page(_page_gps_weather,        title="Site Weather",      icon="🌍"),
         st.Page(_page_solver_monitor,     title="Solver Monitor",    icon="📊"),
         st.Page(_page_help_center,        title="Help Center",       icon="📖"),
     ]

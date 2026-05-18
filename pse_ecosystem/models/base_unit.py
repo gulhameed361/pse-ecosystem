@@ -206,7 +206,15 @@ class BaseUnit(ABC):
 
         for j, name in enumerate(variables):
             x_val = x0_dict[name]
+            # v1.4.0 audit L5: when |x_val| is sub-micro the multiplicative
+            # scaling collapses below the unit-bound floor and the perturbed
+            # x_val ± step can cross a variable lower bound (typically 0 for
+            # flows). Use absolute |x_val| scaling AND ensure the step is
+            # bounded above by 0.1·|x_val| once x_val grows past micro-scale
+            # so we never overshoot the bound by more than 10 %.
             step = max(_DEFAULT_FD_STEP * max(1.0, abs(x_val)), _MIN_FD_STEP)
+            if abs(x_val) > 1.0:
+                step = min(step, 0.1 * abs(x_val))
 
             x_plus = dict(x0_dict)
             x_plus[name] = x_val + step

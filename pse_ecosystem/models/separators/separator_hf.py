@@ -114,7 +114,12 @@ class SeparatorHF(BaseUnit):
                 F_out_k = x.get(self._v_F_out(k, c), 0.0)
                 res_list.append(F_out_k - self._sf[i, k] * F_in)
 
-        # Closure: Σ_k F_i_out_k = F_i_in
+        # Closure: Σ_k F_i_out_k = F_i_in. Mathematically redundant given
+        # the split-fraction rows above sum to 1 by construction (see
+        # SeparatorHFParams normalisation in __init__), but kept as a
+        # separate row so a numerical drift in any single split shows up as
+        # a non-zero closure residual rather than silently corrupting the
+        # overall mass balance. Audit L7 — documented, not a bug.
         for i, c in enumerate(self.components):
             F_in = x.get(self._v_F_in(c), 0.0)
             F_out_sum = sum(x.get(self._v_F_out(k, c), 0.0) for k in range(M))

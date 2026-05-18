@@ -130,11 +130,19 @@ def _():
     from pse_ecosystem.ui.flowsheet_service import list_templates
     ts = list_templates()
     assert len(ts) >= 11, f"Expected >= 11 templates, got {len(ts)}"
+    # v1.3.0+ category names switched from the original 4-tier scheme to
+    # 8-tier industrial-sector labels. Allow either family so this audit
+    # script keeps working across the v1.2.x → v1.4.x transition.
+    _KNOWN = {
+        "Small", "Hydrogen", "Industrial", "Custom",
+        "Hydrogen Production", "Biomass Processing", "Power Generation",
+        "Petrochemicals", "Carbon Capture & Utilization",
+        "Other Industrial", "Other Industrial Processes",
+    }
     for t in ts:
         assert t.key, "TemplateSpec.key is empty"
         assert t.display_name, "TemplateSpec.display_name is empty"
-        assert t.category in ("Small", "Hydrogen", "Industrial", "Custom"), \
-            f"Unknown category: {t.category}"
+        assert t.category in _KNOWN, f"Unknown category: {t.category}"
     return f"{len(ts)} templates registered"
 
 
