@@ -95,6 +95,11 @@ class PEMToy(BaseUnit):
             f"{self.unit_id}.annual_capex_GBP": annual_capex,
             f"{self.unit_id}.LCOH_GBP_per_kg": lcoh,
             f"{self.unit_id}.CI_kg_CO2_per_kg_H2": ci,
+            # v1.5.0.dev-AUDIT2 L3-2: canonical uid-prefixed H₂ production rates
+            # so compute_project_economics can aggregate across multiple PEMs
+            # without namespace collisions. v_h2 is in kg/h.
+            f"{self.unit_id}.H2_production_kg_h": h2,
+            f"{self.unit_id}.H2_production_kg_s": h2 / 3600.0,
         }
 
     # ── Analytical linearisation override ─────────────────────────────────

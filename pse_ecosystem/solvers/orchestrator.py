@@ -250,11 +250,8 @@ class Orchestrator:
         return clone
 
     def _aggregate_kpis(self, x: Dict[str, float]) -> Dict[str, float]:
-        kpis: Dict[str, float] = {}
-        for u in self.flowsheet.units:
-            for k, v in u.kpis(x).items():
-                kpis[k] = kpis.get(k, 0.0) + float(v)
-        return kpis
+        # v1.5.0.dev-AUDIT2 L2-6: delegate to the single source of truth.
+        return self.flowsheet.aggregate_kpis(x)
 
     @staticmethod
     def _milp_termination(pyomo_results) -> SolverStatus:

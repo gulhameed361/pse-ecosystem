@@ -394,6 +394,23 @@ class SLPDriver:
             last_lp_obj = lp_obj
             last_objective = lp_obj
 
+        # v1.5.0.dev-AUDIT2 L2-5: surface trust-region final state to the caller.
+        # Final delta is always reported when TR is active; an explicit
+        # "collapsed" diagnostic fires when delta saturates trust_region_min,
+        # which is almost always a sign that rho_shrink fired repeatedly
+        # because the linearisation is poor at the operating point.
+        tr_diagnostic = ""
+        if self.config.use_trust_region:
+            tr_diagnostic = f" Final trust_region={delta:.3g}."
+            # Within 1% of the floor counts as collapse (Wegstein/numerics).
+            if delta <= self.config.trust_region_min * 1.01:
+                tr_diagnostic += (
+                    f" Trust region collapsed to trust_region_min="
+                    f"{self.config.trust_region_min:.2g}: the linearisation "
+                    f"is likely a poor fit at this operating point. Try a "
+                    f"different initial guess, disable progressive_tightening, "
+                    f"or inspect the history."
+                )
         return SolveResult(
             status=SolverStatus.MAX_ITER,
             mode=SolveMode.FIXED_LP,
@@ -402,7 +419,7 @@ class SLPDriver:
             iterations=self.config.max_iter,
             objective=last_objective,
             history=history,
-            message="SLP hit max_iter without converging.",
+            message="SLP hit max_iter without converging." + tr_diagnostic,
         )
 
     # ── Internals ─────────────────────────────────────────────────────────
@@ -494,11 +511,8 @@ class SLPDriver:
         return flagged
 
     def _aggregate_kpis(self, x: Dict[str, float]) -> Dict[str, float]:
-        kpis: Dict[str, float] = {}
-        for unit in self.flowsheet.units:
-            for k, v in unit.kpis(x).items():
-                kpis[k] = kpis.get(k, 0.0) + float(v)
-        return kpis
+        # v1.5.0.dev-AUDIT2 L2-6: delegate to the single source of truth.
+        return self.flowsheet.aggregate_kpis(x)
 
     @staticmethod
     def _objective_value(

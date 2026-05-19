@@ -45,6 +45,15 @@ class NLPDriver:
         self.config = config or SLPConfig()
 
     def run(self, x0: Optional[Dict[str, float]] = None) -> SolveResult:
+        """Solve the flowsheet with up to 3 restart-on-failure attempts.
+
+        v1.5.0.dev-AUDIT2 (L2-3, L2-4):
+          * Honour ``self.config.eps_x`` via a per-iteration callback that
+            terminates L-BFGS-B early if the step-norm drops below the
+            threshold (in addition to scipy's own ftol/gtol).
+          * Up to 3 restarts with 10% multiplicative perturbation on x0
+            when the first attempt fails to converge below eps_f.
+        """
         from scipy.optimize import minimize  # deferred: optional dependency
 
         x0_dict = x0 if x0 is not None else self.flowsheet.initial_guess()
@@ -65,62 +74,118 @@ class NLPDriver:
                 return np.zeros_like(x_vec)
             return J.T @ r  # gradient of ½‖f‖² is J^T f
 
-        try:
-            # scipy's L-BFGS-B convergence is checked on the *objective*
-            # (½‖f‖²) and its *gradient* (J^T f). We expose two thresholds:
-            #   ftol — relative objective change.  Since the objective ½‖f‖²
-            #          scales as eps_f², we set ftol ∝ eps_f² with a 1e-2
-            #          safety factor so scipy keeps refining a step past the
-            #          point where our own residual-norm test would fire.
-            #   gtol — gradient-norm tolerance, kept proportional to eps_f.
-            # See `M2` audit note (v1.4.0): document the squaring rationale.
-            result = minimize(
-                objective,
-                x0_vec,
-                jac=jac,
-                method="L-BFGS-B",
-                bounds=scipy_bounds,
-                options={
-                    "maxiter": self.config.max_iter * 10,
-                    "ftol": self.config.eps_f ** 2 * 1e-2,
-                    "gtol": self.config.eps_f * 1e-3,
-                },
-            )
-        except Exception as exc:  # noqa: BLE001
+        best_result = None
+        best_res_norm = float("inf")
+        best_x_sol: Dict[str, float] = {}
+        attempts: list = []
+        rng = np.random.default_rng(seed=42)
+        max_attempts = 3
+
+        for attempt in range(max_attempts):
+            if attempt == 0:
+                x_init = x0_vec
+            else:
+                # Multiplicative perturbation (10%) clipped to bounds.
+                perturb = 1.0 + 0.10 * rng.standard_normal(x0_vec.shape)
+                x_init = best_x_sol_vec * perturb if best_result is not None else x0_vec * perturb
+                # Project back into the box: clip to bounds.
+                for j, (lb, ub) in enumerate(scipy_bounds):
+                    if lb is not None and x_init[j] < lb:
+                        x_init[j] = lb
+                    if ub is not None and x_init[j] > ub:
+                        x_init[j] = ub
+
+            # Step-norm convergence (L2-3): scipy has no first-class step-norm
+            # criterion, so we install a callback that raises when ‖Δx‖∞ <
+            # eps_x. The exception is caught below and treated as convergence.
+            _last_x = [x_init.copy()]
+
+            class _StepNormStop(Exception):
+                pass
+
+            def _callback(xk):
+                step = float(np.max(np.abs(xk - _last_x[0])))
+                _last_x[0] = xk.copy()
+                if step < self.config.eps_x:
+                    raise _StepNormStop()
+
+            try:
+                result = minimize(
+                    objective,
+                    x_init,
+                    jac=jac,
+                    method="L-BFGS-B",
+                    bounds=scipy_bounds,
+                    callback=_callback,
+                    options={
+                        "maxiter": self.config.max_iter * 10,
+                        "ftol": self.config.eps_f ** 2 * 1e-2,
+                        "gtol": self.config.eps_f * 1e-3,
+                    },
+                )
+                step_norm_terminated = False
+            except _StepNormStop:
+                # eps_x triggered — use the last iterate as the solution.
+                x_final = _last_x[0]
+                from types import SimpleNamespace
+                result = SimpleNamespace(
+                    x=x_final,
+                    fun=objective(x_final),
+                    nit=0,
+                    success=True,
+                    message="terminated on eps_x",
+                )
+                step_norm_terminated = True
+            except Exception as exc:  # noqa: BLE001
+                attempts.append(f"attempt {attempt+1}: raised {type(exc).__name__}: {exc}")
+                continue
+
+            r_final = f_func(result.x)
+            res_norm = float(np.max(np.abs(r_final))) if r_final.size else 0.0
+            note = "(eps_x stop)" if step_norm_terminated else "(normal exit)"
+            attempts.append(f"attempt {attempt+1}: ‖f‖∞={res_norm:.3g} {note}")
+
+            if res_norm < best_res_norm:
+                best_result = result
+                best_res_norm = res_norm
+                best_x_sol_vec = np.asarray(result.x, dtype=float)
+                best_x_sol = dict(zip(var_names, result.x))
+
+            if res_norm < self.config.eps_f:
+                break  # success — no need for more restarts
+
+        if best_result is None:
             return SolveResult(
                 status=SolverStatus.NUMERICAL_ERROR,
                 mode=SolveMode.NLP_IPOPT,
-                message=f"scipy.optimize.minimize raised: {exc}",
+                message="All NLP restart attempts raised: " + " | ".join(attempts),
             )
 
-        x_sol = dict(zip(var_names, result.x))
-        r_final = f_func(result.x)
-        res_norm = float(np.max(np.abs(r_final))) if r_final.size else 0.0
-        kpis = self._aggregate_kpis(x_sol)
-
-        if res_norm < self.config.eps_f:
+        kpis = self._aggregate_kpis(best_x_sol)
+        attempt_log = " | ".join(attempts)
+        if best_res_norm < self.config.eps_f:
             status = SolverStatus.CONVERGED
-            msg = f"NLP solver converged (‖f‖∞={res_norm:.3g})."
-        elif result.success:
+            msg = f"NLP solver converged (‖f‖∞={best_res_norm:.3g}). {attempt_log}"
+        elif best_result.success:
             status = SolverStatus.CONVERGED
-            msg = f"scipy converged but residual ‖f‖∞={res_norm:.3g} > eps_f."
+            msg = (
+                f"scipy converged but residual ‖f‖∞={best_res_norm:.3g} > "
+                f"eps_f={self.config.eps_f:.3g}. {attempt_log}"
+            )
         else:
             status = SolverStatus.MAX_ITER
-            msg = f"NLP solver: {result.message}"
+            msg = f"NLP solver: {best_result.message}. {attempt_log}"
 
         return SolveResult(
             status=status,
             mode=SolveMode.NLP_IPOPT,
-            x=x_sol,
+            x=best_x_sol,
             kpis=kpis,
-            iterations=result.nit,
-            objective=float(result.fun),
+            iterations=getattr(best_result, "nit", 0),
+            objective=float(best_result.fun),
             message=msg,
         )
 
     def _aggregate_kpis(self, x: Dict[str, float]) -> Dict[str, float]:
-        kpis: Dict[str, float] = {}
-        for unit in self.flowsheet.units:
-            for k, v in unit.kpis(x).items():
-                kpis[k] = kpis.get(k, 0.0) + float(v)
-        return kpis
+        # v1.5.0.dev-AUDIT2 L2-6: delegate to the single source of truth.
+        return self.flowsheet.aggregate_kpis(x)

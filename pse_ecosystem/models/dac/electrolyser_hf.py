@@ -125,11 +125,17 @@ class ElectrolyserHF(BaseUnit):
         W = x.get(self._v_w, 0.0)
         h2_kg_h = F_h2 * _M_H2 * 3600.0
         specific_kWh_kg = W / (F_h2 * _M_H2 * 3600.0) if F_h2 > 0 else 0.0
+        # v1.5.0.dev-AUDIT2 L3-2: canonical uid-prefixed H₂ production KPIs.
+        # Bare keys retained for v1.4.x backwards compatibility — deprecated.
+        uid = self.unit_id
         return {
             "H2_production_kg_h": h2_kg_h,
             "efficiency_pct": self.eta_elec * 100.0,
             "specific_power_kWh_per_kgH2": specific_kWh_kg,
             "W_elec_kW": W,
+            f"{uid}.H2_production_kg_h": h2_kg_h,
+            f"{uid}.H2_production_kg_s": h2_kg_h / 3600.0,
+            f"{uid}.W_elec_kW": W,
         }
 
     def capex(self, x: Dict[str, float]) -> float:

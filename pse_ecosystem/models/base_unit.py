@@ -54,6 +54,18 @@ class BaseUnit(ABC):
     #: Optional unit-supplied trust-region radius (in variable units).
     trust_region: float | None = None
 
+    #: OPEX convention for ``objective_contribution()`` coefficients.
+    #: ``"USD_per_year"`` (default) — coefficient × variable_value = USD/yr.
+    #: ``"USD_per_second"`` — coefficient × variable_value = USD/s (rate basis,
+    #:   typically because the variable is a flow in kg/s and the coefficient
+    #:   is a per-unit price in USD/kg).  ``opex_per_year(x, hours)`` multiplies
+    #:   by 3600 × hours to convert to USD/yr.
+    #: ``"yield_coefficient"`` — coefficient is a yield/penalty for the LP
+    #:   objective (e.g., −1 to maximise an outlet flow) and does NOT represent
+    #:   an operating cost; ``opex_per_year`` returns 0 for these units.
+    #: See v1.5.0.dev-AUDIT2 (Layer 3 audit, L3-1) for the rationale.
+    _OPEX_CONVENTION: str = "USD_per_year"
+
     # ── Abstract interface ────────────────────────────────────────────────
 
     @abstractmethod
@@ -90,17 +102,31 @@ class BaseUnit(ABC):
         """
         return 0.0
 
-    def opex_per_year(self, x: Dict[str, float]) -> float:
+    def opex_per_year(self, x: Dict[str, float],
+                       operating_hours: float = 8000.0) -> float:
         """Annual operating cost in USD/yr at operating point x.
 
-        Default implementation sums ``objective_contribution * x``, which
-        already encodes price × throughput for flow variables.  Override
-        when OPEX has a more complex structure.
+        Default implementation sums ``objective_contribution * x`` and converts
+        based on the unit's ``_OPEX_CONVENTION`` class attribute:
+
+        * ``"USD_per_year"`` (default): the sum IS already USD/yr (the
+          objective_contribution coefficients embed × operating_hours).
+        * ``"USD_per_second"``: multiply by ``3600 × operating_hours``.
+        * ``"yield_coefficient"``: return 0 (the coefficient is a yield/penalty
+          for the LP objective, not an operating cost).
+
+        Override only when OPEX needs a fundamentally different structure
+        (e.g., piecewise tariffs or non-linear utility curves).
         """
-        return sum(
+        if self._OPEX_CONVENTION == "yield_coefficient":
+            return 0.0
+        raw = sum(
             coeff * x.get(v, 0.0)
             for v, coeff in self.objective_contribution(x).items()
         )
+        if self._OPEX_CONVENTION == "USD_per_second":
+            return raw * 3600.0 * operating_hours
+        return raw
 
     def control_hooks(self) -> Dict[str, str]:
         """Optional control pairing: {controlled_var: manipulated_var}.

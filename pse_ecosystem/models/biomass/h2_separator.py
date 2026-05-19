@@ -56,6 +56,10 @@ class H2SeparatorPSA(BaseUnit):
     """
 
     is_linear: bool = True
+    # v1.5.0.dev-AUDIT2 L3-1: the objective_contribution {h2_var: -1.0} is a
+    # YIELD signal (maximise H₂), not an operating cost. Tell the BaseUnit
+    # OPEX aggregator to ignore it.
+    _OPEX_CONVENTION = "yield_coefficient"
 
     def __init__(
         self,

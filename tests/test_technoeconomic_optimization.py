@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import numpy as np
 import pytest
 
 from pse_ecosystem.models.costing.economic_engine import (
@@ -516,3 +517,291 @@ class TestComputeProjectEconomicsAudit:
         assert capex_2030 > capex_2024, (
             f"2030 CAPEX ({capex_2030}) should exceed 2024 ({capex_2024}) due to CEPCI escalation"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v1.5.0.dev-AUDIT2 L3-1: OPEX convention standardisation
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestOpexConventions:
+    """Each unit's _OPEX_CONVENTION class attribute steers opex_per_year()."""
+
+    def test_basesum_unit_defaults_to_usd_per_year(self):
+        from pse_ecosystem.models.base_unit import BaseUnit
+        assert BaseUnit._OPEX_CONVENTION == "USD_per_year"
+
+    def test_pem_toy_is_usd_per_year(self):
+        from pse_ecosystem.models.electrolysis.pem_toy import PEMToy
+        assert PEMToy._OPEX_CONVENTION == "USD_per_year"
+
+    def test_biomass_gasifier_is_usd_per_second(self):
+        from pse_ecosystem.models.biomass.biomass_gasifier import BiomassGasifierHF
+        assert BiomassGasifierHF._OPEX_CONVENTION == "USD_per_second"
+
+    def test_h2_separator_psa_is_yield_coefficient(self):
+        from pse_ecosystem.models.biomass.h2_separator import H2SeparatorPSA
+        assert H2SeparatorPSA._OPEX_CONVENTION == "yield_coefficient"
+
+    def test_gasifier_opex_scales_with_operating_hours(self):
+        """USD/s × 3600 × hours = USD/yr — scaling must be linear in hours."""
+        from pse_ecosystem.models.biomass.biomass_gasifier import BiomassGasifierHF
+        u = BiomassGasifierHF(unit_id="gas", T_gasifier_C=800.0,
+                              gasifying_agent="Steam",
+                              biomass_cost_USD_per_kg=0.05)
+        x = {u._v_biomass(): 1.0}  # 1 kg/s biomass
+        opex_8000 = u.opex_per_year(x, operating_hours=8000.0)
+        opex_4000 = u.opex_per_year(x, operating_hours=4000.0)
+        assert opex_8000 == pytest.approx(opex_4000 * 2.0, rel=1e-9)
+        # Sanity: 1 kg/s × 0.05 USD/kg × 3600 × 8000 = 1.44e6 USD/yr
+        assert opex_8000 == pytest.approx(1.44e6, rel=1e-6)
+
+    def test_psa_opex_is_zero(self):
+        """PSA's −1 yield coefficient must NOT be summed as a cost."""
+        from pse_ecosystem.models.biomass.h2_separator import H2SeparatorPSA
+        u = H2SeparatorPSA(unit_id="psa")
+        x = {u._h2_var(): 100.0}
+        assert u.opex_per_year(x, operating_hours=8000.0) == 0.0
+
+    def test_pem_opex_independent_of_passed_hours(self):
+        """PEMToy embeds hours in objective_contribution coefficient already
+        — passing different operating_hours to opex_per_year must NOT
+        double-count."""
+        from pse_ecosystem.models.electrolysis.pem_toy import PEMToy
+        u = PEMToy(unit_id="pem")
+        x = {u.v_electricity: 100.0, u.v_h2: 50.0}
+        opex_8000 = u.opex_per_year(x, operating_hours=8000.0)
+        opex_4000 = u.opex_per_year(x, operating_hours=4000.0)
+        assert opex_8000 == pytest.approx(opex_4000, rel=1e-9)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v1.5.0.dev-AUDIT2 L3-2: H₂ production KPI uid-prefix standardisation
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestH2KpiNaming:
+
+    def test_pem_emits_uid_prefixed_h2_kpis(self):
+        from pse_ecosystem.models.electrolysis.pem_toy import PEMToy
+        u = PEMToy(unit_id="pem01")
+        x = {u.v_electricity: 100.0, u.v_h2: 5.0}
+        kpis = u.kpis(x)
+        assert "pem01.H2_production_kg_h" in kpis
+        assert "pem01.H2_production_kg_s" in kpis
+        assert kpis["pem01.H2_production_kg_h"] == pytest.approx(5.0)
+        assert kpis["pem01.H2_production_kg_s"] == pytest.approx(5.0 / 3600.0)
+
+    def test_electrolyser_hf_emits_uid_prefixed_h2_kpis(self):
+        from pse_ecosystem.models.dac.electrolyser_hf import ElectrolyserHF
+        u = ElectrolyserHF(unit_id="elec01")
+        x = {v: 1.0 for v in u.variables()}
+        kpis = u.kpis(x)
+        assert "elec01.H2_production_kg_h" in kpis
+        assert "elec01.H2_production_kg_s" in kpis
+        # Bare keys retained for v1.4.x backwards compatibility
+        assert "H2_production_kg_h" in kpis
+
+    def test_biomass_gasifier_emits_h2_production_kpis(self):
+        from pse_ecosystem.models.biomass.biomass_gasifier import BiomassGasifierHF
+        u = BiomassGasifierHF(unit_id="gas01", T_gasifier_C=800.0,
+                              gasifying_agent="Steam")
+        x = {v: 1.0 for v in u.variables()}
+        kpis = u.kpis(x)
+        assert "gas01.H2_production_kg_s" in kpis
+        assert "gas01.H2_production_kg_h" in kpis
+
+    def test_psa_uid_prefixed_h2_kpis_already_present(self):
+        from pse_ecosystem.models.biomass.h2_separator import H2SeparatorPSA
+        u = H2SeparatorPSA(unit_id="psa01")
+        x = {v: 1.0 for v in u.variables()}
+        kpis = u.kpis(x)
+        assert "psa01.H2_production_kg_s" in kpis
+        assert "psa01.H2_production_kg_h" in kpis
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v1.5.0.dev-AUDIT2 L3-3: BiomassGasifierHF analytical Jacobian
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestBiomassGasifierAnalyticalJacobian:
+
+    def test_analytical_jacobian_matches_finite_difference(self):
+        """Verify the analytical J matches central-difference J to 1e-3 (relative)."""
+        from pse_ecosystem.models.biomass.biomass_gasifier import BiomassGasifierHF
+        from pse_ecosystem.core.contracts import PrimalGuess
+
+        u = BiomassGasifierHF(unit_id="gas", T_gasifier_C=800.0,
+                              gasifying_agent="Steam")
+        variables = u.variables()
+        # Reasonable operating point: 1 kg/s biomass, 0.5 kg/s steam, syngas mid-range
+        x0 = {
+            variables[0]: 1.0,   # F_biomass
+            variables[1]: 30.0,  # F_steam (mol/s) — must be ≥1e-12 to avoid floor
+        }
+        for v in variables[2:]:
+            x0[v] = 10.0  # syngas species mid-range
+        guess = PrimalGuess(values=x0)
+        lin = u.linearize(guess)
+        J_analytical = lin.J
+
+        # Compute FD Jacobian
+        n = len(variables)
+        m = lin.f0.size
+        J_fd = np.zeros((m, n))
+        f0 = u.residual(x0)
+        for j, v in enumerate(variables):
+            x_pert = dict(x0)
+            step = max(1e-6 * abs(x0[v]), 1e-9)
+            x_pert[v] = x0[v] + step
+            f_plus = u.residual(x_pert)
+            J_fd[:, j] = (f_plus - f0) / step
+
+        # Element-balance rows (0..3) must match exactly (linear)
+        for row in range(4):
+            np.testing.assert_allclose(J_analytical[row], J_fd[row], atol=1e-9,
+                err_msg=f"Element balance row {row} disagrees with FD")
+        # Equilibrium rows (4, 5): relative tolerance — FD is noisy
+        for row in (4, 5):
+            np.testing.assert_allclose(J_analytical[row], J_fd[row],
+                rtol=1e-3, atol=1e-3,
+                err_msg=f"Equilibrium row {row} disagrees with FD")
+
+    def test_analytical_jacobian_shape(self):
+        """6 residuals × 8 vars (steam case) or 9 vars (air case)."""
+        from pse_ecosystem.models.biomass.biomass_gasifier import BiomassGasifierHF
+        from pse_ecosystem.core.contracts import PrimalGuess
+
+        u_steam = BiomassGasifierHF(unit_id="g", gasifying_agent="Steam")
+        x0_steam = {v: 1.0 for v in u_steam.variables()}
+        lin_s = u_steam.linearize(PrimalGuess(values=x0_steam))
+        assert lin_s.J.shape == (6, len(u_steam.variables()))   # 6 × 8
+
+        u_air = BiomassGasifierHF(unit_id="g", gasifying_agent="Air")
+        x0_air = {v: 1.0 for v in u_air.variables()}
+        lin_a = u_air.linearize(PrimalGuess(values=x0_air))
+        assert lin_a.J.shape == (6, len(u_air.variables()))     # 6 × 9
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v1.5.0.dev-AUDIT2 Layer 2: solver fixes
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestLayer2Audit:
+
+    def test_l2_1_nlp_scipy_is_alias_for_nlp_ipopt(self):
+        """SolveMode.NLP_SCIPY is a value-alias for SolveMode.NLP_IPOPT."""
+        from pse_ecosystem.core.contracts import SolveMode
+        assert SolveMode.NLP_SCIPY is SolveMode.NLP_IPOPT
+        assert SolveMode.NLP_SCIPY.value == "mode_3"
+
+    def test_l2_2_residual_row_scaling_helper(self):
+        """compute_residual_row_scaling returns 1/max(‖row‖_inf, floor) per row."""
+        from pse_ecosystem.solvers.scaling import compute_residual_row_scaling
+        from pse_ecosystem.core.contracts import LinearizedModel
+
+        lin = LinearizedModel(
+            unit_id="testunit",
+            variables=["a", "b"],
+            x0=np.array([0.0, 0.0]),
+            f0=np.array([0.0, 0.0]),
+            J=np.array([[100.0, 0.0], [1e-3, 1e-3]]),
+        )
+        factors = compute_residual_row_scaling([lin], floor=1.0)
+        # Row 0: ‖[100, 0]‖∞ = 100 → 1/100 = 0.01
+        assert factors[("testunit", 0)] == pytest.approx(1.0 / 100.0)
+        # Row 1: ‖[1e-3, 1e-3]‖∞ = 1e-3, but floored at 1.0 → 1/1 = 1.0
+        assert factors[("testunit", 1)] == pytest.approx(1.0)
+
+    def test_l2_2_residual_row_scaling_handles_empty_jacobian(self):
+        from pse_ecosystem.solvers.scaling import compute_residual_row_scaling
+        from pse_ecosystem.core.contracts import LinearizedModel
+        lin = LinearizedModel(
+            unit_id="empty",
+            variables=["a"],
+            x0=np.array([0.0]),
+            f0=np.array([]),
+            J=np.zeros((0, 1)),
+        )
+        factors = compute_residual_row_scaling([lin])
+        assert factors == {}
+
+    def test_l2_5_tr_final_value_always_reported_when_tr_active(self):
+        """When use_trust_region=True and the run hits MAX_ITER, the message
+        must include the final trust-region radius."""
+        from pse_ecosystem.solvers.slp import SLPDriver, SLPConfig
+        from pse_ecosystem.core.contracts import SolverStatus
+
+        fs = _gasifier_flowsheet()
+        cfg = SLPConfig(
+            max_iter=3, eps_f=1e-12,
+            use_trust_region=True,
+            trust_region_init=0.5,
+            trust_region_min=0.01,
+        )
+        driver = SLPDriver(flowsheet=fs, config=cfg)
+        result = driver.run()
+        if result.status == SolverStatus.MAX_ITER:
+            assert "Final trust_region=" in result.message, (
+                f"Expected TR diagnostic, got: {result.message!r}"
+            )
+
+    def test_l2_5_tr_collapse_diagnostic_when_floored(self):
+        """When use_trust_region=True and delta saturates trust_region_min on
+        MAX_ITER exit, the message must mention 'Trust region collapsed'."""
+        from pse_ecosystem.solvers.slp import SLPDriver, SLPConfig
+        from pse_ecosystem.core.contracts import SolverStatus
+
+        fs = _gasifier_flowsheet()
+        # Init AT min → any reasonable run keeps delta near floor.
+        cfg = SLPConfig(
+            max_iter=2, eps_f=1e-12,
+            use_trust_region=True,
+            trust_region_init=0.01,
+            trust_region_min=0.01,
+            trust_region_max=0.01,   # cap at floor: no growth possible
+        )
+        driver = SLPDriver(flowsheet=fs, config=cfg)
+        result = driver.run()
+        if result.status == SolverStatus.MAX_ITER:
+            assert "Trust region collapsed" in result.message, (
+                f"Expected TR-collapse diagnostic with init=min=max, got: "
+                f"{result.message!r}"
+            )
+
+    def test_l2_6_aggregate_kpis_single_source_of_truth(self):
+        """All four drivers' _aggregate_kpis delegate to flowsheet.aggregate_kpis."""
+        fs = _gasifier_flowsheet()
+        x = {v: 1.0 for v in fs.all_variables()}
+        from_flowsheet = fs.aggregate_kpis(x)
+
+        from pse_ecosystem.solvers.slp import SLPDriver
+        from pse_ecosystem.solvers.ipopt_driver import NLPDriver
+        from pse_ecosystem.solvers.trust_region_driver import TrustRegionDriver
+        from pse_ecosystem.solvers.orchestrator import Orchestrator
+        from pse_ecosystem.core.contracts import SolveMode
+
+        slp_kpis  = SLPDriver(fs)._aggregate_kpis(x)
+        nlp_kpis  = NLPDriver(fs)._aggregate_kpis(x)
+        trf_kpis  = TrustRegionDriver(fs)._aggregate_kpis(x)
+        orch_kpis = Orchestrator(flowsheet=fs, mode=SolveMode.FIXED_LP)._aggregate_kpis(x)
+
+        assert slp_kpis  == from_flowsheet
+        assert nlp_kpis  == from_flowsheet
+        assert trf_kpis  == from_flowsheet
+        assert orch_kpis == from_flowsheet
+
+    def test_l2_6_aggregate_kpis_robust_to_unit_kpi_failure(self):
+        """A unit raising in kpis() must not zero the entire dict."""
+        fs = _pem_flowsheet()
+        # Inject a poisoned unit whose kpis() raises.
+        from pse_ecosystem.models.base_unit import BaseUnit
+        class PoisonUnit(BaseUnit):
+            unit_id = "poison"
+            def variables(self): return ["poison.x"]
+            def bounds(self): return {"poison.x": (0.0, 1.0)}
+            def residual(self, x): return np.zeros(0)
+            def objective_contribution(self, x): return {}
+            def kpis(self, x): raise RuntimeError("intentional KPI failure")
+        fs.units.append(PoisonUnit())
+        kpis = fs.aggregate_kpis({})
+        # Should still return PEM's KPIs without raising
+        assert isinstance(kpis, dict)

@@ -223,6 +223,28 @@ class BaseFlowsheet:
                     guess[v] = float(val)
         return guess
 
+    # ── KPI aggregation (v1.5.0.dev-AUDIT2 L2-6) ─────────────────────────────
+    #
+    # Single source of truth, replacing the four near-identical copies
+    # historically duplicated in slp.py, ipopt_driver.py, trust_region_driver.py,
+    # and orchestrator.py.
+    def aggregate_kpis(self, x: Dict[str, float]) -> Dict[str, float]:
+        """Sum each unit's ``kpis(x)`` dict into a flat flowsheet-level dict.
+
+        Keys that appear in multiple units accumulate by summation. Unit
+        authors should uid-prefix any per-unit KPI they want kept separate
+        (see ``H2_production_kg_s`` convention in L3-2).
+        """
+        kpis: Dict[str, float] = {}
+        for unit in self.units:
+            try:
+                for k, v in unit.kpis(x).items():
+                    kpis[k] = kpis.get(k, 0.0) + float(v)
+            except Exception:
+                # A single unit's bad KPI must not zero the rest of the report.
+                continue
+        return kpis
+
 
 # ── CompositeUnit ─────────────────────────────────────────────────────────────
 

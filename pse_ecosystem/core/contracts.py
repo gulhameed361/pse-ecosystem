@@ -106,7 +106,22 @@ class SolveMode(str, Enum):
     """Technology choice via binary variables. Outer MILP wrapping operations."""
 
     NLP_IPOPT = "mode_3"
-    """Full NLP solve via IPOPT using ExternalFunction wrappers for unit residuals."""
+    """Full NLP solve.
+
+    NAMING NOTE (v1.5.0.dev-AUDIT2 L2-1): the enum is named ``NLP_IPOPT`` for
+    backwards compatibility with v1.0–v1.4 callers, but the current
+    implementation (``solvers/ipopt_driver.py::NLPDriver``) uses
+    ``scipy.optimize.minimize`` with L-BFGS-B and a Gauss-Newton gradient
+    derived from each unit's linearisation. To switch to real IPOPT would
+    require rewriting every Layer-3 residual in Pyomo expression syntax —
+    out of scope for v1.5.  The alias ``NLP_SCIPY`` is the preferred name
+    going forward; ``NLP_IPOPT`` is retained as a non-deprecated alias for
+    semver compatibility.
+    """
+
+    NLP_SCIPY = "mode_3"
+    """Alias for NLP_IPOPT — the canonical name reflecting the actual scipy
+    L-BFGS-B backend used by NLPDriver. Both enums resolve to the same value."""
 
     TRUST_REGION = "mode_4"
     """Trust-Region Filter/Funnel driver (Eason & Biegler 2016). Most robust fallback."""

@@ -515,16 +515,25 @@ def _aggregate_capex_purchase_USD(flowsheet: "BaseFlowsheet",
 
 
 def _aggregate_opex_annual_USD(flowsheet: "BaseFlowsheet",
-                                solution_x: Dict[str, float]) -> float:
-    """Sum every unit's ``opex_per_year(x)`` (USD/yr).
+                                solution_x: Dict[str, float],
+                                operating_hours: float = 8000.0) -> float:
+    """Sum every unit's ``opex_per_year(x, operating_hours)`` (USD/yr).
 
-    The default BaseUnit implementation returns
-    ``sum(coef × x[var] for var, coef in objective_contribution.items())``
-    which is what the LP's OPEX objective already minimises.
+    v1.5.0.dev-AUDIT2 L3-1: ``operating_hours`` is now forwarded so units with
+    ``_OPEX_CONVENTION="USD_per_second"`` (e.g., BiomassGasifierHF) scale their
+    rate-basis coefficient correctly to annual USD/yr.
+
+    The default BaseUnit implementation sums
+    ``coef × x[var]`` over ``objective_contribution`` and applies the
+    convention-driven conversion (see ``BaseUnit._OPEX_CONVENTION``).
     """
     total = 0.0
     for unit in flowsheet.units:
         try:
+            # Pass hours; fall back if a v1.4 unit hasn't been migrated.
+            total += float(unit.opex_per_year(solution_x, operating_hours))
+        except TypeError:
+            # Backward-compat shim for any caller still on the v1.4 (x,) signature.
             total += float(unit.opex_per_year(solution_x))
         except Exception:
             continue
@@ -624,7 +633,9 @@ def compute_project_economics(
 
     purchase_CE500 = _aggregate_capex_purchase_USD(flowsheet, solution_x)
     capex_annual   = ee.annualized_capex(purchase_CE500, lang_factor=cfg.lang_factor)
-    opex_annual    = _aggregate_opex_annual_USD(flowsheet, solution_x)
+    opex_annual    = _aggregate_opex_annual_USD(
+        flowsheet, solution_x, operating_hours=cfg.operating_hours_per_year,
+    )
     h2_kg_s        = _extract_h2_kg_per_s(kpis, flowsheet, solution_x)
     power_kw       = _extract_power_out_kW(kpis)
 

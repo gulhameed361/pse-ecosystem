@@ -43,7 +43,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-from pse_ecosystem.core.contracts import StreamPort
+from pse_ecosystem.core.contracts import LinearizedModel, PrimalGuess, StreamPort
 from pse_ecosystem.models.base_unit import BaseUnit
 from pse_ecosystem.models.biomass.biomass_database import element_feeds_mol_s, get_biomass
 
@@ -88,6 +88,9 @@ class BiomassGasifierHF(BaseUnit):
     """
 
     is_linear: bool = False
+    # v1.5.0.dev-AUDIT2 L3-1: biomass_cost_USD_per_kg × F_biomass [kg/s] gives
+    # USD/s — the BaseUnit OPEX aggregator must scale by 3600 × operating_hours.
+    _OPEX_CONVENTION = "USD_per_second"
 
     def __init__(
         self,
@@ -257,9 +260,141 @@ class BiomassGasifierHF(BaseUnit):
         vol_total_Nm3_s = n_total * _VM_MOLAR / 1000.0   # mol/s → Nm³/s
         yield_Nm3_per_kg = vol_total_Nm3_s / F_dry if F_dry > 1e-9 else 0.0
 
+        # H₂ production rate KPIs (v1.5.0.dev-AUDIT2 L3-2: uid-prefixed for
+        # consistent aggregation with PSA/PEM/ElectrolyserHF).
+        h2_kg_s = n["H2"] * _MW_syngas["H2"] / 1000.0   # mol/s × g/mol / 1000 = kg/s
+        h2_kg_h = h2_kg_s * 3600.0
+
         return {
             f"{uid}.H2_pct_vol": h2_pct,
             f"{uid}.CGE_percent": cge,
             f"{uid}.syngas_yield_Nm3_per_kg": yield_Nm3_per_kg,
             f"{uid}.LHV_syngas_kW": energy_kW,
+            f"{uid}.H2_production_kg_s": h2_kg_s,
+            f"{uid}.H2_production_kg_h": h2_kg_h,
         }
+
+    # ── Analytical Jacobian (v1.5.0.dev-AUDIT2 L3-3) ─────────────────────────
+
+    def linearize(self, guess: PrimalGuess) -> LinearizedModel:
+        """Exact analytical Jacobian. 6 residuals × 8–9 variables.
+
+        Variable order (column ordering of J):
+          [F_Biomass, *agent_vars, F_H2, F_CO, F_CO2, F_H2O, F_CH4, F_N2]
+
+        Replaces the BaseUnit FD default (48–54 residual calls per linearise).
+        Element-balance rows are linear; equilibrium rows differentiate
+        analytically from f[4] = K_wgs·n_CO·n_H2O − n_CO2·n_H2 and
+        f[5] = K_met·n_CO·n_H2³·(P/n_tot)² − n_CH4·n_H2O.
+        """
+        variables = self.variables()
+        n = len(variables)
+        x0_dict = {v: guess.values.get(v, 0.0) for v in variables}
+        x0 = np.array([x0_dict[v] for v in variables], dtype=float)
+
+        # Index helpers
+        i_biomass = 0
+        if self.gasifying_agent == "Steam":
+            i_H2O_agent = 1
+            i_O2_agent  = None
+            i_N2_agent  = None
+            i_syngas_start = 2
+        else:  # Air
+            i_H2O_agent = None
+            i_O2_agent  = 1
+            i_N2_agent  = 2
+            i_syngas_start = 3
+        i_H2  = i_syngas_start + 0
+        i_CO  = i_syngas_start + 1
+        i_CO2 = i_syngas_start + 2
+        i_H2O = i_syngas_start + 3
+        i_CH4 = i_syngas_start + 4
+        i_N2  = i_syngas_start + 5
+
+        # Read values at linearisation point (with same floors as residual())
+        n_H2  = max(x0_dict[variables[i_H2]],  1e-12)
+        n_CO  = max(x0_dict[variables[i_CO]],  1e-12)
+        n_CO2 = max(x0_dict[variables[i_CO2]], 1e-12)
+        n_H2O = max(x0_dict[variables[i_H2O]], 1e-12)
+        n_CH4 = max(x0_dict[variables[i_CH4]], 1e-12)
+        n_N2  = max(x0_dict[variables[i_N2]],  1e-12)
+        n_total = n_H2 + n_CO + n_CO2 + n_H2O + n_CH4 + n_N2
+        P = self.P_atm
+        K_wgs = _kp_wgs(self.T_K)
+        K_met = _kp_met(self.T_K)
+
+        # Per-element atom contributions from biomass [mol element / kg dry]
+        feeds_per_kg = element_feeds_mol_s(self.biomass_type, 1.0)
+        a_C = feeds_per_kg["C"]; a_H = feeds_per_kg["H"]
+        a_O = feeds_per_kg["O"]; a_N = feeds_per_kg["N"]
+
+        f0 = self.residual(x0_dict)
+        J = np.zeros((6, n), dtype=float)
+
+        # Row 0: C balance = n_CO + n_CO2 + n_CH4 − a_C · F_biomass
+        J[0, i_biomass] = -a_C
+        J[0, i_CO]  = 1.0
+        J[0, i_CO2] = 1.0
+        J[0, i_CH4] = 1.0
+
+        # Row 1: H balance = 2 n_H2 + 2 n_H2O + 4 n_CH4 − (a_H · F_biomass + 2 · F_steam)
+        J[1, i_biomass] = -a_H
+        if i_H2O_agent is not None:
+            J[1, i_H2O_agent] = -2.0
+        J[1, i_H2]  = 2.0
+        J[1, i_H2O] = 2.0
+        J[1, i_CH4] = 4.0
+
+        # Row 2: O balance = n_CO + 2 n_CO2 + n_H2O − (a_O · F_biomass + F_steam + 2 · F_O2)
+        J[2, i_biomass] = -a_O
+        if i_H2O_agent is not None:
+            J[2, i_H2O_agent] = -1.0
+        if i_O2_agent is not None:
+            J[2, i_O2_agent] = -2.0
+        J[2, i_CO]  = 1.0
+        J[2, i_CO2] = 2.0
+        J[2, i_H2O] = 1.0
+
+        # Row 3: N balance = 2 n_N2 − (a_N · F_biomass + 2 · F_N2_air)
+        J[3, i_biomass] = -a_N
+        if i_N2_agent is not None:
+            J[3, i_N2_agent] = -2.0
+        J[3, i_N2] = 2.0
+
+        # Row 4: K_wgs · n_CO · n_H2O − n_CO2 · n_H2
+        J[4, i_CO]  =  K_wgs * n_H2O
+        J[4, i_H2O] =  K_wgs * n_CO
+        J[4, i_CO2] = -n_H2
+        J[4, i_H2]  = -n_CO2
+
+        # Row 5: K_met · n_CO · n_H2³ · (P/n_tot)² − n_CH4 · n_H2O
+        # Let M = K_met · (P/n_tot)²; f5 = M · n_CO · n_H2³ − n_CH4 · n_H2O
+        # ∂f5/∂n_X for X ∈ syngas needs chain rule because n_tot depends on every syngas n.
+        M = K_met * (P / n_total) ** 2
+        f5_kinetic = M * n_CO * n_H2 ** 3
+        # ∂M/∂n_total = K_met · 2 P² · (−1/n_tot³) = −2 M / n_tot
+        dM_dn_tot = -2.0 * M / n_total
+        # Partial derivative of f5 w.r.t. any syngas component k:
+        #   d/dn_k [M · n_CO · n_H2³] + product-rule corrections for n_CO, n_H2.
+        # Component-wise dn_total/dn_k = 1 for all syngas vars.
+        # Direct terms first:
+        d_chain = dM_dn_tot * n_CO * n_H2 ** 3   # chain term applies to every syngas index
+        J[5, i_H2]  = d_chain + M * n_CO * 3.0 * n_H2 ** 2
+        J[5, i_CO]  = d_chain + M * n_H2 ** 3
+        J[5, i_CO2] = d_chain
+        J[5, i_H2O] = d_chain - n_CH4
+        J[5, i_CH4] = d_chain - n_H2O
+        J[5, i_N2]  = d_chain
+
+        return LinearizedModel(
+            unit_id=self.unit_id,
+            variables=variables,
+            x0=x0,
+            f0=f0,
+            J=J,
+            bounds=self.bounds(),
+            objective_terms=self.objective_contribution(x0_dict),
+            is_exact=False,   # equilibrium constants are nonlinear in n
+            trust_region=self.trust_region,
+            kpi_gradients=self.kpi_gradients(x0_dict),
+        )
