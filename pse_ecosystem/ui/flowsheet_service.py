@@ -287,14 +287,21 @@ class ProjectEconomicsConfig:
 
     Passed from Layer 1 UI to ``build_objective_extra()`` so the LP objective
     coefficients correctly reflect the user's project-economics settings.
+
+    Notes
+    -----
+    ``tax_rate`` and ``inflation_rate`` are collected for completeness and
+    reported in the Excel Project Economics sheet, but are NOT yet consumed
+    by the v1.5.0.dev LP objective (which uses pre-tax nominal cash flows).
+    They are reserved for the v1.6 after-tax DCF rollout.
     """
 
     # Financial
     plant_life_yr: int = 20
     interest_rate: float = 0.08       # WACC (fraction)
-    tax_rate: float = 0.20
-    inflation_rate: float = 0.025
-    target_year: int = 2024
+    tax_rate: float = 0.20            # v1.6 placeholder
+    inflation_rate: float = 0.025     # v1.6 placeholder
+    target_year: int = 2024           # CEPCI cost-escalation target year
     # Operational
     operating_hours_per_year: float = 8_000.0
     # Utilities / feedstocks
@@ -303,6 +310,28 @@ class ProjectEconomicsConfig:
     water_price_USD_per_tonne: float = 0.5
     cooling_water_price_USD_per_GJ: float = 0.35
     carbon_tax_USD_per_tonne: float = 50.0
+    # Installation cost factor for SSLW purchase → installed conversion
+    lang_factor: float = 5.0
+
+    def __post_init__(self) -> None:
+        # v1.5.0.dev-AUDIT D3+D6: fail loudly on misconfiguration.
+        if self.plant_life_yr <= 0:
+            raise ValueError(
+                f"plant_life_yr must be a positive integer, got {self.plant_life_yr}"
+            )
+        if self.interest_rate < 0.0:
+            raise ValueError(
+                f"interest_rate must be >= 0, got {self.interest_rate}"
+            )
+        if not (0.0 < self.operating_hours_per_year <= 8760.0):
+            raise ValueError(
+                f"operating_hours_per_year must be in (0, 8760], "
+                f"got {self.operating_hours_per_year}"
+            )
+        if self.lang_factor < 1.0:
+            raise ValueError(
+                f"lang_factor must be >= 1.0 (installed >= purchase), got {self.lang_factor}"
+            )
 
     @property
     def crf(self) -> float:
@@ -472,25 +501,114 @@ def build_objective_extra(
     return obj, False
 
 
+def _aggregate_capex_purchase_USD(flowsheet: "BaseFlowsheet",
+                                   solution_x: Dict[str, float]) -> float:
+    """Sum every unit's ``capex(x)`` (CE500-basis purchase cost) in USD."""
+    total = 0.0
+    for unit in flowsheet.units:
+        try:
+            total += float(unit.capex(solution_x))
+        except Exception:
+            # A broken unit-level capex() must not bring down the whole report.
+            continue
+    return total
+
+
+def _aggregate_opex_annual_USD(flowsheet: "BaseFlowsheet",
+                                solution_x: Dict[str, float]) -> float:
+    """Sum every unit's ``opex_per_year(x)`` (USD/yr).
+
+    The default BaseUnit implementation returns
+    ``sum(coef × x[var] for var, coef in objective_contribution.items())``
+    which is what the LP's OPEX objective already minimises.
+    """
+    total = 0.0
+    for unit in flowsheet.units:
+        try:
+            total += float(unit.opex_per_year(solution_x))
+        except Exception:
+            continue
+    return total
+
+
+def _extract_h2_kg_per_s(kpis: Dict[str, float],
+                          flowsheet: "BaseFlowsheet",
+                          solution_x: Dict[str, float]) -> float:
+    """Find the most-downstream H₂ production rate in kg/s.
+
+    Priority order:
+      1. KPI keys ending in ``H2_production_kg_s`` (PSA convention).
+      2. KPI keys ending in ``H2_production_kg_h`` ÷ 3600 (PEM convention).
+      3. Most-downstream ``F_H2`` outlet variable × M_H2 (assumes mol/s).
+    """
+    s_keys = [v for k, v in kpis.items() if k.endswith("H2_production_kg_s")]
+    if s_keys:
+        return max(s_keys)
+    h_keys = [v for k, v in kpis.items() if k.endswith("H2_production_kg_h")]
+    if h_keys:
+        return max(h_keys) / 3600.0
+    # Fallback: scan the LP solution for the most-downstream F_H2 outlet.
+    def _is_h2_outlet(name: str) -> bool:
+        parts = name.split(".")
+        return len(parts) >= 3 and parts[-1].lower() == "f_h2" and "out" in parts[1].lower()
+    h2_vars = sorted(v for v in solution_x if _is_h2_outlet(v))
+    if h2_vars:
+        # 0.002016 kg/mol — H₂ molecular weight; assumes the variable is mol/s.
+        return float(solution_x[h2_vars[-1]]) * 2.016e-3
+    return 0.0
+
+
+def _extract_power_out_kW(kpis: Dict[str, float]) -> float:
+    """Find net electrical output in kW.
+
+    Priority order:
+      1. KPI keys ending in ``W_elec_kW`` (CHP, PEM — note PEM consumes power
+         so this can be negative if PEM dominates).
+      2. KPI keys ending in ``total_useful_output_kW`` (CHP combined output).
+      3. KPI keys ending in ``power_out_kW`` / ``W_net_kW`` (forward-compat).
+    """
+    for suffix in ("total_useful_output_kW", "power_out_kW", "W_net_kW"):
+        vals = [v for k, v in kpis.items() if k.endswith(suffix)]
+        if vals:
+            return max(vals)
+    # Fallback: sum any W_elec_kW; this favours generation-dominant flowsheets.
+    elec = [v for k, v in kpis.items() if k.endswith("W_elec_kW")]
+    return sum(elec) if elec else 0.0
+
+
 def compute_project_economics(
+    flowsheet: "BaseFlowsheet",
+    solution_x: Dict[str, float],
     kpis: Dict[str, float],
     econ_config: Optional[ProjectEconomicsConfig] = None,
     obj_config: Optional[Dict] = None,
 ) -> List[Dict]:
     """Compute project-economics rows for the Excel 'Project Economics' sheet.
 
-    All EconomicEngine logic lives here (Layer-1 bridge) so that
-    ``app_streamlit.py`` never imports from ``pse_ecosystem.models.*`` directly.
+    This is the Layer-1 bridge between the solver result and the
+    EconomicEngine.  All Layer-3 imports are deferred inside this function so
+    that ``app_streamlit.py`` never imports from ``pse_ecosystem.models.*``
+    directly — the UI audit (`tests/ui_audit.py`) enforces this boundary.
 
     Parameters
     ----------
-    kpis       : ``SolveResult.kpis`` dict from the solver.
+    flowsheet  : ``BaseFlowsheet`` that was solved (provides per-unit capex/opex).
+    solution_x : ``SolveResult.x`` — the solution dictionary.
+    kpis       : ``SolveResult.kpis`` — aggregated unit KPIs.
     econ_config: ``ProjectEconomicsConfig`` instance (uses defaults when None).
-    obj_config : Raw ``objective_config`` dict from session state (for metadata rows).
+    obj_config : Raw ``objective_config`` dict from session state (metadata only).
 
     Returns
     -------
     List of row dicts with keys ``Metric``, ``Value``, ``Unit``.
+
+    Notes
+    -----
+    The CAPEX pipeline is:
+      Σ unit.capex(x)  [CE500 purchase, USD]
+        → × sslw_cepci_factor(target_year)   [target-year USD]
+        → × lang_factor                      [installed cost USD]
+        → × CRF(r, N)                        [USD/yr]
     """
     from pse_ecosystem.models.costing.economic_engine import EconomicEngine
 
@@ -498,41 +616,64 @@ def compute_project_economics(
     oc  = obj_config  or {}
 
     ee = EconomicEngine(
+        target_year=cfg.target_year,
         plant_life_yr=cfg.plant_life_yr,
         interest_rate=cfg.interest_rate,
         operating_hours_per_year=cfg.operating_hours_per_year,
     )
 
-    capex_annual = float(kpis.get("capex_annual_USD", 0.0))
-    opex_annual  = float(kpis.get("opex_annual_USD", 0.0))
-    h2_kg_s      = float(kpis.get("h2_kg_per_s", 0.0))
-    power_kw     = float(kpis.get("power_out_kW", 0.0))
+    purchase_CE500 = _aggregate_capex_purchase_USD(flowsheet, solution_x)
+    capex_annual   = ee.annualized_capex(purchase_CE500, lang_factor=cfg.lang_factor)
+    opex_annual    = _aggregate_opex_annual_USD(flowsheet, solution_x)
+    h2_kg_s        = _extract_h2_kg_per_s(kpis, flowsheet, solution_x)
+    power_kw       = _extract_power_out_kW(kpis)
 
     lcoh = ee.lcoh(capex_annual, opex_annual, h2_kg_s) if h2_kg_s > 0 else float("nan")
-    lcoe = ee.lcoe(capex_annual, opex_annual,
-                   power_kw * ee.operating_hours_per_year) if power_kw > 0 else float("nan")
-    installed = capex_annual / max(ee.capital_recovery_factor(), 1e-9)
+    lcoe = (
+        ee.lcoe(capex_annual, opex_annual, power_kw * ee.operating_hours_per_year)
+        if power_kw > 0 else float("nan")
+    )
+    installed = capex_annual / ee.capital_recovery_factor()
+    # Cash flow assumption (v1.5.0.dev): pre-tax, treating annual OPEX as a net
+    # outflow and ignoring product revenue (the LP doesn't know prices).  v1.6
+    # will add a revenue stream + after-tax DCF using cfg.tax_rate/inflation.
     npv = ee.npv(annual_net_cashflow=-opex_annual, initial_capex=installed)
     irr = ee.irr(initial_capex=installed, annual_net_cashflow=-opex_annual)
 
     import math
+
+    def _fmt_irr(r: float) -> float:
+        if math.isnan(r):
+            return float("nan")
+        if math.isinf(r):
+            return float("inf")
+        return round(r * 100.0, 4)
+
     return [
-        {"Metric": "Plant Life",           "Value": cfg.plant_life_yr,                         "Unit": "years"},
-        {"Metric": "Discount Rate (WACC)", "Value": round(cfg.interest_rate * 100, 2),          "Unit": "%"},
-        {"Metric": "CRF",                  "Value": round(ee.capital_recovery_factor(), 6),     "Unit": "—"},
-        {"Metric": "Operating Hours",      "Value": cfg.operating_hours_per_year,               "Unit": "h/yr"},
-        {"Metric": "Electricity Price",    "Value": cfg.electricity_price_USD_per_kWh,          "Unit": "USD/kWh"},
-        {"Metric": "Carbon Tax",           "Value": cfg.carbon_tax_USD_per_tonne,               "Unit": "USD/tonne CO₂"},
-        {"Metric": "Annualised CAPEX",     "Value": round(capex_annual, 2),                     "Unit": "USD/yr"},
-        {"Metric": "Annual OPEX",          "Value": round(opex_annual, 2),                      "Unit": "USD/yr"},
-        {"Metric": "TAC",                  "Value": round(capex_annual + opex_annual, 2),       "Unit": "USD/yr"},
-        {"Metric": "LCOH",                 "Value": round(lcoh, 6),                             "Unit": "USD/kg H₂"},
-        {"Metric": "LCOE",                 "Value": round(lcoe, 6),                             "Unit": "USD/kWh"},
-        {"Metric": "NPV",                  "Value": round(npv, 2),                              "Unit": "USD"},
-        {"Metric": "IRR",
-         "Value": round(irr * 100, 4) if not math.isnan(irr) else float("nan"),
-         "Unit": "%"},
-        {"Metric": "Objective Mode",       "Value": oc.get("mode", "—"),                       "Unit": "—"},
+        {"Metric": "Plant Life",            "Value": cfg.plant_life_yr,                          "Unit": "years"},
+        {"Metric": "Discount Rate (WACC)",  "Value": round(cfg.interest_rate * 100, 2),          "Unit": "%"},
+        {"Metric": "Tax Rate",              "Value": round(cfg.tax_rate * 100, 2),               "Unit": "% (informational)"},
+        {"Metric": "Inflation Rate",        "Value": round(cfg.inflation_rate * 100, 2),         "Unit": "% (informational)"},
+        {"Metric": "Target Year (CEPCI)",   "Value": cfg.target_year,                            "Unit": "—"},
+        {"Metric": "CEPCI Escalation",      "Value": round(ee.sslw_cepci_factor(), 4),           "Unit": "× CE500"},
+        {"Metric": "Lang Factor",           "Value": cfg.lang_factor,                            "Unit": "—"},
+        {"Metric": "CRF",                   "Value": round(ee.capital_recovery_factor(), 6),     "Unit": "—"},
+        {"Metric": "Operating Hours",       "Value": cfg.operating_hours_per_year,               "Unit": "h/yr"},
+        {"Metric": "Electricity Price",     "Value": cfg.electricity_price_USD_per_kWh,          "Unit": "USD/kWh"},
+        {"Metric": "Biomass Price",         "Value": cfg.biomass_price_USD_per_tonne,            "Unit": "USD/tonne"},
+        {"Metric": "Carbon Tax",            "Value": cfg.carbon_tax_USD_per_tonne,               "Unit": "USD/tonne CO₂"},
+        {"Metric": "Purchase CAPEX (CE500)", "Value": round(purchase_CE500, 2),                   "Unit": "USD"},
+        {"Metric": "Installed CAPEX",       "Value": round(installed, 2),                        "Unit": "USD"},
+        {"Metric": "Annualised CAPEX",      "Value": round(capex_annual, 2),                     "Unit": "USD/yr"},
+        {"Metric": "Annual OPEX",           "Value": round(opex_annual, 2),                      "Unit": "USD/yr"},
+        {"Metric": "TAC",                   "Value": round(capex_annual + opex_annual, 2),       "Unit": "USD/yr"},
+        {"Metric": "H₂ Production",         "Value": round(h2_kg_s, 6),                          "Unit": "kg/s"},
+        {"Metric": "Power Output",          "Value": round(power_kw, 4),                         "Unit": "kW"},
+        {"Metric": "LCOH",                  "Value": round(lcoh, 6) if not math.isnan(lcoh) else float("nan"), "Unit": "USD/kg H₂"},
+        {"Metric": "LCOE",                  "Value": round(lcoe, 6) if not math.isnan(lcoe) else float("nan"), "Unit": "USD/kWh"},
+        {"Metric": "NPV",                   "Value": round(npv, 2),                              "Unit": "USD"},
+        {"Metric": "IRR",                   "Value": _fmt_irr(irr),                              "Unit": "%"},
+        {"Metric": "Objective Mode",        "Value": oc.get("mode", "—"),                        "Unit": "—"},
     ]
 
 

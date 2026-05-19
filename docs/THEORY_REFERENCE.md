@@ -743,7 +743,17 @@ There is no closed-form solution; the implementation uses bisection over
 $r \in [0, 10]$ to tolerance $10^{-6}$ within 200 iterations.  Returns
 `NaN` when $CF \times N \leq C_0$ (project never pays back undiscounted).
 
-**Code:** `EconomicEngine.irr(initial_capex, annual_net_cashflow)`
+**Code:** `EconomicEngine.irr(initial_capex, annual_net_cashflow, r_max=10.0)`
+
+**Return-value semantics (v1.5.0.dev-AUDIT):**
+| Condition | Returned IRR |
+|---|---|
+| Project never pays back undiscounted (CF·N ≤ C₀) | `nan` |
+| IRR exceeds `r_max` (1000% by default) | `+inf` |
+| Otherwise | bisected IRR to tolerance |
+
+This makes pathological cash flows fail loudly in the Project Economics
+Excel sheet rather than silently clamping at 1000%.
 
 ### 7.4 Levelized Cost of Hydrogen (LCOH)
 

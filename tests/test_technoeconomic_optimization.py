@@ -14,6 +14,7 @@ from pse_ecosystem.ui.flowsheet_service import (
     OBJECTIVE_TIERS,
     build_objective_extra,
     build_custom_flowsheet,
+    compute_project_economics,
 )
 
 
@@ -93,10 +94,27 @@ class TestEconomicEngineExtensions:
         irr = ee.irr(initial_capex=10_000, annual_net_cashflow=1)
         assert math.isnan(irr), "Project that never pays back should return NaN IRR"
 
-    def test_irr_zero_capex_not_nan(self):
+    def test_irr_zero_capex_returns_inf(self):
+        """v1.5.0.dev-AUDIT D4: zero CapEx → IRR is unbounded → returns +inf."""
         ee = EconomicEngine(plant_life_yr=10, interest_rate=0.08)
         irr = ee.irr(initial_capex=0.0, annual_net_cashflow=100)
-        assert not math.isnan(irr) or irr > 0
+        assert math.isinf(irr) and irr > 0, (
+            f"Zero CapEx should produce inf IRR, got {irr}"
+        )
+
+    def test_irr_unrealistic_pays_back_returns_inf(self):
+        """v1.5.0.dev-AUDIT D4: when CF >> C0, IRR exceeds r_max → returns +inf."""
+        ee = EconomicEngine(plant_life_yr=10, interest_rate=0.08)
+        irr = ee.irr(initial_capex=1.0, annual_net_cashflow=10_000.0)
+        assert math.isinf(irr) and irr > 0
+
+    def test_irr_custom_r_max_widens_search(self):
+        ee = EconomicEngine(plant_life_yr=10, interest_rate=0.08)
+        irr_default = ee.irr(initial_capex=1.0, annual_net_cashflow=100.0)
+        irr_wider   = ee.irr(initial_capex=1.0, annual_net_cashflow=100.0, r_max=200.0)
+        # Default r_max=10 → inf; wider r_max=200 should resolve a finite IRR
+        assert math.isinf(irr_default)
+        assert not math.isinf(irr_wider) and irr_wider > 10.0
 
     def test_lcoe_formula_value(self):
         ee = EconomicEngine()
@@ -291,3 +309,210 @@ class TestProjectEconomicsExcel:
         ]
         for name in expected_sheets:
             assert isinstance(name, str) and len(name) > 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v1.5.0.dev-AUDIT: Input validation (D3, D6)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestInputValidation:
+
+    def test_economic_engine_rejects_zero_plant_life(self):
+        with pytest.raises(ValueError, match="plant_life_yr"):
+            EconomicEngine(plant_life_yr=0)
+
+    def test_economic_engine_rejects_negative_plant_life(self):
+        with pytest.raises(ValueError, match="plant_life_yr"):
+            EconomicEngine(plant_life_yr=-5)
+
+    def test_economic_engine_rejects_negative_interest_rate(self):
+        with pytest.raises(ValueError, match="interest_rate"):
+            EconomicEngine(interest_rate=-0.01)
+
+    def test_economic_engine_rejects_zero_operating_hours(self):
+        with pytest.raises(ValueError, match="operating_hours"):
+            EconomicEngine(operating_hours_per_year=0.0)
+
+    def test_economic_engine_rejects_overlong_operating_hours(self):
+        with pytest.raises(ValueError, match="operating_hours"):
+            EconomicEngine(operating_hours_per_year=8761.0)
+
+    def test_economic_engine_accepts_full_year_operation(self):
+        # 8760 h/yr (100% capacity) is the upper edge — must be accepted.
+        ee = EconomicEngine(operating_hours_per_year=8760.0)
+        assert ee.operating_hours_per_year == 8760.0
+
+    def test_project_economics_config_rejects_zero_plant_life(self):
+        with pytest.raises(ValueError, match="plant_life_yr"):
+            ProjectEconomicsConfig(plant_life_yr=0)
+
+    def test_project_economics_config_rejects_negative_interest_rate(self):
+        with pytest.raises(ValueError, match="interest_rate"):
+            ProjectEconomicsConfig(interest_rate=-0.05)
+
+    def test_project_economics_config_rejects_invalid_lang_factor(self):
+        with pytest.raises(ValueError, match="lang_factor"):
+            ProjectEconomicsConfig(lang_factor=0.5)
+
+    def test_project_economics_config_target_year_propagates(self):
+        cfg = ProjectEconomicsConfig(target_year=2030)
+        assert cfg.target_year == 2030
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v1.5.0.dev-AUDIT D1: compute_project_economics() must read from real unit
+# capex(), opex_per_year(), and the unit-tagged H2_production_kg_h/_s KPIs.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestComputeProjectEconomicsAudit:
+    """End-to-end: real flowsheet → real solve → non-zero economics."""
+
+    def _solve_pem_flowsheet(self):
+        """Solve a single-PEM flowsheet with a non-trivial OPEX objective."""
+        from pse_ecosystem.core.contracts import SolveMode
+        from pse_ecosystem.solvers.orchestrator import Orchestrator
+        from pse_ecosystem.solvers.slp import SLPConfig
+
+        fs = _pem_flowsheet()
+        fs.objective_extra, fs.force_feasibility = build_objective_extra(
+            fs, "Minimize OPEX"
+        )
+        # Pin H₂ demand so the LP has a non-zero electricity draw → non-zero OPEX.
+        all_vars = fs.all_variables()
+        h2_vars = [v for v in all_vars if v.lower().endswith("f_h2") or v.endswith("h2")]
+        if h2_vars:
+            # Don't over-constrain — just set a lower bound.
+            fs.extra_bounds.setdefault(h2_vars[0], (1.0, 100.0))
+        orch = Orchestrator(flowsheet=fs, mode=SolveMode.FIXED_LP,
+                            slp_config=SLPConfig(max_iter=30))
+        result = orch.solve()
+        return fs, result
+
+    def test_compute_project_economics_returns_nonzero_capex_for_pem(self):
+        """ElectrolyserHF.capex() returns ≥70 USD; PEMToy has no capex method
+        (returns BaseUnit default 0).  The single-PEM flowsheet should still
+        produce a non-zero installed CAPEX once the engine's CEPCI + Lang factor
+        is applied to any non-trivial unit-capex sum."""
+        # Build a minimal PEM + verify _aggregate_capex_purchase_USD reports 0
+        # for PEMToy (no override) — the test instead exercises ElectrolyserHF.
+        cfg_pem = {"units": [{"type": "ElectrolyserHF", "id": "elec", "params": {}}],
+                   "connections": []}
+        fs = build_custom_flowsheet(cfg_pem)
+        # Mock solution with a non-zero W_elec_kW so capex() returns > 0.
+        x = {v: 100.0 for v in fs.all_variables()}
+        rows = compute_project_economics(
+            flowsheet=fs, solution_x=x, kpis={}, econ_config=ProjectEconomicsConfig()
+        )
+        metric_to_value = {r["Metric"]: r["Value"] for r in rows}
+        assert metric_to_value["Purchase CAPEX (CE500)"] > 0, (
+            f"ElectrolyserHF should report non-zero capex; got "
+            f"{metric_to_value['Purchase CAPEX (CE500)']}"
+        )
+        assert metric_to_value["Installed CAPEX"] > metric_to_value["Purchase CAPEX (CE500)"], (
+            "Installed CAPEX = purchase × CEPCI × Lang factor must exceed purchase"
+        )
+        assert metric_to_value["Annualised CAPEX"] > 0
+
+    def test_compute_project_economics_reports_h2_production(self):
+        """A flowsheet whose KPIs include H2_production_kg_h must surface a
+        non-zero H₂ Production row (D1 regression: previous version read the
+        non-existent kpi key 'h2_kg_per_s' and always reported 0)."""
+        cfg = {"units": [{"type": "ElectrolyserHF", "id": "elec", "params": {}}],
+               "connections": []}
+        fs = build_custom_flowsheet(cfg)
+        x = {v: 50.0 for v in fs.all_variables()}
+        # Synthesise kpis that mimic real ElectrolyserHF output.
+        kpis = {"H2_production_kg_h": 36.0, "W_elec_kW": 2000.0,
+                "efficiency_pct": 70.0, "specific_power_kWh_per_kgH2": 55.0}
+        rows = compute_project_economics(
+            flowsheet=fs, solution_x=x, kpis=kpis,
+            econ_config=ProjectEconomicsConfig()
+        )
+        m2v = {r["Metric"]: r["Value"] for r in rows}
+        # 36 kg/h ÷ 3600 = 0.01 kg/s
+        assert m2v["H₂ Production"] == pytest.approx(0.01, rel=1e-4)
+        # LCOH must therefore be finite, not NaN
+        assert not (m2v["LCOH"] != m2v["LCOH"]), "LCOH should not be NaN when H₂ is produced"
+        assert m2v["LCOH"] > 0
+
+    def test_compute_project_economics_prefers_psa_kg_s_over_pem_kg_h(self):
+        """When both *_kg_s (PSA) and *_kg_h (PEM) KPIs are present, the kg_s
+        value wins (more accurate, PSA convention)."""
+        cfg = {"units": [{"type": "PEMToy", "id": "pem", "params": {}}],
+               "connections": []}
+        fs = build_custom_flowsheet(cfg)
+        kpis = {
+            "psa.H2_production_kg_s": 0.05,        # PSA-style (kg/s)
+            "H2_production_kg_h": 36.0,            # PEM-style (kg/h → 0.01 kg/s)
+        }
+        rows = compute_project_economics(
+            flowsheet=fs, solution_x={}, kpis=kpis,
+            econ_config=ProjectEconomicsConfig()
+        )
+        m2v = {r["Metric"]: r["Value"] for r in rows}
+        assert m2v["H₂ Production"] == pytest.approx(0.05, rel=1e-4), (
+            "kg_s KPI must take priority over kg_h KPI"
+        )
+
+    def test_compute_project_economics_fallback_to_outlet_variable(self):
+        """No H₂ KPIs present → fall back to scanning solution_x for an
+        outlet F_H2 variable; convert mol/s → kg/s."""
+        cfg = {"units": [{"type": "BiomassGasifierHF", "id": "gasifier",
+                          "params": {"T_gasifier_C": 800.0,
+                                     "gasifying_agent": "Steam"}}],
+               "connections": []}
+        fs = build_custom_flowsheet(cfg)
+        # Inject a fake solution with 100 mol/s H₂ at the gasifier syngas outlet.
+        x = {v: 0.0 for v in fs.all_variables()}
+        for v in x:
+            if v.endswith(".F_H2") and "out" in v.split(".")[1].lower():
+                x[v] = 100.0  # mol/s
+        rows = compute_project_economics(
+            flowsheet=fs, solution_x=x, kpis={},
+            econ_config=ProjectEconomicsConfig()
+        )
+        m2v = {r["Metric"]: r["Value"] for r in rows}
+        # 100 mol/s × 0.002016 kg/mol ≈ 0.2016 kg/s
+        assert m2v["H₂ Production"] == pytest.approx(0.2016, rel=1e-3)
+
+    def test_compute_project_economics_reports_all_metadata_rows(self):
+        """Every row required by the audit must be present."""
+        cfg = {"units": [{"type": "PEMToy", "id": "pem", "params": {}}],
+               "connections": []}
+        fs = build_custom_flowsheet(cfg)
+        rows = compute_project_economics(
+            flowsheet=fs, solution_x={}, kpis={},
+            econ_config=ProjectEconomicsConfig(target_year=2030),
+            obj_config={"mode": "Minimize LCOH (Levelized Cost of H₂)"},
+        )
+        metrics = {r["Metric"] for r in rows}
+        required = {
+            "Plant Life", "Discount Rate (WACC)", "Tax Rate", "Inflation Rate",
+            "Target Year (CEPCI)", "CEPCI Escalation", "Lang Factor", "CRF",
+            "Operating Hours", "Electricity Price", "Biomass Price", "Carbon Tax",
+            "Purchase CAPEX (CE500)", "Installed CAPEX", "Annualised CAPEX",
+            "Annual OPEX", "TAC", "H₂ Production", "Power Output",
+            "LCOH", "LCOE", "NPV", "IRR", "Objective Mode",
+        }
+        missing = required - metrics
+        assert not missing, f"Project Economics sheet missing rows: {missing}"
+
+    def test_compute_project_economics_uses_target_year_for_cepci(self):
+        """target_year=2030 must scale CEPCI above 2024 baseline."""
+        cfg = {"units": [{"type": "ElectrolyserHF", "id": "elec", "params": {}}],
+               "connections": []}
+        fs = build_custom_flowsheet(cfg)
+        x = {v: 100.0 for v in fs.all_variables()}
+        rows_2024 = compute_project_economics(
+            flowsheet=fs, solution_x=x, kpis={},
+            econ_config=ProjectEconomicsConfig(target_year=2024),
+        )
+        rows_2030 = compute_project_economics(
+            flowsheet=fs, solution_x=x, kpis={},
+            econ_config=ProjectEconomicsConfig(target_year=2030),
+        )
+        capex_2024 = next(r["Value"] for r in rows_2024 if r["Metric"] == "Installed CAPEX")
+        capex_2030 = next(r["Value"] for r in rows_2030 if r["Metric"] == "Installed CAPEX")
+        assert capex_2030 > capex_2024, (
+            f"2030 CAPEX ({capex_2030}) should exceed 2024 ({capex_2024}) due to CEPCI escalation"
+        )

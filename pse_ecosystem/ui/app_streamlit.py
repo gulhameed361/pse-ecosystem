@@ -1,4 +1,4 @@
-"""PSE Ecosystem — multi-page Streamlit front-end (v1.4.1).
+"""PSE Ecosystem — multi-page Streamlit front-end (v1.5.0.dev).
 
 Run with::
 
@@ -1532,20 +1532,34 @@ def _page_solver_monitor():
                 _cfg_xls = ProjectEconomicsConfig(
                     plant_life_yr=int(_oc_xls.get("plant_life_yr", 20)),
                     interest_rate=float(_oc_xls.get("interest_rate", 0.08)),
+                    tax_rate=float(_oc_xls.get("tax_rate", 0.20)),
+                    inflation_rate=float(_oc_xls.get("inflation_rate", 0.025)),
                     operating_hours_per_year=float(_oc_xls.get("op_hours", 8000.0)),
                     electricity_price_USD_per_kWh=float(_oc_xls.get("elec_price", 0.05)),
+                    biomass_price_USD_per_tonne=float(_oc_xls.get("biomass_price", 60.0)),
+                    water_price_USD_per_tonne=float(_oc_xls.get("water_price", 0.5)),
+                    cooling_water_price_USD_per_GJ=float(_oc_xls.get("cw_price", 0.35)),
                     carbon_tax_USD_per_tonne=float(_oc_xls.get("carbon_tax", 50.0)),
                 )
-                _econ_rows = compute_project_economics(
-                    kpis=result.kpis,
-                    econ_config=_cfg_xls,
-                    obj_config=_oc_xls,
-                )
-                _pd.DataFrame(_econ_rows).to_excel(
-                    _writer, sheet_name="Project Economics", index=False
-                )
-            except Exception:
-                pass  # economics sheet is best-effort; never block the download
+                if _last_fs is not None and result.x:
+                    _econ_rows = compute_project_economics(
+                        flowsheet=_last_fs,
+                        solution_x=result.x,
+                        kpis=result.kpis,
+                        econ_config=_cfg_xls,
+                        obj_config=_oc_xls,
+                    )
+                    _pd.DataFrame(_econ_rows).to_excel(
+                        _writer, sheet_name="Project Economics", index=False
+                    )
+            except Exception as _econ_exc:
+                # Surface failure via a single-row diagnostic sheet so the user
+                # sees WHY the economics aren't populated instead of silent absence.
+                _pd.DataFrame([{
+                    "Metric": "ERROR",
+                    "Value":  f"{type(_econ_exc).__name__}: {_econ_exc}",
+                    "Unit":   "—",
+                }]).to_excel(_writer, sheet_name="Project Economics", index=False)
 
         st.download_button(
             label="⬇ Download Results (XLSX)",

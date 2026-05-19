@@ -141,15 +141,33 @@ class EconomicEngine:
     Parameters
     ----------
     target_year : Cost year for equipment pricing escalation.
-    plant_life_yr : Project lifetime [years].
+    plant_life_yr : Project lifetime [years]. Must be a positive integer.
     interest_rate : Discount / interest rate (fraction, e.g. 0.08 for 8%).
+        Must be >= 0 (negative real rates are out of scope for v1.5).
     operating_hours_per_year : Equivalent full-load hours/yr (default 8000).
+        Must be in (0, 8760].
     """
 
     target_year: int = 2024
     plant_life_yr: int = 20
     interest_rate: float = 0.08
     operating_hours_per_year: float = 8000.0
+
+    def __post_init__(self) -> None:
+        # v1.5.0.dev-AUDIT D3+D6: validate inputs to fail loudly on misconfiguration.
+        if self.plant_life_yr <= 0:
+            raise ValueError(
+                f"plant_life_yr must be a positive integer, got {self.plant_life_yr}"
+            )
+        if self.interest_rate < 0.0:
+            raise ValueError(
+                f"interest_rate must be >= 0, got {self.interest_rate}"
+            )
+        if not (0.0 < self.operating_hours_per_year <= 8760.0):
+            raise ValueError(
+                f"operating_hours_per_year must be in (0, 8760], "
+                f"got {self.operating_hours_per_year}"
+            )
 
     # ── CEPCI ────────────────────────────────────────────────────────────────
 
@@ -274,13 +292,19 @@ class EconomicEngine:
         annual_net_cashflow: float,
         tol: float = 1e-6,
         max_iter: int = 200,
+        r_max: float = 10.0,
     ) -> float:
         """Internal Rate of Return via bisection [fraction].
 
         Finds r* such that NPV(r*) = 0:
             −C₀ + CF · (1 − (1+r)^−N) / r = 0
 
-        Returns ``float('nan')`` when the project never pays back (CF × N ≤ C₀).
+        Return values
+        -------------
+        ``float('nan')`` : project never pays back (CF × N ≤ C₀ at r=0).
+        ``float('inf')`` : IRR exceeds ``r_max`` (project pays back so fast that
+                           any realistic discount rate ≤ r_max yields NPV > 0).
+        Otherwise        : the bisected IRR in [0, r_max] to tolerance ``tol``.
 
         Parameters
         ----------
@@ -288,6 +312,7 @@ class EconomicEngine:
         annual_net_cashflow : Uniform annual cash flow [USD/yr].
         tol                 : Bisection tolerance on rate (fraction).
         max_iter            : Maximum bisection iterations.
+        r_max               : Upper bound for IRR search (default 10 = 1000 %).
         """
         n = self.plant_life_yr
 
@@ -298,8 +323,11 @@ class EconomicEngine:
 
         if _npv_at_r(0.0) <= 0.0:
             return float("nan")
+        # v1.5.0.dev-AUDIT D4: surface unbounded IRR as inf instead of clamping at r_max
+        if _npv_at_r(r_max) > 0.0:
+            return float("inf")
 
-        r_lo, r_hi = 0.0, 10.0
+        r_lo, r_hi = 0.0, r_max
         for _ in range(max_iter):
             r_mid = (r_lo + r_hi) / 2.0
             if _npv_at_r(r_mid) > 0.0:

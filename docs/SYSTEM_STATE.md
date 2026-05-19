@@ -8,7 +8,20 @@
 
 ## What's New in v1.5.0.dev — Multi-Tier Optimization Engine
 
-*303 tests pass, 2 skipped (pre-existing v1.5.x investigation items), 0 failures.*
+*321 tests pass (303 release + 18 audit-driven), 2 skipped (pre-existing v1.5.x investigation items), 0 failures.*
+
+### v1.5.0.dev-AUDIT — Hardening sweep (8 defects closed)
+
+| ID | Severity | Fix |
+|---|---|---|
+| **D1** | CRITICAL | `compute_project_economics()` now reads from real unit `capex(x)`, `opex_per_year(x)` and the unit-tagged `H2_production_kg_h/_s` KPIs (previous version queried non-existent keys → Sheet 5 was always zero/NaN) |
+| **D2/D7** | Important | Module docstrings in `app_streamlit.py` and `__init__.py` bumped to v1.5.0.dev |
+| **D3** | Important | `ProjectEconomicsConfig` + `EconomicEngine` validate `plant_life_yr > 0`, `interest_rate ≥ 0`, `0 < operating_hours ≤ 8760`, `lang_factor ≥ 1` in `__post_init__` (zero/negative values now raise `ValueError`) |
+| **D4** | Important | `EconomicEngine.irr()` returns `+inf` for IRR > `r_max` (default 10 = 1000%) instead of silently clamping; `r_max` parameter exposed for user override |
+| **D5** | Important | `ProjectEconomicsConfig.target_year` field added — UI can now control CEPCI cost-escalation target year |
+| **D6** | Important | `ProjectEconomicsConfig.lang_factor` field added — installed-cost multiplier exposed at UI layer |
+| **D7** | Minor | New `TestComputeProjectEconomicsAudit` (6 tests) + `TestInputValidation` (10 tests) classes — exercise the real KPI pipeline end-to-end |
+| **Excel** | Important | Sheet 5 now includes `Purchase CAPEX (CE500)`, `Installed CAPEX`, `H₂ Production`, `Power Output`, `Tax Rate`, `Inflation Rate`, `Target Year`, `Lang Factor`, `CEPCI Escalation` rows (24 metrics total). Failure during economics computation emits an ERROR row instead of silent absence. |
 
 | Area | Change |
 |---|---|
