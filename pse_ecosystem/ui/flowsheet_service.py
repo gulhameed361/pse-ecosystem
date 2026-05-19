@@ -806,16 +806,34 @@ def deserialize_flowsheet_config(blob: str) -> Dict[str, Any]:
     return data
 
 
+_SOLVE_HISTORY_PATH = None  # lazy: set on first use to ~/.pse_ecosystem/history.jsonl
+
+
+def _get_history_path():
+    global _SOLVE_HISTORY_PATH
+    if _SOLVE_HISTORY_PATH is None:
+        import pathlib
+        home = pathlib.Path.home() / ".pse_ecosystem"
+        try:
+            home.mkdir(parents=True, exist_ok=True)
+            _SOLVE_HISTORY_PATH = home / "history.jsonl"
+        except OSError:
+            _SOLVE_HISTORY_PATH = False   # disable persistence on permission errors
+    return _SOLVE_HISTORY_PATH
+
+
 def record_solve_in_history(session_state, result, mode_label: str,
                               objective_label: str, max_entries: int = 20) -> None:
-    """Append a compact record of a SolveResult to the session-state history.
+    """Append a compact record of a SolveResult to the session-state history
+    AND append to ``~/.pse_ecosystem/history.jsonl`` for cross-session
+    persistence (v1.5.0.dev-AUDIT4 #6).
 
-    v1.5.0.dev-AUDIT3 UI-2: powers the Solve History page; the list is capped
-    at ``max_entries`` (default 20) using FIFO eviction.
+    The in-memory list is capped at ``max_entries`` (default 20) via FIFO
+    eviction; the on-disk JSONL is unbounded (the user can rotate it).
     """
     import datetime
-    history = session_state.setdefault("solve_history", [])
-    history.append({
+    import json
+    entry = {
         "timestamp":  datetime.datetime.now().isoformat(timespec="seconds"),
         "mode":       mode_label,
         "objective":  objective_label,
@@ -826,9 +844,44 @@ def record_solve_in_history(session_state, result, mode_label: str,
         "n_vars":     len(result.x),
         "n_kpis":     len(result.kpis),
         "message":    (result.message or "")[:200],
-    })
+    }
+    history = session_state.setdefault("solve_history", [])
+    history.append(entry)
     if len(history) > max_entries:
         del history[: len(history) - max_entries]
+    # Disk persistence — best-effort, never block the solve flow.
+    path = _get_history_path()
+    if path and path is not False:
+        try:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry) + "\n")
+        except OSError:
+            pass
+
+
+def load_persisted_solve_history(max_entries: int = 20) -> List[Dict]:
+    """Read up to the most recent ``max_entries`` entries from
+    ``~/.pse_ecosystem/history.jsonl``.  v1.5.0.dev-AUDIT4 #6.
+
+    Returns an empty list if the file is absent or unreadable.  Used by the
+    Solve History page to seed the in-memory list on first render.
+    """
+    import json
+    path = _get_history_path()
+    if not path or path is False:
+        return []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return []
+    out: List[Dict] = []
+    for ln in lines[-max_entries:]:
+        try:
+            out.append(json.loads(ln))
+        except json.JSONDecodeError:
+            continue
+    return out
 
 
 TYPE_ID_SUGGESTIONS: Dict[str, str] = {
@@ -2036,41 +2089,47 @@ def _load_biomass_gasification_to_h2(p: dict):
         "gasifier.syngas_out.F_CH4": n_CH4_est,
         "gasifier.syngas_out.F_N2":  n_N2_est,
     }
+    # v1.5.0.dev-AUDIT4 (#1): loosen bounds 10× wider than the v1.4 heuristic
+    # (was 0.4×–4×; now 0.05×–20×).  The tight heuristic intersected with the
+    # nonlinear equilibrium residuals to give LP-infeasible iterations at
+    # iter=27 under every SLP config tried.  The wider bounds let the SLP
+    # explore the equilibrium manifold; physics still constrained by the
+    # element balance + equilibrium residuals from the gasifier model.
     for v, est in _vars_est.items():
-        lo = max(est * 0.4, 1e-6)
-        hi = max(est * 4.0, lo + 0.1)
+        lo = max(est * 0.05, 1e-6)
+        hi = max(est * 20.0, lo + 0.1)
         fs.extra_bounds[v] = (lo, hi)
 
-    # WGS inlet/outlet bounds — tight around stoichiometric estimate
+    # WGS inlet/outlet bounds — also widened to 0.05×–20×
     X_CO_est = 0.8
-    fs.extra_bounds["wgs.syngas_in.F_H2"]  = (max(n_H2_est * 0.3, 1e-6), n_H2_est * 5.0)
-    fs.extra_bounds["wgs.syngas_in.F_CO"]  = (max(n_CO_est * 0.3, 1e-6), n_CO_est * 5.0)
-    fs.extra_bounds["wgs.syngas_in.F_CO2"] = (max(n_CO2_est * 0.3, 1e-6), n_CO2_est * 5.0)
-    fs.extra_bounds["wgs.syngas_in.F_H2O"] = (max(n_H2O_est * 0.3, 1e-6), n_H2O_est * 5.0)
-    fs.extra_bounds["wgs.syngas_in.F_CH4"] = (max(n_CH4_est * 0.3, 1e-6), n_CH4_est * 5.0)
-    fs.extra_bounds["wgs.syngas_in.F_N2"]  = (max(n_N2_est * 0.1, 1e-9),  n_N2_est * 20.0)
+    fs.extra_bounds["wgs.syngas_in.F_H2"]  = (max(n_H2_est * 0.05, 1e-6), n_H2_est * 20.0)
+    fs.extra_bounds["wgs.syngas_in.F_CO"]  = (max(n_CO_est * 0.05, 1e-6), n_CO_est * 20.0)
+    fs.extra_bounds["wgs.syngas_in.F_CO2"] = (max(n_CO2_est * 0.05, 1e-6), n_CO2_est * 20.0)
+    fs.extra_bounds["wgs.syngas_in.F_H2O"] = (max(n_H2O_est * 0.05, 1e-6), n_H2O_est * 20.0)
+    fs.extra_bounds["wgs.syngas_in.F_CH4"] = (max(n_CH4_est * 0.05, 1e-6), n_CH4_est * 20.0)
+    fs.extra_bounds["wgs.syngas_in.F_N2"]  = (max(n_N2_est * 0.05, 1e-9),  n_N2_est * 20.0)
 
     dn_CO = n_CO_est * X_CO_est
-    fs.extra_bounds["wgs.shifted_out.F_H2"]  = (max((n_H2_est + dn_CO) * 0.3, 1e-6),
-                                                  (n_H2_est + dn_CO) * 4.0)
-    fs.extra_bounds["wgs.shifted_out.F_CO"]  = (max(n_CO_est * (1 - X_CO_est) * 0.3, 1e-6),
-                                                  n_CO_est * 3.0)
-    fs.extra_bounds["wgs.shifted_out.F_CO2"] = (max((n_CO2_est + dn_CO) * 0.3, 1e-6),
-                                                  (n_CO2_est + dn_CO) * 4.0)
-    fs.extra_bounds["wgs.shifted_out.F_H2O"] = (max((n_H2O_est - dn_CO) * 0.1, 1e-6),
-                                                  n_H2O_est * 4.0)
-    fs.extra_bounds["wgs.shifted_out.F_CH4"] = (max(n_CH4_est * 0.3, 1e-6), n_CH4_est * 4.0)
-    fs.extra_bounds["wgs.shifted_out.F_N2"]  = (max(n_N2_est * 0.1, 1e-9), n_N2_est * 20.0)
+    fs.extra_bounds["wgs.shifted_out.F_H2"]  = (max((n_H2_est + dn_CO) * 0.05, 1e-6),
+                                                  (n_H2_est + dn_CO) * 20.0)
+    fs.extra_bounds["wgs.shifted_out.F_CO"]  = (max(n_CO_est * (1 - X_CO_est) * 0.05, 1e-6),
+                                                  n_CO_est * 20.0)
+    fs.extra_bounds["wgs.shifted_out.F_CO2"] = (max((n_CO2_est + dn_CO) * 0.05, 1e-6),
+                                                  (n_CO2_est + dn_CO) * 20.0)
+    fs.extra_bounds["wgs.shifted_out.F_H2O"] = (max((n_H2O_est - dn_CO) * 0.05, 1e-6),
+                                                  n_H2O_est * 20.0)
+    fs.extra_bounds["wgs.shifted_out.F_CH4"] = (max(n_CH4_est * 0.05, 1e-6), n_CH4_est * 20.0)
+    fs.extra_bounds["wgs.shifted_out.F_N2"]  = (max(n_N2_est * 0.05, 1e-9), n_N2_est * 20.0)
 
-    # PSA feed bounds (mirrors WGS shifted out)
+    # PSA feed bounds (mirrors WGS shifted out, same widened convention)
     n_H2_wgs_est = n_H2_est + dn_CO
-    fs.extra_bounds["psa.feed_in.F_H2"]  = (max(n_H2_wgs_est * 0.3, 1e-6), n_H2_wgs_est * 4.0)
-    fs.extra_bounds["psa.feed_in.F_CO"]  = (max(n_CO_est * (1 - X_CO_est) * 0.3, 1e-6), n_CO_est * 3.0)
-    fs.extra_bounds["psa.feed_in.F_CO2"] = (max((n_CO2_est + dn_CO) * 0.3, 1e-6),
-                                              (n_CO2_est + dn_CO) * 4.0)
-    fs.extra_bounds["psa.feed_in.F_H2O"] = (max((n_H2O_est - dn_CO) * 0.1, 1e-6), n_H2O_est * 4.0)
-    fs.extra_bounds["psa.feed_in.F_CH4"] = (max(n_CH4_est * 0.3, 1e-6), n_CH4_est * 4.0)
-    fs.extra_bounds["psa.feed_in.F_N2"]  = (max(n_N2_est * 0.1, 1e-9), n_N2_est * 20.0)
+    fs.extra_bounds["psa.feed_in.F_H2"]  = (max(n_H2_wgs_est * 0.05, 1e-6), n_H2_wgs_est * 20.0)
+    fs.extra_bounds["psa.feed_in.F_CO"]  = (max(n_CO_est * (1 - X_CO_est) * 0.05, 1e-6), n_CO_est * 20.0)
+    fs.extra_bounds["psa.feed_in.F_CO2"] = (max((n_CO2_est + dn_CO) * 0.05, 1e-6),
+                                              (n_CO2_est + dn_CO) * 20.0)
+    fs.extra_bounds["psa.feed_in.F_H2O"] = (max((n_H2O_est - dn_CO) * 0.05, 1e-6), n_H2O_est * 20.0)
+    fs.extra_bounds["psa.feed_in.F_CH4"] = (max(n_CH4_est * 0.05, 1e-6), n_CH4_est * 20.0)
+    fs.extra_bounds["psa.feed_in.F_N2"]  = (max(n_N2_est * 0.05, 1e-9), n_N2_est * 20.0)
 
     # Tighter X_CO bound: physically meaningful WGS conversion range
     fs.extra_bounds["wgs.X_CO"] = (0.5, 0.95)

@@ -120,6 +120,64 @@ class BaseFlowsheet:
                 f"First: {details}. Fix the template or unit registration."
             )
 
+    def diagnose(self) -> Dict[str, List[str]]:
+        """v1.5.0.dev-AUDIT4 (#4): non-raising pre-solve diagnostic.
+
+        Returns a dict of issue categories → list of descriptive strings.
+        Empty lists mean no issues in that category. Suitable for surfacing
+        in the UI BEFORE the user clicks Run Solve, so port mismatches and
+        bound conflicts are caught at build time rather than at solve time.
+
+        Categories:
+          * ``errors``   — hard problems that will cause the solve to fail
+                          (unknown variable references; inverted bounds).
+          * ``warnings`` — soft problems likely to slow convergence
+                          (very wide bounds; orphan units with no
+                           connections; fixed-by-equality variables).
+          * ``info``     — informational (variable count, unit count, etc.).
+        """
+        errors: List[str] = []
+        warnings: List[str] = []
+        info: List[str] = []
+
+        # First reuse the strict validate() check via try/except.
+        try:
+            self.validate()
+        except ValueError as e:
+            errors.append(str(e))
+
+        # Check bound consistency.
+        agg = self.aggregated_bounds()
+        for v, (lo, hi) in agg.items():
+            if lo > hi:
+                errors.append(f"Inverted bounds for {v!r}: ({lo}, {hi}).")
+            elif hi - lo > 1e8 and lo > -1e18 and hi < 1e18:
+                warnings.append(f"Very wide bounds for {v!r}: ({lo:.2g}, {hi:.2g}) "
+                                f"— span {hi - lo:.2g}. Consider tightening.")
+
+        # Check for orphan units (units with no incoming/outgoing connections).
+        unit_ids = {u.unit_id for u in self.units}
+        connected = set()
+        for conn in self.connections:
+            connected.add(conn.var_a.split(".", 1)[0])
+            connected.add(conn.var_b.split(".", 1)[0])
+        orphans = unit_ids - connected
+        if len(orphans) > 1:
+            warnings.append(
+                f"{len(orphans)} unit(s) have no connections: "
+                f"{', '.join(sorted(orphans))}. Likely a wiring oversight."
+            )
+
+        # Info: counts.
+        info.append(f"Units: {len(self.units)}")
+        info.append(f"Variables: {len(self.all_variables())}")
+        info.append(f"Connections: {len(self.connections)}")
+        info.append(f"Extra equalities: {len(self.extra_equalities)}")
+        info.append(f"Extra bounds: {len(self.extra_bounds)}")
+        info.append(f"Objective extras: {len(getattr(self, 'objective_extra', {}))}")
+
+        return {"errors": errors, "warnings": warnings, "info": info}
+
     # ── Port connectivity ────────────────────────────────────────────────────
 
     def connect(

@@ -34,6 +34,7 @@ from pse_ecosystem.core.contracts import (
 from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
 from pse_ecosystem.solvers.lp_builder import (
     build_lp,
+    elastic_violation,
     extract_solution,
     select_lp_solver,
 )
@@ -144,6 +145,35 @@ class SLPConfig:
     v1.4.0 Excel anomaly where every cooler outlet pinned at feed_max=1000.
     """
 
+    elastic_fallback: bool = True
+    """v1.5.0.dev-AUDIT4: when True, on LP-INFEASIBLE the SLP retries the
+    same iteration with elastic mode (slack variables on every equality)
+    instead of escalating to a warm-start restart.  Almost always avoids the
+    classic 'infeasible at minimum trust-region radius after 3 restarts'
+    failure mode for industrial flowsheets where tight extra_bounds + many
+    nonlinear residuals make hard equalities locally infeasible.
+    """
+
+    elastic_penalty: float = 1.0e6
+    """Penalty per unit L1 violation of an equality constraint in elastic
+    mode.  Large enough to dominate any normal cost term, small enough to
+    stay numerically conditioned.  See lp_builder.build_lp(elastic_penalty).
+    """
+
+    elastic_slack_tol: float = 1.0e-3
+    """When the elastic LP returns with total slack below this threshold,
+    the iteration is accepted as feasible.  Larger total slack triggers an
+    INFEASIBLE return with a diagnostic listing the worst-violated rows.
+    """
+
+    scale_rows: bool = False
+    """v1.5.0.dev-AUDIT4 (#2): per-residual-row scaling on every LP build.
+    Applies ``1/max(‖J_row‖∞, 1)`` to each row of J and f0 so the LP solver
+    sees well-balanced constraint magnitudes.  Off by default to preserve
+    v1.5 LP topology bit-for-bit; opt in for ill-conditioned flowsheets
+    where one row's magnitude dwarfs the others (mixing element balances
+    at 100 mol/s with equilibrium residuals at 1e-3 mol²/s)."""
+
 
 @dataclass
 class _IterationLog:
@@ -228,6 +258,7 @@ class SLPDriver:
                 self.flowsheet,
                 x_anchor=x_k,
                 tr_multiplier=tr_mult,
+                scale_rows=self.config.scale_rows,
             )
             try:
                 res = self._solver.solve(model, tee=False)
@@ -236,6 +267,70 @@ class SLPDriver:
                 # Newer Pyomo+HiGHS appsi raises rather than returning a
                 # status object when no feasible solution exists.
                 term = SolverStatus.INFEASIBLE
+
+            # v1.5.0.dev-AUDIT4: track an additive offset to subtract from the
+            # objective if we accepted an elastic-mode step.  Defaults to 0 so
+            # the normal LP path is unaffected.
+            _obj_offset_for_step: float = 0.0
+
+            if term == SolverStatus.INFEASIBLE and self.config.elastic_fallback:
+                # Elastic-mode retry BEFORE giving up. Adding non-negative
+                # slack to every equality makes the LP always feasible; we
+                # accept the step only when the total slack is small.
+                if self.config.verbose:
+                    print(f"[SLP] iter {k}: LP infeasible, retrying in elastic mode.")
+                try:
+                    elastic_model = build_lp(
+                        linearizations, self.flowsheet,
+                        x_anchor=x_k, tr_multiplier=tr_mult,
+                        elastic_penalty=self.config.elastic_penalty,
+                        scale_rows=self.config.scale_rows,
+                    )
+                    # v1.5.0.dev-AUDIT4: HiGHS appsi raises RuntimeError on
+                    # infeasibility-by-default; use a fresh solver instance
+                    # to avoid stale-state interference from the failed
+                    # primary solve above.
+                    e_solver = select_lp_solver(self.config.solver_name)
+                    e_res = e_solver.solve(elastic_model, tee=False)
+                    e_term = self._termination(e_res)
+                except RuntimeError as _e_exc:
+                    e_term = SolverStatus.INFEASIBLE
+                    if self.config.verbose:
+                        print(f"[SLP] iter {k}: elastic solve raised "
+                              f"{type(_e_exc).__name__}: {str(_e_exc)[:120]}")
+                if e_term == SolverStatus.CONVERGED:
+                    slack_total = elastic_violation(elastic_model)
+                    if self.config.verbose:
+                        print(f"[SLP] iter {k}: elastic LP OK, slack={slack_total:.3g} "
+                              f"(tol={self.config.elastic_slack_tol})")
+                    if slack_total < self.config.elastic_slack_tol:
+                        # Accept the elastic step (small slack — basically feasible).
+                        model = elastic_model
+                        term = SolverStatus.CONVERGED   # cancel the infeasible flag
+                        _obj_offset_for_step = -self.config.elastic_penalty * slack_total
+                        if self.config.verbose:
+                            print(f"[SLP] iter {k}: elastic mode accepted.")
+                    else:
+                        # Slack too large — taking this step would propagate
+                        # mass-balance violation. Take a small step along
+                        # the elastic direction so we move toward a feasible
+                        # region without committing to the infeasible point.
+                        # Mix x_k + α(x_elastic - x_k) with α = 0.3.
+                        x_elastic = extract_solution(elastic_model)
+                        alpha = 0.3
+                        x_kp1_partial = {
+                            v: (1 - alpha) * x_k.get(v, 0.0) + alpha * x_elastic.get(v, 0.0)
+                            for v in x_k
+                        }
+                        # Hand-craft the post-LP state since we're not
+                        # using a real model object.
+                        x_k = x_kp1_partial
+                        last_lp_obj = None  # invalidate TR adaptation this iter
+                        if self.config.verbose:
+                            print(f"[SLP] iter {k}: elastic step too large "
+                                  f"(slack {slack_total:.3g} > tol). "
+                                  f"Damped {alpha}× toward elastic solution.")
+                        continue   # next iteration, fresh linearisation
 
             if term == SolverStatus.INFEASIBLE:
                 # Trust region likely too tight — shrink and retry.
@@ -287,7 +382,9 @@ class SLPDriver:
                 )
 
             x_kp1 = extract_solution(model)
-            lp_obj = float(pyo.value(model.objective))
+            # v1.5.0.dev-AUDIT4: subtract the slack-penalty term if this LP
+            # was solved in elastic mode (offset is 0 for normal LPs).
+            lp_obj = float(pyo.value(model.objective)) + _obj_offset_for_step
 
             # ── Wegstein tear-stream update (recycle acceleration) ────────
             for ts in self.config.tear_streams:

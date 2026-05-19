@@ -893,6 +893,46 @@ def _section_pareto_sweep(st, chosen_key: str, spec) -> None:
                     marker=dict(size=8, color="#d62728", symbol="x"),
                     name=f"Failed ({len(failed)})",
                 ))
+
+            # v1.5.0.dev-AUDIT4 (#5): non-dominated frontier overlay.
+            # Assumes both KPIs are 'lower is better' (the most common case);
+            # toggle below lets the user invert per-axis if needed.
+            import numpy as np
+            _xmin = st.checkbox(f"Minimize {xk}", value=True, key=f"pareto_min_x_{chosen_key}")
+            _ymin = st.checkbox(f"Minimize {yk}", value=True, key=f"pareto_min_y_{chosen_key}")
+            if len(converged) >= 2:
+                pts = converged[[xk, yk]].dropna().to_numpy()
+                if pts.size and pts.shape[0] >= 2:
+                    # Flip axes if maximising so we always seek lower-left.
+                    sx = 1.0 if _xmin else -1.0
+                    sy = 1.0 if _ymin else -1.0
+                    scored = pts * np.array([sx, sy])
+                    # Non-dominated: no other point is ≤ in both dimensions
+                    # AND strictly < in at least one.
+                    mask = []
+                    for i, p in enumerate(scored):
+                        dominated = False
+                        for j, q in enumerate(scored):
+                            if i == j:
+                                continue
+                            if (q[0] <= p[0]) and (q[1] <= p[1]) and (
+                                q[0] < p[0] or q[1] < p[1]
+                            ):
+                                dominated = True
+                                break
+                        mask.append(not dominated)
+                    front_pts = pts[np.array(mask)]
+                    # Sort frontier by X for a clean connected line.
+                    front_pts = front_pts[front_pts[:, 0].argsort()]
+                    fig.add_trace(go.Scatter(
+                        x=front_pts[:, 0], y=front_pts[:, 1],
+                        mode="lines+markers",
+                        line=dict(color="#27ae60", width=2, dash="dash"),
+                        marker=dict(size=12, color="#27ae60", symbol="diamond",
+                                    line=dict(color="#1e8449", width=1)),
+                        name=f"Pareto front ({len(front_pts)})",
+                    ))
+
             fig.update_layout(
                 title=f"Pareto-style Trade-off: {yk} vs {xk}",
                 xaxis_title=xk, yaxis_title=yk,
@@ -1940,25 +1980,29 @@ def _page_help_center():
 # ── Page: Solve History (v1.5.0.dev-AUDIT3 UI-2) ─────────────────────────────
 
 def _page_solve_history() -> None:
-    """Rolling log of the last 20 solves in this session.
-
-    Persistent across page navigation (session_state-scoped). Useful for
-    comparing converged vs. infeasible runs after parameter sweeps without
-    re-running each solve.
+    """Rolling log of the last 20 solves in this session + persistent log
+    at ``~/.pse_ecosystem/history.jsonl`` (v1.5.0.dev-AUDIT4 #6).
     """
     st = _require_streamlit()
     _init_state(st)
 
     st.title("Solve History")
     st.caption(
-        "Rolling log of the last 20 solves in this session.  Cleared on app reload."
+        "In-memory log of the last 20 solves in this session + persistent "
+        "log at `~/.pse_ecosystem/history.jsonl` (survives app reload)."
     )
+
+    # v1.5.0.dev-AUDIT4 #6: lazy-seed from disk on first render.
+    if not st.session_state.get("solve_history") and not st.session_state.get("_history_seeded"):
+        from pse_ecosystem.ui.flowsheet_service import load_persisted_solve_history
+        st.session_state["solve_history"] = load_persisted_solve_history(max_entries=20)
+        st.session_state["_history_seeded"] = True
 
     history = st.session_state.get("solve_history", [])
     if not history:
         st.info(
             "No solves yet. Run one from **Solver Monitor**; entries appear here "
-            "automatically (most-recent last)."
+            "automatically (most-recent last) and persist to `~/.pse_ecosystem/history.jsonl`."
         )
         return
 

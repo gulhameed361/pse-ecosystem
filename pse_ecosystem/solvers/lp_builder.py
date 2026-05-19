@@ -44,6 +44,8 @@ def build_lp(
     *,
     x_anchor: Optional[Dict[str, float]] = None,
     tr_multiplier: float = 0.0,
+    elastic_penalty: Optional[float] = None,
+    scale_rows: bool = False,
 ) -> pyo.ConcreteModel:
     """Build a Pyomo ``ConcreteModel`` LP from per-unit linearisations.
 
@@ -62,10 +64,45 @@ def build_lp(
         Driver-level scale applied to every unit-supplied ``trust_region``
         radius. ``0.0`` (default) disables trust regions entirely; the SLP
         driver passes its current ``Δ`` here when it wants TR active.
+    elastic_penalty:
+        v1.5.0.dev-AUDIT4: when non-None, add non-negative slack pairs
+        ``(s+, s-)`` to every unit_constraint / connection_constraint
+        row so the LP is always feasible.  The slack sum is penalised in the
+        objective by ``elastic_penalty`` per unit of L1 violation.  Used by
+        the SLP driver as a fallback when the hard-equality LP returns
+        INFEASIBLE — gives the next linearisation a chance to recover
+        instead of aborting the solve. Typical value: ``1e6`` (large enough
+        to dominate normal cost terms, small enough to remain numerically
+        well-scaled).
     """
 
     linearizations = list(linearizations)
     model = pyo.ConcreteModel(name=f"LP::{flowsheet.name}")
+
+    # v1.5.0.dev-AUDIT4 (#2): per-residual-row scaling (opt-in). Apply
+    # 1/max(‖J_row‖∞, 1) to each row's J, f0, and rhs so the LP sees
+    # well-balanced constraint magnitudes — helps the LP solver's
+    # interior-point and simplex tolerance.
+    if scale_rows:
+        from pse_ecosystem.solvers.scaling import compute_residual_row_scaling
+        row_scales = compute_residual_row_scaling(linearizations, floor=1.0)
+        # Apply by mutating a SHALLOW COPY of each linearisation so we don't
+        # corrupt the SLP's history if it caches LinearizedModel records.
+        import copy as _copy
+        rescaled = []
+        for lin in linearizations:
+            if lin.J.size == 0:
+                rescaled.append(lin)
+                continue
+            lin2 = _copy.copy(lin)   # shallow — same x0/bounds/objective_terms refs
+            lin2.J = lin.J.copy()
+            lin2.f0 = lin.f0.copy()
+            for row_idx in range(lin.J.shape[0]):
+                s = row_scales.get((lin.unit_id, row_idx), 1.0)
+                lin2.J[row_idx, :] *= s
+                lin2.f0[row_idx]   *= s
+            rescaled.append(lin2)
+        linearizations = rescaled
 
     # v1.4.0 audit N11 — pre-solve self-check on flowsheet-level extras.
     # Surfaces typos in extra_equalities / extra_bounds / objective_extra
@@ -116,6 +153,23 @@ def build_lp(
     model.VARS = pyo.Set(initialize=all_vars, ordered=True)
     model.x = pyo.Var(model.VARS, bounds=_var_bounds, initialize=_var_init)
 
+    # v1.5.0.dev-AUDIT4: elastic-mode slack tracking. SLACK_KEYS is the
+    # ordered list of (kind, index) pairs identifying every slack pair, so
+    # extract_solution() can report total/per-constraint violation.
+    _elastic = elastic_penalty is not None and elastic_penalty > 0.0
+    if _elastic:
+        model.slack_plus = pyo.VarList(domain=pyo.NonNegativeReals)
+        model.slack_minus = pyo.VarList(domain=pyo.NonNegativeReals)
+        slack_keys: list = []   # list of (constraint_kind, identifier) tuples
+
+    def _slack_pair():
+        """Add and return one (s+, s-) pair; () in non-elastic mode."""
+        if not _elastic:
+            return None, None
+        sp = model.slack_plus.add()
+        sm = model.slack_minus.add()
+        return sp, sm
+
     # ── Per-unit linearised equalities ────────────────────────────────────
     model.unit_constraints = pyo.ConstraintList()
     for lin in linearizations:
@@ -136,20 +190,39 @@ def build_lp(
             expr = sum(
                 float(row[j]) * model.x[lin.variables[j]] for j in nonzero
             )
-            model.unit_constraints.add(expr == float(rhs_vec[row_idx]))
+            if _elastic:
+                sp, sm = _slack_pair()
+                slack_keys.append(("unit", f"{lin.unit_id}:r{row_idx}"))
+                model.unit_constraints.add(
+                    expr + sp - sm == float(rhs_vec[row_idx])
+                )
+            else:
+                model.unit_constraints.add(expr == float(rhs_vec[row_idx]))
 
     # ── Connection equalities ─────────────────────────────────────────────
     model.connection_constraints = pyo.ConstraintList()
     for conn in flowsheet.connections:
-        model.connection_constraints.add(
-            model.x[conn.var_a] == model.x[conn.var_b]
-        )
+        if _elastic:
+            sp, sm = _slack_pair()
+            slack_keys.append(("conn", f"{conn.var_a}={conn.var_b}"))
+            model.connection_constraints.add(
+                model.x[conn.var_a] - model.x[conn.var_b] + sp - sm == 0.0
+            )
+        else:
+            model.connection_constraints.add(
+                model.x[conn.var_a] == model.x[conn.var_b]
+            )
 
     # ── Flowsheet-level extra linear equalities ───────────────────────────
     model.extra_constraints = pyo.ConstraintList()
     for coeffs, rhs in flowsheet.extra_equalities:
         expr = sum(float(c) * model.x[v] for v, c in coeffs.items())
-        model.extra_constraints.add(expr == float(rhs))
+        if _elastic:
+            sp, sm = _slack_pair()
+            slack_keys.append(("extra", str(coeffs)))
+            model.extra_constraints.add(expr + sp - sm == float(rhs))
+        else:
+            model.extra_constraints.add(expr == float(rhs))
 
     # ── Trust region (per-unit, driven by each LinearizedModel.trust_region) ──
     if tr_multiplier > 0.0 and x_anchor is not None:
@@ -190,15 +263,39 @@ def build_lp(
             if v in model.x:
                 obj_terms[v] = obj_terms.get(v, 0.0) + float(c)
 
-    model.objective = pyo.Objective(
-        expr=sum(c * model.x[v] for v, c in obj_terms.items()) if obj_terms else 0.0,
-        sense=pyo.minimize,
-    )
+    objective_expr = sum(c * model.x[v] for v, c in obj_terms.items()) if obj_terms else 0.0
+    if _elastic:
+        # Sum of L1 slack: Σ (s+ + s-).  Penalty must dominate normal cost
+        # terms by orders of magnitude so the LP only allows non-zero slack
+        # when no exact-feasible point exists.
+        slack_sum = sum(model.slack_plus[i] + model.slack_minus[i]
+                        for i in model.slack_plus)
+        objective_expr = objective_expr + float(elastic_penalty) * slack_sum
+
+    model.objective = pyo.Objective(expr=objective_expr, sense=pyo.minimize)
 
     # Stash metadata the SLP driver may want.
     model._objective_terms = obj_terms
     model._all_vars = list(all_vars)
+    model._is_elastic = _elastic
+    if _elastic:
+        model._slack_keys = slack_keys
     return model
+
+
+def elastic_violation(model: pyo.ConcreteModel) -> float:
+    """Sum the L1 slack used by an elastic LP solve.
+
+    Returns 0.0 for non-elastic models.  When non-zero, indicates how far
+    the solver had to bend the equality constraints to remain feasible.
+    """
+    if not getattr(model, "_is_elastic", False):
+        return 0.0
+    total = 0.0
+    for i in model.slack_plus:
+        total += float(pyo.value(model.slack_plus[i]))
+        total += float(pyo.value(model.slack_minus[i]))
+    return total
 
 
 def extract_solution(model: pyo.ConcreteModel) -> Dict[str, float]:

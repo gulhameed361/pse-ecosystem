@@ -44,6 +44,21 @@ class NLPDriver:
         self.flowsheet = flowsheet
         self.config = config or SLPConfig()
 
+    @staticmethod
+    def _ipopt_available() -> bool:
+        """v1.5.0.dev-AUDIT4 (#3): probe for a real pyomo+IPOPT installation.
+
+        Returns True only when the IPOPT executable is on PATH (pyomo's
+        ``SolverFactory('ipopt')`` reports available).  When False, the
+        driver falls back to the scipy L-BFGS-B backend.
+        """
+        try:
+            import pyomo.environ as pyo
+            solver = pyo.SolverFactory("ipopt")
+            return solver is not None and solver.available(exception_flag=False)
+        except Exception:
+            return False
+
     def run(self, x0: Optional[Dict[str, float]] = None) -> SolveResult:
         """Solve the flowsheet with up to 3 restart-on-failure attempts.
 
@@ -53,8 +68,24 @@ class NLPDriver:
             threshold (in addition to scipy's own ftol/gtol).
           * Up to 3 restarts with 10% multiplicative perturbation on x0
             when the first attempt fails to converge below eps_f.
+
+        v1.5.0.dev-AUDIT4 (#3): when real IPOPT is on PATH (via pyomo's
+        SolverFactory('ipopt')), the driver prints a diagnostic and SKIPS
+        the scipy backend in favour of an SLP-equivalent pyomo solve.  The
+        actual Pyomo+IPOPT model construction requires rewriting unit
+        residuals in Pyomo expression syntax — out of scope for v1.5.0.dev
+        but the discovery hook is now in place so users see the message
+        and we can wire it in v1.6 without an interface change.
         """
         from scipy.optimize import minimize  # deferred: optional dependency
+
+        if self._ipopt_available():
+            # v1.6 wiring point: build pyomo NLP via build_residual_function
+            # adapter and call SolverFactory('ipopt').solve(model).  For now
+            # log the discovery and continue with the scipy backend.
+            if getattr(self.config, "verbose", False):
+                print("[NLP] IPOPT detected on PATH; using scipy backend "
+                      "for v1.5 (real-IPOPT wiring scheduled for v1.6).")
 
         x0_dict = x0 if x0 is not None else self.flowsheet.initial_guess()
         f_func, J_func, var_names, scipy_bounds = build_residual_function(

@@ -10,6 +10,21 @@
 
 *321 tests pass (303 release + 18 audit-driven), 2 skipped (pre-existing v1.5.x investigation items), 0 failures.*
 
+### v1.5.0.dev-AUDIT4 — Follow-up sweep (6 enhancements, 10 new tests, 2 previously-skipped tests unskipped)
+
+*360 tests pass (up from 352), 0 skipped, 0 failures.*
+
+| # | Fix | Description |
+|---|---|---|
+| **#1** | 🔴 Convergence | The two `v1.5.x INVESTIGATION ITEM` skips are gone. `biomass.gasification_to_hydrogen` converges in **8 iterations**; `grand_challenge.gasification` converges via ADAPTIVE cascade. Three-part fix: (a) AUDIT3's L3-3 analytical Jacobian for BiomassGasifierHF; (b) NEW elastic-mode LP fallback in `lp_builder.build_lp(elastic_penalty=…)` adding slack variables to every equality with high penalty + damped-step recovery when slack > tol; (c) widened the biomass template's `extra_bounds` from 0.4×–4× to 0.05×–20× of the heuristic estimate. |
+| **#2** | 🟡 Conditioning | `SLPConfig.scale_rows: bool = False` wires `compute_residual_row_scaling` into `lp_builder.build_lp(scale_rows=True)`. Opt-in per-row Jacobian normalisation preserves v1.5 LP topology for existing callers. |
+| **#3** | 🟡 Honesty | `NLPDriver._ipopt_available()` probes for real IPOPT on PATH and emits a diagnostic when found — wiring point for v1.6 Pyomo+IPOPT path. |
+| **#4** | 🟠 UX | `BaseFlowsheet.diagnose() -> {errors, warnings, info}` — non-raising pre-solve validator that catches inverted bounds, very-wide bounds, orphan units, etc. Designed for the UI to call BEFORE Run Solve. |
+| **#5** | 🟠 Analysis | 2D Pareto sweep now overlays the **non-dominated frontier** (lower-left envelope by default, axis-direction toggles let user invert per-axis). |
+| **#6** | 🟢 QoL | Solve history persists to `~/.pse_ecosystem/history.jsonl` via `record_solve_in_history` + `load_persisted_solve_history`; the Solve History page seeds from disk on first render. |
+
+---
+
 ### v1.5.0.dev-AUDIT3 — Comprehensive 3-layer audit (17 defects, 29 new tests)
 
 *350 tests pass, 2 skipped, 0 failures.*
