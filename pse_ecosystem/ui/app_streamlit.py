@@ -384,11 +384,16 @@ def _page_flowsheet_builder():
                 horizontal=True,
                 key="obj_tier",
             )
+            # v1.5.0.dev-AUDIT D9: per-tier selectbox key so switching tiers
+            # never triggers StreamlitAPIException ("Default value … not in options").
+            # Each tier remembers its own last-selected objective independently.
             _obj_mode = st.selectbox(
                 "Objective",
                 OBJECTIVE_TIERS[_tier],
-                key="objective_mode",
+                key=f"objective_mode__{_tier}",
             )
+            # Mirror into a shared key for downstream consumers (Solver Monitor).
+            st.session_state["objective_mode"] = _obj_mode
 
             _OBJ_HELP = {
                 "Feasibility Only":
