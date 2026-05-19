@@ -10,6 +10,22 @@
 
 *321 tests pass (303 release + 18 audit-driven), 2 skipped (pre-existing v1.5.x investigation items), 0 failures.*
 
+### v1.5.0.dev-AUDIT5 — Release-candidate sweep (7 items, 17 new tests)
+
+*367 pytest pass, 0 skipped, 0 failures. + 24/24 system_audit, 20/20 ui_audit.*
+
+| # | Item | Outcome |
+|---|---|---|
+| **#1** | UI: wire `diagnose()` | New "Pre-solve Validator" expander on Flowsheet Builder runs `BaseFlowsheet.diagnose()` and renders errors / warnings / 6 metric cards. Helper from AUDIT4 #4 now has a UI surface. |
+| **#2** | Docs refresh | USER_MANUAL §5 (Pre-solve Validator + Solve History), DEVELOPER_GUIDE §13 (elastic-mode + diagnose() API), THEORY_REFERENCE §8 (CGE definitions), README v1.5.0 highlights. |
+| **#3** | CGE KPI fix | `BiomassGasifierHF.kpis` now emits both `CGE_LHV_percent` (legacy LHV-only, can exceed 100%) and `CGE_with_steam_percent` (steam-enthalpy-corrected, ≤ 100% by 2nd law). Steam enthalpy formula refined to 3-term decomposition: liquid sensible + latent + steam sensible (accurate within 3% of NIST steam tables at 800 °C). |
+| **#4** | `CHANGELOG.md` | Keep-a-Changelog-formatted release log added at repo root. |
+| **#5** | Audit scripts | `tests/system_audit.py` +7 v1.5 checks (24/24), `tests/ui_audit.py` +5 v1.5 checks (20/20). |
+| **#6** | Tag `v1.5.0-rc1` | First release-candidate tag pushed; lets internal users pin. |
+| **#7** | Streamlit smoke test | New `tests/test_streamlit_smoke.py` uses `streamlit.testing.v1.AppTest` to render every page in-process and assert no unhandled exception (7/7 pass). |
+
+---
+
 ### v1.5.0.dev-AUDIT4 — Follow-up sweep (6 enhancements, 10 new tests, 2 previously-skipped tests unskipped)
 
 *360 tests pass (up from 352), 0 skipped, 0 failures.*

@@ -5,16 +5,30 @@ Application-centric Knowledge Ecosystem for Process Systems Engineering.
 
 ---
 
+## What's new in v1.5.0.dev
+
+- **Multi-Tier Optimization Engine.** Three objective tiers — Technical (Energy, Carbon Intensity, H₂ Yield, Specific Energy), Economic (OPEX, TAC, NPV, IRR), Technoeconomic (LCOH, LCOE) — selected via context-dependent UI cards that show only the financial parameters relevant to the chosen tier.
+- **Project Economics Engine.** Full NPV (with optional salvage), bisection IRR (returns `+inf` for unbounded rates), LCOE/LCOH, six-tenths equipment cost scaling, CEPCI escalation to the user's target year, Lang factor for installed-cost conversion.
+- **Elastic-mode LP recovery.** When the hard-equality LP returns INFEASIBLE the SLP retries with slack variables on every equality; small-slack steps are accepted as feasible, larger-slack steps trigger a damped 0.3× motion toward the elastic solution. **Resolves** the v1.4.x "infeasible at minimum trust-region radius" failure mode that previously affected industrial flowsheets.
+- **Pre-solve Validator.** `BaseFlowsheet.diagnose()` (and a UI surface on the Flowsheet Builder) reports errors / warnings / metrics before you Run Solve.
+- **Project Economics & Cash Flow Excel sheet.** Annualised CAPEX (CEPCI + Lang), Annual OPEX, TAC, LCOH, LCOE, NPV, IRR, with full unit annotation and ERROR-row diagnostic when computation fails.
+- **2D Pareto sweep + non-dominated frontier overlay** (Flowsheet Builder); axis-direction toggles invert per-axis.
+- **Sankey diagram** of material flows on Solver Monitor results.
+- **Solve History page** + persistent log at `~/.pse_ecosystem/history.jsonl` that survives Streamlit reloads.
+- **Save / Load flowsheet config as JSON** for reproducibility.
+- **Unified Plotly theme** applied to every chart across the app.
+
 ## Why PSE Ecosystem?
 
 - **Explainable physics.** Every unit model ships its exact algebraic residuals and analytical Jacobian. Regulators, auditors, and partners can inspect every equation — no black-box solver.
-- **Analytical Jacobians throughout.** The SLP solver linearises using exact ∂f/∂x, not finite differences. Faster convergence, provable gradient accuracy.
+- **Analytical Jacobians throughout.** v1.5.0.dev adds a closed-form 6×8 Jacobian for `BiomassGasifierHF` (was FD); the SLP loop now converges on the gasifier + WGS + PSA chain in 8 iterations.
 - **3-layer separation.** UI / Solver / Knowledge are strictly decoupled via the Handshake Protocol. Swap the solver without touching the physics; swap the UI without touching the solver.
+- **Standardised OPEX accounting.** Every unit declares an explicit `_OPEX_CONVENTION` (`USD_per_year` / `USD_per_second` / `yield_coefficient`); `BaseUnit.opex_per_year(x, operating_hours)` handles the conversion. Fixes the v1.4.x mixed-units defect that made Excel Sheet 5 OPEX wrong by a factor of ~3×10⁷.
 - **Unrestricted Assembly Freedom (v1.4.0).** Aspen-style Custom Flowsheet builder — no hard cap on unit count. 3-column specification grid with pre-filled engineering defaults; smart Unit ID dropdown re-seeds on Type change. **23 UI-selectable unit types** drawn from a 36-class Layer-3 catalogue.
 - **Unit Management System (v1.4.0).** Every float parameter with a convertible dimension (T, P, mass flow, mass, power, energy) shows a unit dropdown next to its value. Backend stays in SI; UI converts at the boundary. Excel export tags every numeric column with its SI unit.
-- **Analytical Verification.** Every unit exposes exact Jacobians; 7-unit workshop chain validated via the automated test suite (**259 pytest cases**, plus the audit scripts integrated into CI; v1.4.0-AUDIT2 added direct DAC/Power unit-contract checks).
-- **Live Help Center (v1.4.0).** A 6th nav page renders the workspace `docs/` markdown directly in the app — User Manual, 7-Unit Workshop with answer key, Theory Reference, Architecture, Developer Guide. Edits to source markdown refresh on the next render.
-- **Excel Export.** Download a 3-sheet ledger (Stream Table / Unit Performance / Optimization Summary) to `.xlsx` from the Solver Monitor.
+- **Analytical Verification.** Every unit exposes exact Jacobians; the 7-unit and 10-unit workshop chains validated by the automated test suite (**367 pytest + 24 system audit + 20 UI audit + 7 Streamlit smoke = 418 total checks**; 0 skipped, 0 failures).
+- **Live Help Center (v1.4.0).** A 6th nav page renders the workspace `docs/` markdown directly in the app.
+- **Excel Export.** Download a **5-sheet ledger** (Stream Table / Unit Performance / Optimization Summary / Bound Saturation / Project Economics & Cash Flow) to `.xlsx` from the Solver Monitor.
 - **Progressive Solver Tightening (default ON in v1.4.0).** SLP starts with loose tolerances (≈1e-3) and tightens to precision (≈1e-7) as iterations progress. Max Iterations slider extended to **1500**.
 
 ---
@@ -25,7 +39,7 @@ Three strictly separated layers:
 
 | Layer | Location | Responsibility |
 |---|---|---|
-| **1 — UI** | `pse_ecosystem/ui/` | 5-page Streamlit app (incl. Help Center); `flowsheet_service.py` is the sole bridge to Layer 3 |
+| **1 — UI** | `pse_ecosystem/ui/` | 6-page Streamlit app (Dashboard, Flowsheet Builder, Site Weather, Solver Monitor, Solve History, Help Center); `flowsheet_service.py` is the sole bridge to Layer 3 |
 | **2 — Solver** | `pse_ecosystem/solvers/` | SLP / NLP / Trust-Region drivers; adaptive cascade orchestration |
 | **3 — Knowledge** | `pse_ecosystem/models/` + `flowsheets/` | Unit models supplying residuals + analytical Jacobians via the Handshake Protocol |
 
@@ -50,7 +64,9 @@ python -m venv $HOME\.venvs\pse_ecosystem
 pip install -e ".[dev,solvers,gui,weather]"
 
 # Run tests
-pytest tests\ -q                       # 259 pytest cases pass (incl. audit scripts)
+pytest tests\ -q                       # 367 pytest cases pass (0 skipped)
+python tests\system_audit.py           # 24/24 system audit (incl. v1.5 checks)
+python tests\ui_audit.py               # 20/20 UI audit (incl. v1.5 checks)
 
 # Launch the Streamlit UI
 streamlit run pse_ecosystem/ui/app_streamlit.py

@@ -1129,3 +1129,77 @@ Each connection in the workshop chain is an equality constraint in the Pyomo LP:
 Flow-only connections arise when one port includes T and P variables and the other does not.
 The `build_custom_flowsheet()` flow-only fallback (§5.1 in ARCHITECTURE.md) handles this
 automatically.
+
+---
+
+## §8 Cold Gas Efficiency and the steam-enthalpy correction (v1.5.0.dev-AUDIT5)
+
+The classical Cold Gas Efficiency definition
+
+$$\eta_{\text{CGE}}^{\text{LHV}} = \frac{\text{LHV}(\text{syngas})}{\text{LHV}(\text{biomass}_{\text{dry}})}$$
+
+is a meaningful performance indicator for **autothermal** gasification
+(air or oxygen, partial oxidation supplies the heat).  For **steam**
+gasification the steam carries enthalpy not accounted for in the
+denominator, so this ratio routinely exceeds unity:
+
+$$\eta_{\text{CGE}}^{\text{LHV}} = \frac{\dot{m}_{\text{H}_2}h_{H_2}^{LHV} + \dot{m}_{\text{CO}}h_{\text{CO}}^{LHV} + \dot{m}_{\text{CH}_4}h_{\text{CH}_4}^{LHV}}{\dot{m}_{\text{biomass}}\,h_{\text{biomass}}^{LHV}} \, > \, 1 \quad \text{for steam gasif.}$$
+
+A second-law-consistent metric adds the steam thermal input:
+
+$$\eta_{\text{CGE}}^{\text{with steam}} = \frac{\text{LHV}(\text{syngas})}{\text{LHV}(\text{biomass}_{\text{dry}}) + \dot{m}_{\text{steam}} \cdot h_{\text{steam}}(T)}$$
+
+bounded by $\leq 1$ for any feasible operating point.
+
+### Steam enthalpy correlation
+
+`BiomassGasifierHF.kpis()` uses a three-term decomposition relative to
+25 °C liquid water:
+
+$$h_{\text{steam}}(T_C) = c_{p,\text{water}} \cdot (100 - 25) + \Delta h_{\text{vap}}(100\,°\text{C}) + c_{p,\text{steam}} \cdot \max(T_C - 100, 0)$$
+
+with $c_{p,\text{water}} \approx 4.18$ kJ/kg/K, $\Delta h_{\text{vap}} = 2257$ kJ/kg, $c_{p,\text{steam}} \approx 2.1$ kJ/kg/K.  At $T_C = 800\,°\text{C}$
+this gives $h_{\text{steam}} \approx 4041$ kJ/kg — within 3 % of the NIST
+steam-table value 4159 kJ/kg.
+
+### Reporting convention
+
+| KPI key | Symbol | Formula | Bound |
+|---|---|---|---|
+| `CGE_LHV_percent` | $\eta_{\text{CGE}}^{\text{LHV}}$ | LHV(syngas) / LHV(biomass) | unbounded; can exceed 100 % |
+| `CGE_with_steam_percent` | $\eta_{\text{CGE}}^{\text{with steam}}$ | LHV(syngas) / (LHV(biomass) + $\dot{m}h_{\text{steam}}$) | $\leq 100$ % |
+| `CGE_percent` | — | (legacy alias for `CGE_LHV_percent`) | per above |
+
+Any new biomass-like unit that adds external-heat-supply inputs should
+follow the same convention: emit both a bare-LHV and a corrected variant.
+
+---
+
+## §9 Elastic-mode LP recovery (v1.5.0.dev-AUDIT4)
+
+When the hard-equality LP at iteration $k$ of an SLP loop returns
+INFEASIBLE — typically because tight `extra_bounds` intersect with the
+local linearisation of nonlinear residuals — the driver retries in
+**elastic mode**.  Each equality
+
+$$J \cdot x = J \cdot x_0 - f_0$$
+
+is augmented with non-negative slack pairs $(s^+, s^-)$:
+
+$$J \cdot x + s^+ - s^- = J \cdot x_0 - f_0, \quad s^+, s^- \geq 0$$
+
+and the LP objective is augmented with a large penalty $\mu = $
+`elastic_penalty` (default $10^6$):
+
+$$\min_{x, s^\pm} \; c^T x + \mu \sum_i (s_i^+ + s_i^-)$$
+
+The slack-augmented LP is **always feasible** (set $x$ to any
+bound-feasible point and let the slacks absorb the residual).  The SLP
+driver then accepts the step only when $\sum_i (s_i^+ + s_i^-) < $
+`elastic_slack_tol` (default $10^{-3}$); above tolerance, it takes a
+damped 0.3× step toward the elastic solution and re-linearises at the
+next iteration.
+
+This is the standard "$\ell_1$-elastic" recovery used in SQP-style NLP
+solvers (e.g., SNOPT, Gurobi's barrier-with-relaxation mode).  See
+Fletcher & Leyffer (2002) for the convergence theory.

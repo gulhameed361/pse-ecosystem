@@ -651,6 +651,129 @@ def _():
 
 
 # =============================================================================
+# v1.5.0.dev — Audit additions for the Multi-Tier Optimization Engine
+# =============================================================================
+
+@test("v1.5 / OBJECTIVE_TIERS has exactly 3 tiers, all modes string-typed")
+def _():
+    from pse_ecosystem.ui.flowsheet_service import OBJECTIVE_TIERS
+    assert set(OBJECTIVE_TIERS.keys()) == {"Technical", "Economic", "Technoeconomic"}
+    for tier, modes in OBJECTIVE_TIERS.items():
+        assert isinstance(modes, list) and len(modes) >= 1
+        for m in modes:
+            assert isinstance(m, str) and m
+    return f"3 tiers, {sum(len(m) for m in OBJECTIVE_TIERS.values())} modes total"
+
+
+@test("v1.5 / every OBJECTIVE_TIERS mode is handled by build_objective_extra")
+def _():
+    from pse_ecosystem.ui.flowsheet_service import (
+        OBJECTIVE_TIERS, build_objective_extra, build_custom_flowsheet,
+    )
+    fs = build_custom_flowsheet({"units": [{"type": "PEMToy", "id": "pem", "params": {}}],
+                                  "connections": []})
+    for tier, modes in OBJECTIVE_TIERS.items():
+        for m in modes:
+            extra, force_feas = build_objective_extra(fs, m)
+            assert isinstance(extra, dict), f"Mode {m!r} returned non-dict"
+            assert isinstance(force_feas, bool)
+    return "all modes return (dict, bool)"
+
+
+@test("v1.5 / every unit's _OPEX_CONVENTION is one of the 3 known values")
+def _():
+    import pkgutil, importlib
+    from pse_ecosystem.models.base_unit import BaseUnit
+    KNOWN = {"USD_per_year", "USD_per_second", "yield_coefficient"}
+    bad: list = []
+    pkg = importlib.import_module("pse_ecosystem.models")
+    for mod_info in pkgutil.walk_packages(pkg.__path__, prefix="pse_ecosystem.models."):
+        try:
+            mod = importlib.import_module(mod_info.name)
+        except Exception:
+            continue
+        for name in dir(mod):
+            obj = getattr(mod, name)
+            if isinstance(obj, type) and issubclass(obj, BaseUnit) and obj is not BaseUnit:
+                conv = getattr(obj, "_OPEX_CONVENTION", "USD_per_year")
+                if conv not in KNOWN:
+                    bad.append(f"{obj.__name__}._OPEX_CONVENTION={conv!r}")
+    assert not bad, f"Unknown conventions: {bad}"
+    return "all units use a known OPEX convention"
+
+
+@test("v1.5 / ProjectEconomicsConfig validates inputs (no silent garbage)")
+def _():
+    from pse_ecosystem.ui.flowsheet_service import ProjectEconomicsConfig
+    for bad_kwargs in [
+        {"plant_life_yr": 0},
+        {"plant_life_yr": -1},
+        {"interest_rate": -0.05},
+        {"operating_hours_per_year": 0.0},
+        {"operating_hours_per_year": 8761.0},
+        {"lang_factor": 0.5},
+    ]:
+        try:
+            ProjectEconomicsConfig(**bad_kwargs)
+            raise AssertionError(f"Bad input {bad_kwargs} did not raise")
+        except ValueError:
+            pass
+    return "all bad inputs caught by __post_init__"
+
+
+@test("v1.5 / EconomicEngine NPV/IRR/LCOE consistency at IRR=NPV(r)=0")
+def _():
+    from pse_ecosystem.models.costing.economic_engine import EconomicEngine
+    import math
+    ee = EconomicEngine(plant_life_yr=10, interest_rate=0.08)
+    irr = ee.irr(initial_capex=100_000, annual_net_cashflow=16_000)
+    assert not math.isnan(irr) and not math.isinf(irr)
+    ee_at = EconomicEngine(plant_life_yr=10, interest_rate=irr)
+    npv = ee_at.npv(annual_net_cashflow=16_000, initial_capex=100_000)
+    assert abs(npv) < 1.0, f"NPV at IRR should be ~0, got {npv:.4f}"
+    return f"IRR={irr*100:.3f}%, NPV at IRR={npv:.4f}"
+
+
+@test("v1.5 / BaseFlowsheet.diagnose() returns errors/warnings/info lists")
+def _():
+    from pse_ecosystem.ui.flowsheet_service import build_custom_flowsheet
+    fs = build_custom_flowsheet({"units": [{"type": "PEMToy", "id": "pem", "params": {}}],
+                                  "connections": []})
+    diag = fs.diagnose()
+    assert set(diag.keys()) == {"errors", "warnings", "info"}
+    return f"errors={len(diag['errors'])}, warnings={len(diag['warnings'])}, info={len(diag['info'])}"
+
+
+@test("v1.5 / Elastic-mode LP succeeds where hard-equality LP is infeasible")
+def _():
+    import numpy as np
+    from pse_ecosystem.solvers.lp_builder import build_lp, elastic_violation, select_lp_solver
+    from pse_ecosystem.core.contracts import PrimalGuess, LinearizedModel
+    from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
+    from pse_ecosystem.models.base_unit import BaseUnit
+
+    class _BadUnit(BaseUnit):
+        unit_id = "bad"
+        def variables(self): return ["bad.x"]
+        def bounds(self): return {"bad.x": (0.0, 0.0)}
+        def residual(self, x): return np.array([1.0])
+        def objective_contribution(self, x): return {}
+        def linearize(self, guess):
+            return LinearizedModel(
+                unit_id="bad", variables=["bad.x"],
+                x0=np.array([0.0]), f0=np.array([1.0]),
+                J=np.array([[1.0]]), bounds=self.bounds(),
+            )
+    fs = BaseFlowsheet(name="badfs", units=[_BadUnit()])
+    lins = [u.linearize(PrimalGuess(values={"bad.x": 0.0})) for u in fs.units]
+    elastic = build_lp(lins, fs, elastic_penalty=1.0)
+    select_lp_solver().solve(elastic, tee=False)
+    slack = elastic_violation(elastic)
+    assert slack > 0.9, f"Expected slack≈1 from infeasible setup, got {slack}"
+    return f"elastic slack = {slack:.3g} (hard LP would be infeasible)"
+
+
+# =============================================================================
 # Entry point
 # =============================================================================
 

@@ -7,7 +7,37 @@
 
 ---
 
-## 0. v1.4.1 highlights (Physics Safety Net)
+## 0. v1.5.0.dev highlights (Multi-Tier Optimization Engine)
+
+The v1.5 release adds three things on top of the v1.4 three-layer split:
+
+1. **A taxonomy on top of the LP objective.**
+   `pse_ecosystem.ui.flowsheet_service.OBJECTIVE_TIERS` (a dict of
+   `tier → [mode]`) groups the 11 objective modes into Technical (5),
+   Economic (4), Technoeconomic (2). The UI renders the tier first, then
+   the objective; expanders show only the financial parameters the chosen
+   tier needs. The LP objective itself is unchanged — every mode dispatches
+   through `build_objective_extra(flowsheet, mode, econ_config=…)` to
+   coefficient dicts, exactly as in v1.4.
+
+2. **A Layer-3 cost engine that doesn't bleed into Layer 2.**
+   `pse_ecosystem.models.costing.economic_engine.EconomicEngine` lives in
+   Layer 3 (knowledge) — it has no Pyomo and no solver awareness.
+   Layer 1 (UI) gets at it through the bridge function
+   `flowsheet_service.compute_project_economics(...)`, which is the **only**
+   Layer-1 code that imports from `pse_ecosystem.models.*`. The
+   `tests/ui_audit.py` "Layer / app_streamlit.py has no direct models.*
+   import" check enforces this boundary.
+
+3. **An elastic-mode safety net on every SLP step.**
+   `pse_ecosystem.solvers.lp_builder.build_lp(elastic_penalty=...)` adds
+   non-negative slack pairs to every equality constraint with a large
+   penalty in the objective; the SLP driver invokes elastic mode whenever
+   the hard-equality LP returns INFEASIBLE. Restores feasibility on
+   industrial flowsheets that v1.4 abandoned at iteration 27 with three
+   warm-start failures.
+
+## Previous: v1.4.1 highlights (Physics Safety Net)
 
 - **Bound-saturation guard.** `SolveResult.bound_active: List[str]` names
   every variable whose converged value sits at a non-fixed bound. Populated

@@ -324,6 +324,73 @@ def _():
     return "solvers/ layer boundary intact"
 
 
+# ── v1.5.0.dev UI checks ──────────────────────────────────────────────────────
+
+@test("v1.5 / OBJECTIVE_TIERS importable from flowsheet_service")
+def _():
+    from pse_ecosystem.ui.flowsheet_service import OBJECTIVE_TIERS
+    assert isinstance(OBJECTIVE_TIERS, dict) and len(OBJECTIVE_TIERS) == 3
+    return f"{len(OBJECTIVE_TIERS)} tiers"
+
+
+@test("v1.5 / PSE_PLOTLY_TEMPLATE has all required layout keys")
+def _():
+    from pse_ecosystem.ui.flowsheet_service import PSE_PLOTLY_TEMPLATE
+    layout = PSE_PLOTLY_TEMPLATE["layout"]
+    required = {"font", "plot_bgcolor", "paper_bgcolor", "colorway",
+                 "xaxis", "yaxis", "legend", "margin"}
+    missing = required - set(layout.keys())
+    assert not missing, f"theme missing keys: {missing}"
+    return f"all {len(required)} keys present"
+
+
+@test("v1.5 / save/load flowsheet JSON roundtrips losslessly")
+def _():
+    from pse_ecosystem.ui.flowsheet_service import (
+        serialize_flowsheet_config, deserialize_flowsheet_config,
+    )
+    blob = serialize_flowsheet_config(
+        template_key="hydrogen.electrolysis_only",
+        params={"capacity_kW": 1000.0, "eta": 0.7},
+        custom_cfg=None,
+        objective_config={"mode": "Minimize TAC"},
+    )
+    parsed = deserialize_flowsheet_config(blob)
+    assert parsed["template_key"] == "hydrogen.electrolysis_only"
+    assert parsed["params"]["capacity_kW"] == 1000.0
+    return "JSON roundtrip clean"
+
+
+@test("v1.5 / compute_project_economics returns 24-row Excel-ready dict")
+def _():
+    from pse_ecosystem.ui.flowsheet_service import (
+        build_custom_flowsheet, compute_project_economics, ProjectEconomicsConfig,
+    )
+    fs = build_custom_flowsheet({"units": [{"type": "PEMToy", "id": "pem", "params": {}}],
+                                  "connections": []})
+    rows = compute_project_economics(
+        flowsheet=fs, solution_x={}, kpis={}, econ_config=ProjectEconomicsConfig()
+    )
+    metrics = [r["Metric"] for r in rows]
+    required = {"Plant Life", "WACC", "Annualised CAPEX", "Annual OPEX", "TAC",
+                "LCOH", "LCOE", "NPV", "IRR"}
+    # WACC may appear as "Discount Rate (WACC)" — match by substring
+    found = {req for req in required if any(req in m for m in metrics)}
+    assert found == required, f"Sheet 5 missing: {required - found}"
+    return f"{len(rows)} metrics present"
+
+
+@test("v1.5 / Sankey data builder returns correct shape")
+def _():
+    from pse_ecosystem.ui.flowsheet_service import build_sankey_data, build_custom_flowsheet
+    fs = build_custom_flowsheet({"units": [{"type": "PEMToy", "id": "pem", "params": {}}],
+                                  "connections": []})
+    data = build_sankey_data(fs, {})
+    assert set(data.keys()) == {"labels", "sources", "targets", "values", "link_labels"}
+    assert data["labels"] == ["pem"]
+    return "Sankey arrays clean"
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

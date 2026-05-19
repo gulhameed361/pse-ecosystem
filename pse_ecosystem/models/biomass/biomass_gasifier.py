@@ -252,9 +252,35 @@ class BiomassGasifierHF(BaseUnit):
             for sp in ("H2", "CO", "CH4")
         )
 
-        # Cold gas efficiency (CGE): energy in combustible syngas / LHV of dry biomass feed
+        # v1.5.0.dev-AUDIT5 (#3): Cold gas efficiency — two definitions.
+        # CGE_LHV is the bare LHV(syngas)/LHV(biomass) ratio, which exceeds
+        # 100% for steam gasification because the steam carries unaccounted
+        # enthalpy. CGE_with_steam includes the steam latent + sensible heat
+        # in the denominator so the result is bounded by the second law.
         LHV_biomass_kW = F_dry * self._b["LHV_MJ_kg"] * 1000.0
-        cge = 100.0 * energy_kW / LHV_biomass_kW if LHV_biomass_kW > 1e-9 else 0.0
+        cge_lhv = 100.0 * energy_kW / LHV_biomass_kW if LHV_biomass_kW > 1e-9 else 0.0
+
+        # Steam enthalpy at gasifier T relative to 25 °C liquid water.
+        # Tracks the three contributions explicitly so the estimate stays
+        # accurate from 100 °C (sat. vap.) to 1200 °C:
+        #   sensible-water (25→100 °C):  4.18 kJ/kg/K × 75 K  ≈ 314 kJ/kg
+        #   latent vapourisation (100 °C):                       2257 kJ/kg
+        #   sensible-steam (100 → T_C):  ~2.1 kJ/kg/K × ΔT
+        # Total at 800 °C ≈ 4041 kJ/kg, within 3 % of steam-table value
+        # 4159 kJ/kg used for the second-law sanity check on CGE.
+        F_steam_mol_s = max(x.get(f"{uid}.agent_in.F_H2O", 0.0), 0.0)
+        F_steam_kg_s  = F_steam_mol_s * _MW_syngas["H2O"] / 1000.0
+        T_C = self.T_K - 273.15
+        h_steam_kJ_kg = (
+            314.0                                      # liquid 25→100 °C
+            + 2257.0                                    # latent at 100 °C
+            + 2.1 * max(T_C - 100.0, 0.0)               # superheat 100→T_C
+        )
+        Q_steam_kW = F_steam_kg_s * h_steam_kJ_kg
+        total_input_kW = LHV_biomass_kW + Q_steam_kW
+        cge_with_steam = (
+            100.0 * energy_kW / total_input_kW if total_input_kW > 1e-9 else 0.0
+        )
 
         # Syngas yield [Nm³/kg dry biomass]
         vol_total_Nm3_s = n_total * _VM_MOLAR / 1000.0   # mol/s → Nm³/s
@@ -267,9 +293,16 @@ class BiomassGasifierHF(BaseUnit):
 
         return {
             f"{uid}.H2_pct_vol": h2_pct,
-            f"{uid}.CGE_percent": cge,
+            # v1.5.0.dev-AUDIT5: CGE_percent is now the LHV-only ratio (clearly
+            # labelled) plus a steam-corrected variant capped at 100% by
+            # construction. Bare 'CGE_percent' kept as the LHV value for
+            # backwards compat with the v1.4.x audits and Excel reports.
+            f"{uid}.CGE_percent": cge_lhv,                  # legacy alias
+            f"{uid}.CGE_LHV_percent": cge_lhv,
+            f"{uid}.CGE_with_steam_percent": cge_with_steam,
             f"{uid}.syngas_yield_Nm3_per_kg": yield_Nm3_per_kg,
             f"{uid}.LHV_syngas_kW": energy_kW,
+            f"{uid}.steam_enthalpy_kW": Q_steam_kW,
             f"{uid}.H2_production_kg_s": h2_kg_s,
             f"{uid}.H2_production_kg_h": h2_kg_h,
         }

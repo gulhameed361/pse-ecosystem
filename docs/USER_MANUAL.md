@@ -1259,4 +1259,68 @@ You can edit any value directly in the form before clicking **Build & Select**.
 
 ---
 
-*User Manual v1.4.1 — PSE Ecosystem | Private — University of Surrey*
+## §5 Pre-solve Validator and Solve History (v1.5.0.dev-AUDIT5)
+
+### 5.1 Pre-solve Validator
+
+On the **Flowsheet Builder** page there is now a **Pre-solve Validator**
+expander.  Click **Validate Flowsheet** and the UI calls
+`BaseFlowsheet.diagnose()` against the currently-selected template +
+parameters.  Three categories are reported:
+
+| Category | Meaning |
+|---|---|
+| **Errors** | Hard problems that will cause the solve to fail (inverted bounds, unknown variable references in `extra_*` dicts, broken connections) |
+| **Warnings** | Soft problems likely to slow convergence (very-wide bounds, orphan units with no connections) |
+| **Info** | 6 metric cards: unit count, variable count, connection count, extra equality count, extra bound count, objective extra count |
+
+Use this **before** clicking Run Solve on the Solver Monitor — it surfaces
+the kind of misconfiguration that historically only showed up as an opaque
+infeasibility deep into the SLP loop.
+
+### 5.2 Solve History page
+
+A new top-level page **Solve History** logs every solve from the current
+session (latest 20, FIFO) *plus* persists each run to
+`~/.pse_ecosystem/history.jsonl` so the log survives Streamlit reloads.
+Each row records timestamp, mode, objective, status, iteration count,
+objective value, variable/KPI counts, and a truncated message — useful
+for comparing converged vs. infeasible runs after parameter sweeps without
+re-running each solve.
+
+Click **Clear history** to wipe both the in-memory list and the disk log.
+
+### 5.3 2D Pareto frontier (now with non-dominated overlay)
+
+The **2D Pareto Sweep** tab on Flowsheet Builder now overlays the
+**non-dominated frontier** (green dashed line through diamond markers).
+Per-axis "Minimize X" / "Minimize Y" toggles let you invert direction —
+the frontier is then drawn through the upper-right or appropriate quadrant.
+
+---
+
+## §6 Cold Gas Efficiency — two definitions (v1.5.0.dev-AUDIT5)
+
+`BiomassGasifierHF.kpis()` now emits **two CGE values**:
+
+| KPI key | Formula | Bound |
+|---|---|---|
+| `<unit>.CGE_LHV_percent` | `100 × LHV_syngas / LHV_biomass` | Can **exceed 100 %** for steam gasification because the steam carries enthalpy not accounted for in the denominator |
+| `<unit>.CGE_with_steam_percent` | `100 × LHV_syngas / (LHV_biomass + h_steam × ṁ_steam)` | Bounded by ≤ 100 % by the 2nd law |
+
+The bare `CGE_percent` key is retained as an alias for `CGE_LHV_percent`
+to preserve v1.4 backwards-compat (Excel templates and old audit scripts).
+
+Steam enthalpy is computed via a 3-term decomposition:
+
+```
+h_steam(T) = 314 kJ/kg                       (liquid water 25→100 °C)
+            + 2257 kJ/kg                      (latent vaporisation at 100 °C)
+            + 2.1 kJ/kg/K × max(T_C - 100, 0) (steam superheat)
+```
+
+This is accurate within 3 % of NIST steam-table values up to 1200 °C.
+
+---
+
+*User Manual v1.5.0.dev — PSE Ecosystem | Private — University of Surrey*

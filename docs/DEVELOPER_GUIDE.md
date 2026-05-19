@@ -1265,3 +1265,81 @@ See `THEORY_REFERENCE.md §7.4` for the full update formula.
 `SolveMode.NLP_IPOPT` uses `scipy.optimize.minimize(method='L-BFGS-B')` with analytical gradients
 from `unit.linearize()`. It does **not** require IPOPT or `idaes-pse` — the name is legacy.
 The actual solver is always scipy L-BFGS-B, which ships with the base `scipy` dependency.
+
+As of v1.5.0.dev-AUDIT4, the canonical alias `SolveMode.NLP_SCIPY` (same enum
+value) reflects this honestly.  `NLPDriver._ipopt_available()` probes for a
+real IPOPT executable on PATH and emits a diagnostic when found; the actual
+Pyomo+IPOPT model rewrite is scheduled for v1.6.
+
+---
+
+## 13. Elastic-mode LP and the diagnose() API (v1.5.0.dev-AUDIT4+AUDIT5)
+
+Two algorithmic additions that materially change how to write & debug units.
+
+### 13.1 Elastic-mode LP
+
+`pse_ecosystem/solvers/lp_builder.py::build_lp(elastic_penalty=1e6, …)`
+adds non-negative slack pairs `(s+, s−)` to every unit, connection, and
+extra equality constraint with a large penalty on `Σ (s+ + s−)`.  The LP
+is then **always feasible** — even when the hard-equality version is not.
+
+The SLP driver calls this automatically whenever the normal LP returns
+INFEASIBLE.  Two cases:
+
+| Total slack after elastic solve | SLP action |
+|---|---|
+| `< cfg.elastic_slack_tol` (default 1e-3) | Accept the step as effectively feasible; cancel the INFEASIBLE flag; subtract the slack penalty from the reported objective. |
+| `≥ cfg.elastic_slack_tol` | Take a damped 0.3 × step toward the elastic solution and continue. Skips trust-region adaptation for this iteration. |
+
+This **resolves the v1.4.x "infeasible at minimum trust-region radius after
+3 restarts"** failure mode for industrial flowsheets where tight
+`extra_bounds` + nonlinear residuals make locally hard equalities infeasible.
+
+To disable: `SLPConfig(elastic_fallback=False)`.
+
+### 13.2 `BaseFlowsheet.diagnose()`
+
+```python
+diag = fs.diagnose()
+# {"errors": [...], "warnings": [...], "info": [...]}
+```
+
+Non-raising pre-solve validator.  Detects:
+
+| Category | Triggers |
+|---|---|
+| Errors   | Unknown variable references in `extra_*` dicts, unknown connection vars, inverted bounds (`lo > hi`) |
+| Warnings | Very-wide bounds (span > 1e8), orphan units (no incoming/outgoing connection) |
+| Info     | Counts: units, variables, connections, extra equalities, extra bounds, objective extras |
+
+The Streamlit Flowsheet Builder page calls this from a "Pre-solve Validator"
+expander.  When writing a new template, **always** call `fs.diagnose()` in
+a unit test to catch wiring oversights at build time.
+
+### 13.3 Per-residual-row LP scaling
+
+`scaling.compute_residual_row_scaling(linearizations, floor=1.0)` returns
+`1 / max(‖J_row‖∞, floor)` per row.  Apply via
+`SLPConfig(scale_rows=True)`; the LP builder rescales each row of J and f0
+so the LP solver sees well-balanced constraint magnitudes.
+
+**Off by default** to preserve v1.5 LP topology bit-for-bit.  Turn on when
+your flowsheet mixes element balances at 100 mol/s with equilibrium
+residuals at 1e-3 mol²/s — typical symptom is HiGHS spending many simplex
+iterations to find a feasible basis.
+
+---
+
+## 14. CGE KPI convention (v1.5.0.dev-AUDIT5)
+
+`BiomassGasifierHF.kpis()` emits **two CGE values**:
+
+- `<unit>.CGE_LHV_percent` — `100 × LHV(syngas) / LHV(biomass)`.
+  Can exceed 100 % for steam gasification.
+- `<unit>.CGE_with_steam_percent` — same numerator, but denominator
+  includes `h_steam(T) × ṁ_steam`.  Bounded by ≤ 100 % per 2nd law.
+
+The legacy bare `CGE_percent` key is now an alias for `CGE_LHV_percent`.
+Any new biomass-like unit that adds external-heat-supply inputs should
+follow the same convention: emit both a bare-LHV and a corrected variant.

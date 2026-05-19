@@ -365,6 +365,49 @@ def _page_flowsheet_builder():
 
         st.divider()
 
+        # ── Pre-solve validator (v1.5.0.dev-AUDIT5 #1) ───────────────────────
+        with st.expander("Pre-solve Validator", expanded=False):
+            st.caption(
+                "Runs `BaseFlowsheet.diagnose()` on the currently-selected "
+                "template + parameters.  Catches inverted bounds, very-wide "
+                "bounds, orphan units, and unknown variable references "
+                "**before** you hit Run Solve on the Solver Monitor page."
+            )
+            if st.button("Validate Flowsheet", key="validate_fs_btn", type="primary"):
+                try:
+                    from pse_ecosystem.ui.flowsheet_service import load_template
+                    _fs_to_check = load_template(
+                        st.session_state.get("selected_template", chosen_key),
+                        st.session_state.get("template_params", {}),
+                    )
+                    diag = _fs_to_check.diagnose()
+                    if diag["errors"]:
+                        st.error(
+                            f"**{len(diag['errors'])} error(s)** — solve will fail."
+                        )
+                        for e in diag["errors"]:
+                            st.code(e, language=None)
+                    else:
+                        st.success("No errors. Safe to run.")
+                    if diag["warnings"]:
+                        st.warning(
+                            f"**{len(diag['warnings'])} warning(s)** — may slow "
+                            f"convergence:"
+                        )
+                        for w in diag["warnings"]:
+                            st.code(w, language=None)
+                    st.caption("**Flowsheet metrics**")
+                    _info_cols = st.columns(len(diag["info"]) or 1)
+                    for col, line in zip(_info_cols, diag["info"]):
+                        if ":" in line:
+                            label, val = line.split(":", 1)
+                            col.metric(label.strip(), val.strip())
+                except Exception as _ve:
+                    st.error(
+                        f"Could not build flowsheet for validation: "
+                        f"{type(_ve).__name__}: {_ve}"
+                    )
+
         # ── Save / Load flowsheet JSON (v1.5.0.dev-AUDIT3 UI-3) ──────────────
         with st.expander("Save / Load Configuration", expanded=False):
             from pse_ecosystem.ui.flowsheet_service import (
