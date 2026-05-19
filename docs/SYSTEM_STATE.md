@@ -1,8 +1,33 @@
 # PSE Ecosystem — System State Ledger
 
-**Version:** 1.4.1
+**Version:** 1.5.0.dev0
 **Date:** 2026-05-19
-**Status:** v1.4.1 — Physics Safety Net release. Bound-saturation guard, UI unit auto-conversion on_change, flowsheet connection validation, silent xfail/skip closure.
+**Status:** v1.5.0.dev — Multi-Tier Optimization Engine. Three-tier objective framework (Technical / Economic / Technoeconomic), Project Economics Engine (NPV, IRR, LCOE, equipment scaling), dynamic context-dependent UI, Project Economics Excel sheet.
+
+---
+
+## What's New in v1.5.0.dev — Multi-Tier Optimization Engine
+
+*303 tests pass, 2 skipped (pre-existing v1.5.x investigation items), 0 failures.*
+
+| Area | Change |
+|---|---|
+| **Layer 3 — `economic_engine.py`** | Added `EquipmentScalingRule` (C = C₀·(S/S₀)^α), `EconomicEngine.npv()`, `EconomicEngine.irr()` (bisection), `EconomicEngine.lcoe()` |
+| **Layer 1 bridge — `flowsheet_service.py`** | Added `ProjectEconomicsConfig` dataclass (plant life, WACC, tax rate, feedstock/utility prices, carbon tax); `OBJECTIVE_TIERS` dict (3 tiers, 11 objectives); `compute_project_economics()` helper; extended `build_objective_extra()` with 5 new modes |
+| **Layer 1 UI — `app_streamlit.py`** | Redesigned Objective Function tab: 3-tier radio selector → context-dependent expanders per tier; all solver calls pass `ProjectEconomicsConfig`; added "Project Economics & Cash Flow" Excel Sheet 5 |
+| **Tests** | New `tests/test_technoeconomic_optimization.py` — 28 tests covering EconomicEngine extensions, ProjectEconomicsConfig, all new objective modes, layer-boundary compliance |
+| **Docs** | All `docs/*.md` + `README.md` bumped to v1.5.0.dev |
+| **Version** | `pyproject.toml` + `pse_ecosystem/__init__.py` → `1.5.0.dev0` |
+
+### New objective modes (v1.5.0.dev)
+
+| Tier | Mode | LP Proxy |
+|---|---|---|
+| Technical | Minimize Specific Energy Consumption | Energy penalty + H₂ reward |
+| Technical | Minimize Carbon Intensity | Carbon tax × CO₂ outlet flow |
+| Economic | Maximize NPV | TAC minimisation proxy (steady-state equivalence) |
+| Economic | Maximize IRR | Same as NPV; exact IRR post-solve via bisection |
+| Technoeconomic | Minimize LCOE | Energy penalty + net-power reward |
 
 ---
 

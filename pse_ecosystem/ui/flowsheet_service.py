@@ -278,6 +278,69 @@ def si_baseline_of(unit: str) -> Optional[str]:
     return next(iter(UNIT_FAMILIES[fam]))
 
 
+# ── ProjectEconomicsConfig ────────────────────────────────────────────────────
+
+
+@dataclass
+class ProjectEconomicsConfig:
+    """All financial and utility parameters for a single solve run.
+
+    Passed from Layer 1 UI to ``build_objective_extra()`` so the LP objective
+    coefficients correctly reflect the user's project-economics settings.
+    """
+
+    # Financial
+    plant_life_yr: int = 20
+    interest_rate: float = 0.08       # WACC (fraction)
+    tax_rate: float = 0.20
+    inflation_rate: float = 0.025
+    target_year: int = 2024
+    # Operational
+    operating_hours_per_year: float = 8_000.0
+    # Utilities / feedstocks
+    electricity_price_USD_per_kWh: float = 0.05
+    biomass_price_USD_per_tonne: float = 60.0
+    water_price_USD_per_tonne: float = 0.5
+    cooling_water_price_USD_per_GJ: float = 0.35
+    carbon_tax_USD_per_tonne: float = 50.0
+
+    @property
+    def crf(self) -> float:
+        """Capital Recovery Factor = i(1+i)^n / ((1+i)^n − 1)."""
+        i, n = self.interest_rate, self.plant_life_yr
+        if i == 0.0:
+            return 1.0 / n
+        return i * (1 + i) ** n / ((1 + i) ** n - 1)
+
+    @property
+    def energy_coeff(self) -> float:
+        """Annual electricity cost coefficient [USD / kW / yr]."""
+        return self.electricity_price_USD_per_kWh * self.operating_hours_per_year
+
+
+# ── Objective tier taxonomy ───────────────────────────────────────────────────
+
+OBJECTIVE_TIERS: Dict[str, List[str]] = {
+    "Technical": [
+        "Feasibility Only",
+        "Minimize Energy",
+        "Maximize H₂ Yield",
+        "Minimize Specific Energy Consumption",
+        "Minimize Carbon Intensity",
+    ],
+    "Economic": [
+        "Minimize OPEX",
+        "Minimize TAC",
+        "Maximize NPV (Net Present Value)",
+        "Maximize IRR (Internal Rate of Return)",
+    ],
+    "Technoeconomic": [
+        "Minimize LCOH (Levelized Cost of H₂)",
+        "Minimize LCOE (Levelized Cost of Energy)",
+    ],
+}
+
+
 # ── Type-specific Unit ID suggestions ────────────────────────────────────────
 
 def build_objective_extra(
@@ -286,6 +349,7 @@ def build_objective_extra(
     electricity_price_USD_per_kWh: float = 0.05,
     operating_hours: float = 8_000.0,
     crf: float = 0.10,
+    econ_config: Optional[ProjectEconomicsConfig] = None,
 ) -> tuple:
     """Compute (objective_extra, force_feasibility) for the given objective mode.
 
@@ -302,7 +366,15 @@ def build_objective_extra(
     electricity_price_USD_per_kWh : multiplied by annual hours to give $/kW/yr
     operating_hours       : annual operating hours (default 8 000 h/yr)
     crf                   : Capital Recovery Factor for annualising capex
+    econ_config           : optional; when provided its values override the three
+                            scalar arguments above for all financial calculations
     """
+    # If a full economics config is provided, use it as the source of truth.
+    if econ_config is not None:
+        electricity_price_USD_per_kWh = econ_config.electricity_price_USD_per_kWh
+        operating_hours = econ_config.operating_hours_per_year
+        crf = econ_config.crf
+
     all_vars: List[str] = flowsheet.all_variables()
     energy_coeff = electricity_price_USD_per_kWh * operating_hours  # $/kW/yr
 
@@ -322,7 +394,16 @@ def build_objective_extra(
     # ── Energy penalty ───────────────────────────────────────────────────────
     # Add electricity price × hours on any decision variable representing
     # shaft work or electrical power draw.
-    if mode in ("Minimize Energy", "Minimize TAC", "Minimize LCOH (Levelized Cost of H₂)"):
+    _energy_modes = (
+        "Minimize Energy",
+        "Minimize TAC",
+        "Minimize LCOH (Levelized Cost of H₂)",
+        "Minimize Specific Energy Consumption",
+        "Maximize NPV (Net Present Value)",
+        "Maximize IRR (Internal Rate of Return)",
+        "Minimize LCOE (Levelized Cost of Energy)",
+    )
+    if mode in _energy_modes:
         for v in all_vars:
             lv = v.lower()
             if any(k in lv for k in ("w_shaft", "w_elec_kw", "electricity_kw")):
@@ -333,7 +414,13 @@ def build_objective_extra(
     # Annualised = 700 × CRF per kW → inject on the W_elec_kW decision variable.
     # SSLW-correlated units (Compressor, HXN, vessels) have non-linear capex;
     # their costs are captured post-solve in kpis() and the Excel report.
-    if mode in ("Minimize TAC", "Minimize LCOH (Levelized Cost of H₂)"):
+    _capex_modes = (
+        "Minimize TAC",
+        "Minimize LCOH (Levelized Cost of H₂)",
+        "Maximize NPV (Net Present Value)",
+        "Maximize IRR (Internal Rate of Return)",
+    )
+    if mode in _capex_modes:
         for unit in flowsheet.units:
             if type(unit).__name__ == "ElectrolyserHF":
                 w_var = next(
@@ -348,21 +435,105 @@ def build_objective_extra(
     # Negative coefficient (−1.0) on the last H₂ outlet flow variable in the chain.
     # "Last" is determined by lexicographic sort; for sequential chains this gives
     # the most downstream H₂ variable.
-    if mode in ("Maximize H₂ Yield", "Minimize LCOH (Levelized Cost of H₂)"):
-        # Variable format: unit_id.port_tag.variable_name
-        # Outlet port tags contain "out": syngas_out, shifted_out, h2_out, outlet, dry_out
-        # Inlet port tags contain "in": syngas_in, feed_in, biomass_in, inlet, wet_in
-        def _is_h2_outlet(v: str) -> bool:
-            parts = v.split(".")
-            if len(parts) < 3:
-                return False
-            return parts[-1].lower() == "f_h2" and "out" in parts[1].lower()
+    def _is_h2_outlet(v: str) -> bool:
+        parts = v.split(".")
+        return len(parts) >= 3 and parts[-1].lower() == "f_h2" and "out" in parts[1].lower()
 
+    if mode in ("Maximize H₂ Yield", "Minimize LCOH (Levelized Cost of H₂)",
+                "Minimize Specific Energy Consumption"):
         h2_candidates = sorted(v for v in all_vars if _is_h2_outlet(v))
         if h2_candidates:
             obj[h2_candidates[-1]] = obj.get(h2_candidates[-1], 0.0) - 1.0
 
+    # ── Carbon intensity minimisation ────────────────────────────────────────
+    # Penalise CO₂ outlet flows by the carbon tax rate scaled to an annual cost.
+    # carbon_tax [USD/tonne CO₂] × 3600 s/h × operating_hours [h/yr]
+    # × 1e-3 [tonne/kg] = coefficient on F_CO2 [kg/s] → [USD/yr per kg/s]
+    if mode == "Minimize Carbon Intensity":
+        _ct = econ_config.carbon_tax_USD_per_tonne if econ_config else 50.0
+        _carbon_coeff = _ct * 3600.0 * operating_hours * 1e-3  # USD/yr per kg/s of CO₂
+        for v in all_vars:
+            parts = v.split(".")
+            if (len(parts) >= 3
+                    and parts[-1].lower() in ("f_co2", "f_co2_captured")
+                    and "out" in parts[1].lower()):
+                obj[v] = obj.get(v, 0.0) + _carbon_coeff
+
+    # ── LCOE proxy ───────────────────────────────────────────────────────────
+    # Minimise cost per unit of electrical output: same energy penalty as
+    # "Minimize Energy" (numerator proxy); power outlet variables get a negative
+    # coefficient to reward high output (denominator proxy).
+    if mode == "Minimize LCOE (Levelized Cost of Energy)":
+        for v in all_vars:
+            lv = v.lower()
+            if any(k in lv for k in ("w_net_kw", "power_out_kw", "w_turbine_kw")):
+                obj[v] = obj.get(v, 0.0) - energy_coeff
+
     return obj, False
+
+
+def compute_project_economics(
+    kpis: Dict[str, float],
+    econ_config: Optional[ProjectEconomicsConfig] = None,
+    obj_config: Optional[Dict] = None,
+) -> List[Dict]:
+    """Compute project-economics rows for the Excel 'Project Economics' sheet.
+
+    All EconomicEngine logic lives here (Layer-1 bridge) so that
+    ``app_streamlit.py`` never imports from ``pse_ecosystem.models.*`` directly.
+
+    Parameters
+    ----------
+    kpis       : ``SolveResult.kpis`` dict from the solver.
+    econ_config: ``ProjectEconomicsConfig`` instance (uses defaults when None).
+    obj_config : Raw ``objective_config`` dict from session state (for metadata rows).
+
+    Returns
+    -------
+    List of row dicts with keys ``Metric``, ``Value``, ``Unit``.
+    """
+    from pse_ecosystem.models.costing.economic_engine import EconomicEngine
+
+    cfg = econ_config or ProjectEconomicsConfig()
+    oc  = obj_config  or {}
+
+    ee = EconomicEngine(
+        plant_life_yr=cfg.plant_life_yr,
+        interest_rate=cfg.interest_rate,
+        operating_hours_per_year=cfg.operating_hours_per_year,
+    )
+
+    capex_annual = float(kpis.get("capex_annual_USD", 0.0))
+    opex_annual  = float(kpis.get("opex_annual_USD", 0.0))
+    h2_kg_s      = float(kpis.get("h2_kg_per_s", 0.0))
+    power_kw     = float(kpis.get("power_out_kW", 0.0))
+
+    lcoh = ee.lcoh(capex_annual, opex_annual, h2_kg_s) if h2_kg_s > 0 else float("nan")
+    lcoe = ee.lcoe(capex_annual, opex_annual,
+                   power_kw * ee.operating_hours_per_year) if power_kw > 0 else float("nan")
+    installed = capex_annual / max(ee.capital_recovery_factor(), 1e-9)
+    npv = ee.npv(annual_net_cashflow=-opex_annual, initial_capex=installed)
+    irr = ee.irr(initial_capex=installed, annual_net_cashflow=-opex_annual)
+
+    import math
+    return [
+        {"Metric": "Plant Life",           "Value": cfg.plant_life_yr,                         "Unit": "years"},
+        {"Metric": "Discount Rate (WACC)", "Value": round(cfg.interest_rate * 100, 2),          "Unit": "%"},
+        {"Metric": "CRF",                  "Value": round(ee.capital_recovery_factor(), 6),     "Unit": "—"},
+        {"Metric": "Operating Hours",      "Value": cfg.operating_hours_per_year,               "Unit": "h/yr"},
+        {"Metric": "Electricity Price",    "Value": cfg.electricity_price_USD_per_kWh,          "Unit": "USD/kWh"},
+        {"Metric": "Carbon Tax",           "Value": cfg.carbon_tax_USD_per_tonne,               "Unit": "USD/tonne CO₂"},
+        {"Metric": "Annualised CAPEX",     "Value": round(capex_annual, 2),                     "Unit": "USD/yr"},
+        {"Metric": "Annual OPEX",          "Value": round(opex_annual, 2),                      "Unit": "USD/yr"},
+        {"Metric": "TAC",                  "Value": round(capex_annual + opex_annual, 2),       "Unit": "USD/yr"},
+        {"Metric": "LCOH",                 "Value": round(lcoh, 6),                             "Unit": "USD/kg H₂"},
+        {"Metric": "LCOE",                 "Value": round(lcoe, 6),                             "Unit": "USD/kWh"},
+        {"Metric": "NPV",                  "Value": round(npv, 2),                              "Unit": "USD"},
+        {"Metric": "IRR",
+         "Value": round(irr * 100, 4) if not math.isnan(irr) else float("nan"),
+         "Unit": "%"},
+        {"Metric": "Objective Mode",       "Value": oc.get("mode", "—"),                       "Unit": "—"},
+    ]
 
 
 TYPE_ID_SUGGESTIONS: Dict[str, str] = {

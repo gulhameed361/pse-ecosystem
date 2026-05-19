@@ -102,6 +102,35 @@ def _cepci_for_year(year: int) -> float:
     return CEPCI[y0] + frac * (CEPCI[y1] - CEPCI[y0])
 
 
+# ── EquipmentScalingRule ──────────────────────────────────────────────────────
+
+
+@dataclass
+class EquipmentScalingRule:
+    """Six-tenths (or arbitrary exponent) equipment cost scaling.
+
+    C = C₀ · (S / S₀)^α
+
+    Parameters
+    ----------
+    reference_cost_USD   : Purchase cost C₀ at reference size S₀ [USD].
+    reference_size       : Reference capacity S₀ (caller-defined units: MW, m³, kg/s …).
+    scaling_exponent     : α — 0.6 is the chemical-engineering six-tenths rule.
+    """
+
+    reference_cost_USD: float
+    reference_size: float
+    scaling_exponent: float = 0.6
+
+    def cost_at(self, size: float) -> float:
+        """Return purchase cost at *size* using the power-law scaling rule."""
+        if self.reference_size <= 0:
+            raise ValueError(
+                f"reference_size must be positive, got {self.reference_size}"
+            )
+        return self.reference_cost_USD * (size / self.reference_size) ** self.scaling_exponent
+
+
 # ── EconomicEngine ────────────────────────────────────────────────────────────
 
 
@@ -188,3 +217,95 @@ class EconomicEngine:
         if h2_per_year <= 0.0:
             return float("inf")
         return (capex_annual_USD + opex_annual_USD) / h2_per_year
+
+    # ── LCOE ─────────────────────────────────────────────────────────────────
+
+    def lcoe(
+        self,
+        capex_annual_USD: float,
+        opex_annual_USD: float,
+        energy_kWh_per_year: float,
+    ) -> float:
+        """Levelised cost of energy [USD/kWh].
+
+        Parameters
+        ----------
+        capex_annual_USD    : Annualised capital cost [USD/yr].
+        opex_annual_USD     : Annual operating cost [USD/yr].
+        energy_kWh_per_year : Annual electrical/thermal energy output [kWh/yr].
+        """
+        if energy_kWh_per_year <= 0.0:
+            return float("inf")
+        return (capex_annual_USD + opex_annual_USD) / energy_kWh_per_year
+
+    # ── NPV ──────────────────────────────────────────────────────────────────
+
+    def npv(
+        self,
+        annual_net_cashflow: float,
+        initial_capex: float,
+        salvage_value: float = 0.0,
+    ) -> float:
+        """Net Present Value [USD].
+
+        NPV = −CapEx + Σ(CF / (1+r)^t, t=1..N) + SV / (1+r)^N
+
+        Parameters
+        ----------
+        annual_net_cashflow : Uniform annual cash flow (revenue − opex) [USD/yr].
+        initial_capex       : Up-front capital expenditure at t=0 [USD].
+        salvage_value       : Terminal value at end of plant life [USD].
+        """
+        r = self.interest_rate
+        n = self.plant_life_yr
+        if r == 0.0:
+            pv_factor = float(n)
+            pv_salvage = salvage_value
+        else:
+            pv_factor = (1.0 - (1.0 + r) ** (-n)) / r
+            pv_salvage = salvage_value / (1.0 + r) ** n
+        return -initial_capex + annual_net_cashflow * pv_factor + pv_salvage
+
+    # ── IRR ──────────────────────────────────────────────────────────────────
+
+    def irr(
+        self,
+        initial_capex: float,
+        annual_net_cashflow: float,
+        tol: float = 1e-6,
+        max_iter: int = 200,
+    ) -> float:
+        """Internal Rate of Return via bisection [fraction].
+
+        Finds r* such that NPV(r*) = 0:
+            −C₀ + CF · (1 − (1+r)^−N) / r = 0
+
+        Returns ``float('nan')`` when the project never pays back (CF × N ≤ C₀).
+
+        Parameters
+        ----------
+        initial_capex       : Up-front capital expenditure at t=0 [USD].
+        annual_net_cashflow : Uniform annual cash flow [USD/yr].
+        tol                 : Bisection tolerance on rate (fraction).
+        max_iter            : Maximum bisection iterations.
+        """
+        n = self.plant_life_yr
+
+        def _npv_at_r(r: float) -> float:
+            if r == 0.0:
+                return -initial_capex + annual_net_cashflow * n
+            return -initial_capex + annual_net_cashflow * (1.0 - (1.0 + r) ** (-n)) / r
+
+        if _npv_at_r(0.0) <= 0.0:
+            return float("nan")
+
+        r_lo, r_hi = 0.0, 10.0
+        for _ in range(max_iter):
+            r_mid = (r_lo + r_hi) / 2.0
+            if _npv_at_r(r_mid) > 0.0:
+                r_lo = r_mid
+            else:
+                r_hi = r_mid
+            if r_hi - r_lo < tol:
+                break
+        return (r_lo + r_hi) / 2.0

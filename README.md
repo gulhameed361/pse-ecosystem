@@ -1,4 +1,4 @@
-# PSE Ecosystem (v1.4.0)
+# PSE Ecosystem (v1.5.0.dev)
 
 Application-centric Knowledge Ecosystem for Process Systems Engineering.  
 **Private — University of Surrey.**

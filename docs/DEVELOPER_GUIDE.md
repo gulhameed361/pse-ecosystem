@@ -903,6 +903,104 @@ The Streamlit module defers all imports inside `main()` so it can be
 imported safely without Streamlit installed. To add a new page, add a
 `st.tabs()` or `st.sidebar.radio()` branch inside `main()`.
 
+---
+
+## 11. Registering a New Optimization Objective (v1.5.0.dev)
+
+The objective system is string-dispatch: `build_objective_extra()` in
+`pse_ecosystem/ui/flowsheet_service.py` maps mode-label strings to LP
+coefficient dicts.  Adding a new objective requires exactly **four steps**:
+
+### Step 1 — Declare the mode in `OBJECTIVE_TIERS`
+
+```python
+# flowsheet_service.py
+OBJECTIVE_TIERS: Dict[str, List[str]] = {
+    "Technical": [..., "Minimize My New Metric"],
+    ...
+}
+```
+
+Choose the tier that best describes whether the metric is purely
+physical (`Technical`), purely financial (`Economic`), or a ratio of
+cost to physical output (`Technoeconomic`).
+
+### Step 2 — Implement the LP coefficient logic in `build_objective_extra()`
+
+Add an `elif` branch after the existing modes:
+
+```python
+if mode == "Minimize My New Metric":
+    for v in all_vars:
+        if "my_variable_fragment" in v.lower():
+            obj[v] = obj.get(v, 0.0) + my_coefficient
+```
+
+Rules:
+- **Positive coefficient** → minimise the variable (cost, energy, emissions).
+- **Negative coefficient** → maximise the variable (production, revenue).
+- If the mode requires financial parameters from `ProjectEconomicsConfig`,
+  they are available via the `econ_config` argument (already unwrapped at
+  the top of `build_objective_extra()`).
+- Return `(obj, False)` at the end; only "Feasibility Only" returns `True`.
+
+### Step 3 — Add context-dependent UI inputs in `app_streamlit.py`
+
+In the `_fb_tabs[1]` block, extend the relevant tier expander with the
+parameter widgets your new mode needs (e.g., a penalty rate).  Store them
+in `st.session_state["objective_config"]` under a clear key so the Solver
+Monitor can forward them to `ProjectEconomicsConfig`.
+
+### Step 4 — Write a test
+
+```python
+# tests/test_technoeconomic_optimization.py  or  tests/test_objectives.py
+def test_minimize_my_new_metric_finds_correct_variable():
+    fs = _my_flowsheet()
+    extra, force_feas = build_objective_extra(fs, "Minimize My New Metric")
+    assert force_feas is False
+    relevant = [k for k in extra if "my_variable_fragment" in k.lower()]
+    assert len(relevant) >= 1
+    for k in relevant:
+        assert extra[k] > 0   # or < 0 for maximisation
+```
+
+Run `pytest tests/ -q` and confirm 0 failures before committing.
+
+---
+
+## 12. Registering a New Equipment Cost Scaling Factor (v1.5.0.dev)
+
+Use `EquipmentScalingRule` from `pse_ecosystem/models/costing/economic_engine.py`
+inside any unit's `capex()` method:
+
+```python
+from pse_ecosystem.models.costing.economic_engine import EquipmentScalingRule
+
+class MyReactorHF(BaseUnit):
+    def capex(self, x: Dict[str, float]) -> float:
+        volume_m3 = x.get(f"{self.unit_id}.outlet.V_m3", self._params.V_m3)
+        rule = EquipmentScalingRule(
+            reference_cost_USD=500_000,   # C₀ at S₀
+            reference_size=10.0,           # S₀ = 10 m³
+            scaling_exponent=0.57,         # vessel exponent (Turton et al.)
+        )
+        return rule.cost_at(volume_m3)
+```
+
+Then surface the result in `kpis()`:
+
+```python
+def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
+    return {"capex_purchase_USD": self.capex(x), ...}
+```
+
+The Excel Sheet 2 ("Unit Performance") and Sheet 5 ("Project Economics")
+pick up `capex_annual_USD` and `opex_annual_USD` keys automatically from
+`result.kpis`.  If your unit contributes annualised cost directly, emit it
+under those canonical KPI names; otherwise the post-solve economics sheet
+will show zero CAPEX/OPEX for that unit.
+
 For a compiled standalone `.exe` (PyInstaller):
 ```bash
 pip install pyinstaller

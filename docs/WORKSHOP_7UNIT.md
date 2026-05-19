@@ -1,6 +1,6 @@
 # 7-Unit Aspen-Style Workshop — Biomass → H₂
 
-**Version:** 1.4.0 | **Date:** 2026-05-17 | **Status:** Canonical Workshop
+**Version:** 1.5.0.dev | **Date:** 2026-05-19 | **Status:** Canonical Workshop (synchronized with v1.5.0.dev multi-tier optimization)
 
 > Step-by-step build of the validated 7-unit biomass-to-hydrogen chain using the
 > Custom Flowsheet builder. Use this file as the answer key: the input matrices
@@ -103,6 +103,70 @@ For 1.0 kg/s wet Pine Wood feed (Moisture content 0.17 → 0.83 kg/s dry):
 | User-visible connection count             | n_streams          | 6                        | Builder display                           |
 
 H₂ overall yield depends on the gasifier element balance, the WGS conversion, and the PSA split. Treat this column as the analytical reference; small deviations (< 2 %) from solver output are expected because the LP linearises the equilibrium constraints.
+
+---
+
+## §3 Financial Results Interpretation (v1.5.0.dev)
+
+This section walks through configuring and reading the Project Economics
+output for the 7-unit biomass → H₂ chain.
+
+### Step 1 — Set the Technoeconomic objective
+
+1. Load the 7-unit flowsheet in the Custom Builder (use `SEVEN_UNIT_CONFIG`
+   from `tests/test_ui_assembly_logic.py` as the reference).
+2. Navigate to **Flowsheet Builder → Objective Function**.
+3. Select tier: **Technoeconomic**.
+4. Select objective: **Minimize LCOH (Levelized Cost of H₂)**.
+5. In the "Project Economics" expander set:
+   - Plant life: 20 years
+   - WACC: 8%
+   - Electricity price: 0.05 USD/kWh
+   - Annual operating hours: 8 000 h/yr
+   - Biomass price: 60 USD/tonne
+6. Click **Apply Objective**.
+
+### Step 2 — Run the solve
+
+On the Solver Monitor page, select **SLP (Fixed LP)** and click **Run Solve**.
+The solver minimises `TAC + (-1) × F_H2_outlet`, the LCOH proxy.
+
+### Step 3 — Download and read the Excel report
+
+| Sheet | Key result |
+|---|---|
+| Stream Table | All unit port variables in SI units |
+| Unit Performance | Per-unit KPIs — look for `Y_H2_kg_per_h` on the PSA, `duty_kW` on the Cooler, `W_shaft_kW` on the Compressor |
+| Optimization Summary | Converged / iterations / objective value |
+| Bound Saturation | Any variable at a non-physics bound (empty = clean solve) |
+| **Project Economics** | LCOH [USD/kg H₂], NPV, IRR, CRF, TAC |
+
+### Step 4 — Understanding the KPI feed to Project Economics
+
+The "Project Economics" sheet reads three KPI keys from `SolveResult.kpis`:
+
+| KPI key | Source unit | Meaning |
+|---|---|---|
+| `capex_annual_USD` | Units that override `capex()` + EconomicEngine | Annualised installed CAPEX [USD/yr] |
+| `opex_annual_USD` | `objective_contribution()` total | Annual operating cost [USD/yr] |
+| `h2_kg_per_s` | PSA or most-downstream H₂ unit | Net H₂ production rate [kg/s] |
+
+If these keys are absent from `kpis`, the corresponding financial rows will
+show 0 or NaN. For units without a `capex()` override (e.g., a simple
+`MixerHF`), their CAPEX contribution is zero; add SSLW correlations via
+`EquipmentScalingRule` if a cost estimate is needed (see `DEVELOPER_GUIDE.md §12`).
+
+### Typical financial outputs for the reference 7-unit case
+
+The values below are indicative for the default parameters above.
+Your run may differ depending on solver convergence and flowsheet parameters.
+
+| Metric | Indicative range |
+|---|---|
+| LCOH | 2–8 USD/kg H₂ (process-dependent) |
+| NPV | Negative if feedstock costs dominate |
+| IRR | `nan` when NPV < 0 at all positive rates |
+| TAC | Dominated by biomass feedstock cost for steam-gasification routes |
 
 ---
 

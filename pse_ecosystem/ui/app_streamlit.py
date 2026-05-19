@@ -370,75 +370,201 @@ def _page_flowsheet_builder():
             _section_sensitivity_sweep(st, chosen_key, spec)
 
         with _fb_tabs[1]:
-            st.subheader("Optimization Objective")
+            from pse_ecosystem.ui.flowsheet_service import OBJECTIVE_TIERS
+            st.subheader("Optimization & Project Economics")
             st.caption(
-                "Sets an extra LP objective term on top of any unit-level cost contributions. "
-                "Applies when you run from the **Solver Monitor**."
+                "Sets the LP objective and financial parameters for your solve run. "
+                "Applies when you click **Run Solve** on the Solver Monitor page."
             )
-            _OBJ_OPTIONS = [
-                "Feasibility Only",
-                "Minimize OPEX",
-                "Minimize Energy",
-                "Minimize TAC",
-                "Minimize LCOH (Levelized Cost of H₂)",
-                "Maximize H₂ Yield",
-            ]
-            _obj_mode = st.radio("Objective", _OBJ_OPTIONS, index=0, key="objective_mode")
+
+            # ── Tier selector ────────────────────────────────────────────────
+            _tier = st.radio(
+                "Optimization Category",
+                list(OBJECTIVE_TIERS.keys()),
+                horizontal=True,
+                key="obj_tier",
+            )
+            _obj_mode = st.selectbox(
+                "Objective",
+                OBJECTIVE_TIERS[_tier],
+                key="objective_mode",
+            )
 
             _OBJ_HELP = {
                 "Feasibility Only":
-                    "objective = 0. Solver finds any point satisfying all mass/energy balances — "
-                    "no cost pressure. Best for debugging connectivity.",
-                "Minimize OPEX":
-                    "Minimises the sum of unit operating costs already defined in each unit model "
-                    "(feedstock cost for BiomassGasifier, electricity cost for PEM, etc.). "
-                    "No extra objective terms needed.",
+                    "objective = 0. Solver finds any feasible point satisfying all "
+                    "mass/energy balances — no cost pressure. Best for debugging.",
                 "Minimize Energy":
-                    "Adds electricity price × annual hours as a coefficient on shaft work "
+                    "Adds electricity price × annual hours as a coefficient on shaft-work "
                     "and electrical power decision variables (e.g. Compressor W_shaft).",
-                "Minimize TAC":
-                    "Total Annualised Cost = OPEX + annualised CAPEX. "
-                    "Adds energy cost + 700 USD/kW × CRF for ElectrolyserHF (linear capex). "
-                    "SSLW-correlated capex (Compressor, vessels) reported as post-solve KPIs.",
-                "Minimize LCOH (Levelized Cost of H₂)":
-                    "Proxy: minimise TAC while maximising H₂ outlet flow. "
-                    "For fixed H₂ demand (extra_bounds), minimising TAC ≡ minimising LCOH exactly.",
                 "Maximize H₂ Yield":
                     "Coefficient −1 on the most-downstream H₂ outlet variable. "
                     "LP maximises H₂ production regardless of cost.",
+                "Minimize Specific Energy Consumption":
+                    "Minimises energy input per unit H₂ produced: energy penalty on power "
+                    "variables, reward coefficient on H₂ outlet (LP proxy).",
+                "Minimize Carbon Intensity":
+                    "Penalises CO₂ outlet flows by the carbon tax rate × annual hours. "
+                    "Configure carbon tax in the Financial Parameters expander.",
+                "Minimize OPEX":
+                    "Minimises the sum of unit operating costs already embedded in each "
+                    "unit model (feedstock, electricity). No extra objective terms.",
+                "Minimize TAC":
+                    "Total Annualised Cost = OPEX + annualised CAPEX. Adds energy cost "
+                    "+ 700 USD/kW × CRF for ElectrolyserHF. SSLW capex reported as KPIs.",
+                "Maximize NPV (Net Present Value)":
+                    "LP proxy = minimize TAC (equivalent under fixed production at steady state). "
+                    "Exact NPV computed post-solve from KPIs using the financial parameters below.",
+                "Maximize IRR (Internal Rate of Return)":
+                    "Same LP proxy as NPV maximisation. Exact IRR computed post-solve via "
+                    "bisection and displayed in the Project Economics Excel sheet.",
+                "Minimize LCOH (Levelized Cost of H₂)":
+                    "Proxy: minimise TAC while maximising H₂ outlet flow. "
+                    "Exact LCOH [USD/kg H₂] displayed in the Project Economics Excel sheet.",
+                "Minimize LCOE (Levelized Cost of Energy)":
+                    "Minimises cost per kWh of electrical output. Energy penalty on power-draw "
+                    "variables; reward coefficient on net-power output variables.",
             }
             st.info(_OBJ_HELP.get(_obj_mode, ""))
 
-            with st.expander("Advanced: Economic Parameters", expanded=False):
-                _elec_price = st.number_input(
-                    "Electricity price (USD/kWh)", value=0.05, format="%.3f",
-                    key="obj_elec_price",
-                    help="Used for energy cost coefficients in Energy/TAC/LCOH objectives.",
-                )
-                _op_hours = st.number_input(
-                    "Annual operating hours (h/yr)", value=8000, step=100,
-                    key="obj_op_hours",
-                )
-                _crf = st.number_input(
-                    "Capital Recovery Factor (CRF)", value=0.10, format="%.3f",
-                    key="obj_crf",
-                    help="Annualises purchase cost: CRF = i(1+i)^n / ((1+i)^n − 1).",
-                )
+            # ── Context-dependent parameter expanders ────────────────────────
+            _elec_price = 0.05
+            _op_hours   = 8000.0
+            _plant_life = 20
+            _int_rate   = 0.08
+            _tax_rate   = 0.20
+            _infl_rate  = 0.025
+            _biomass_p  = 60.0
+            _water_p    = 0.5
+            _cw_p       = 0.35
+            _carbon_tax = 50.0
+
+            if _tier == "Technical":
+                with st.expander("Technical Parameters", expanded=True):
+                    _elec_price = st.number_input(
+                        "Electricity price (USD/kWh)", value=0.05, format="%.3f",
+                        key="obj_elec_price",
+                        help="Used for energy cost coefficients.",
+                    )
+                    _op_hours = float(st.number_input(
+                        "Annual operating hours (h/yr)", value=8000, step=100,
+                        key="obj_op_hours",
+                    ))
+                    if _obj_mode == "Minimize Carbon Intensity":
+                        _carbon_tax = st.number_input(
+                            "Carbon tax (USD/tonne CO₂)", value=50.0, format="%.1f",
+                            key="obj_carbon_tax",
+                        )
+
+            elif _tier == "Economic":
+                with st.expander("Financial Parameters", expanded=True):
+                    _col1, _col2 = st.columns(2)
+                    with _col1:
+                        _plant_life = int(st.number_input(
+                            "Plant economic life (years)", value=20, min_value=1, max_value=50,
+                            key="obj_plant_life",
+                        ))
+                        _int_rate = st.number_input(
+                            "Discount / interest rate (WACC)", value=0.08, format="%.3f",
+                            key="obj_int_rate",
+                            help="Fraction, e.g. 0.08 for 8%.",
+                        )
+                        _tax_rate = st.number_input(
+                            "Corporate tax rate", value=0.20, format="%.2f",
+                            key="obj_tax_rate",
+                        )
+                    with _col2:
+                        _infl_rate = st.number_input(
+                            "Inflation rate", value=0.025, format="%.3f",
+                            key="obj_infl_rate",
+                        )
+                        _elec_price = st.number_input(
+                            "Electricity price (USD/kWh)", value=0.05, format="%.3f",
+                            key="obj_elec_price",
+                        )
+                        _op_hours = float(st.number_input(
+                            "Annual operating hours (h/yr)", value=8000, step=100,
+                            key="obj_op_hours",
+                        ))
+                    if _obj_mode in ("Maximize NPV (Net Present Value)",
+                                     "Maximize IRR (Internal Rate of Return)"):
+                        _carbon_tax = st.number_input(
+                            "Carbon tax (USD/tonne CO₂)", value=50.0, format="%.1f",
+                            key="obj_carbon_tax",
+                        )
+
+            else:  # Technoeconomic
+                with st.expander("Project Economics", expanded=True):
+                    _col1, _col2 = st.columns(2)
+                    with _col1:
+                        _plant_life = int(st.number_input(
+                            "Plant economic life (years)", value=20, min_value=1, max_value=50,
+                            key="obj_plant_life",
+                        ))
+                        _int_rate = st.number_input(
+                            "Discount / interest rate (WACC)", value=0.08, format="%.3f",
+                            key="obj_int_rate",
+                        )
+                        _tax_rate = st.number_input(
+                            "Corporate tax rate", value=0.20, format="%.2f",
+                            key="obj_tax_rate",
+                        )
+                        _infl_rate = st.number_input(
+                            "Inflation rate", value=0.025, format="%.3f",
+                            key="obj_infl_rate",
+                        )
+                    with _col2:
+                        _elec_price = st.number_input(
+                            "Electricity price (USD/kWh)", value=0.05, format="%.3f",
+                            key="obj_elec_price",
+                        )
+                        _op_hours = float(st.number_input(
+                            "Annual operating hours (h/yr)", value=8000, step=100,
+                            key="obj_op_hours",
+                        ))
+                        _biomass_p = st.number_input(
+                            "Biomass feedstock (USD/tonne)", value=60.0, format="%.1f",
+                            key="obj_biomass_price",
+                        )
+                        _water_p = st.number_input(
+                            "Water price (USD/tonne)", value=0.5, format="%.2f",
+                            key="obj_water_price",
+                        )
+                        _cw_p = st.number_input(
+                            "Cooling water (USD/GJ)", value=0.35, format="%.2f",
+                            key="obj_cw_price",
+                        )
+                        _carbon_tax = st.number_input(
+                            "Carbon tax (USD/tonne CO₂)", value=50.0, format="%.1f",
+                            key="obj_carbon_tax",
+                        )
+
             if st.button("Apply Objective", key="apply_objective_btn"):
                 st.session_state["objective_config"] = {
-                    "mode":       _obj_mode,
-                    "elec_price": float(_elec_price),
-                    "op_hours":   float(_op_hours),
-                    "crf":        float(_crf),
+                    "mode":          _obj_mode,
+                    "tier":          _tier,
+                    "elec_price":    float(_elec_price),
+                    "op_hours":      float(_op_hours),
+                    "plant_life_yr": int(_plant_life),
+                    "interest_rate": float(_int_rate),
+                    "tax_rate":      float(_tax_rate),
+                    "inflation_rate": float(_infl_rate),
+                    "biomass_price": float(_biomass_p),
+                    "water_price":   float(_water_p),
+                    "cw_price":      float(_cw_p),
+                    "carbon_tax":    float(_carbon_tax),
                 }
                 st.success(f"Objective set to: **{_obj_mode}**. Run from Solver Monitor.")
 
             _oc = st.session_state.get("objective_config")
             if _oc:
-                st.caption(f"Active objective: **{_oc['mode']}** | "
-                           f"elec {_oc.get('elec_price', 0.05):.3f} USD/kWh | "
-                           f"{int(_oc.get('op_hours', 8000))} h/yr | "
-                           f"CRF {_oc.get('crf', 0.10):.2f}")
+                st.caption(
+                    f"Active: **{_oc['mode']}** | {_oc.get('tier','—')} tier | "
+                    f"elec {_oc.get('elec_price', 0.05):.3f} USD/kWh | "
+                    f"{int(_oc.get('op_hours', 8000))} h/yr | "
+                    f"plant life {_oc.get('plant_life_yr', 20)} yr | "
+                    f"WACC {_oc.get('interest_rate', 0.08)*100:.1f}%"
+                )
 
 
 # ── Sensitivity sweep ────────────────────────────────────────────────────────
@@ -1113,15 +1239,27 @@ def _page_solver_monitor():
                     tech_choices = []
 
                 # Apply objective config from Objective Function tab
-                from pse_ecosystem.ui.flowsheet_service import build_objective_extra
-                _oc = st.session_state.get("objective_config", {})
+                from pse_ecosystem.ui.flowsheet_service import (
+                    build_objective_extra, ProjectEconomicsConfig,
+                )
+                _oc = st.session_state.get("objective_config", {}) or {}
                 _obj_mode_val = _oc.get("mode", "Feasibility Only")
+                _econ_cfg = ProjectEconomicsConfig(
+                    plant_life_yr=int(_oc.get("plant_life_yr", 20)),
+                    interest_rate=float(_oc.get("interest_rate", 0.08)),
+                    tax_rate=float(_oc.get("tax_rate", 0.20)),
+                    inflation_rate=float(_oc.get("inflation_rate", 0.025)),
+                    operating_hours_per_year=float(_oc.get("op_hours", 8000.0)),
+                    electricity_price_USD_per_kWh=float(_oc.get("elec_price", 0.05)),
+                    biomass_price_USD_per_tonne=float(_oc.get("biomass_price", 60.0)),
+                    water_price_USD_per_tonne=float(_oc.get("water_price", 0.5)),
+                    cooling_water_price_USD_per_GJ=float(_oc.get("cw_price", 0.35)),
+                    carbon_tax_USD_per_tonne=float(_oc.get("carbon_tax", 50.0)),
+                )
                 flowsheet.objective_extra, flowsheet.force_feasibility = build_objective_extra(
                     flowsheet,
                     _obj_mode_val,
-                    electricity_price_USD_per_kWh=float(_oc.get("elec_price", 0.05)),
-                    operating_hours=float(_oc.get("op_hours", 8000.0)),
-                    crf=float(_oc.get("crf", 0.10)),
+                    econ_config=_econ_cfg,
                 )
 
                 orch = Orchestrator(
@@ -1385,16 +1523,39 @@ def _page_solver_monitor():
                                 "Upper": "", "Hit": "(none — physics OK)"}]
             _pd.DataFrame(_bound_rows).to_excel(_writer, sheet_name="Bound Saturation", index=False)
 
+            # Sheet 5: Project Economics & Cash Flow (computed via flowsheet_service bridge)
+            try:
+                from pse_ecosystem.ui.flowsheet_service import (
+                    compute_project_economics, ProjectEconomicsConfig,
+                )
+                _oc_xls = st.session_state.get("objective_config") or {}
+                _cfg_xls = ProjectEconomicsConfig(
+                    plant_life_yr=int(_oc_xls.get("plant_life_yr", 20)),
+                    interest_rate=float(_oc_xls.get("interest_rate", 0.08)),
+                    operating_hours_per_year=float(_oc_xls.get("op_hours", 8000.0)),
+                    electricity_price_USD_per_kWh=float(_oc_xls.get("elec_price", 0.05)),
+                    carbon_tax_USD_per_tonne=float(_oc_xls.get("carbon_tax", 50.0)),
+                )
+                _econ_rows = compute_project_economics(
+                    kpis=result.kpis,
+                    econ_config=_cfg_xls,
+                    obj_config=_oc_xls,
+                )
+                _pd.DataFrame(_econ_rows).to_excel(
+                    _writer, sheet_name="Project Economics", index=False
+                )
+            except Exception:
+                pass  # economics sheet is best-effort; never block the download
+
         st.download_button(
             label="⬇ Download Results (XLSX)",
             data=_buf.getvalue(),
             file_name="pse_results.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             help=(
-                "Sheet 1: Stream Table (Equipment | Port | Variable | Value | SI Unit) | "
-                "Sheet 2: Unit Performance (Equipment | KPI | Value | SI Unit) | "
-                "Sheet 3: Optimization Summary | "
-                "Sheet 4: Bound Saturation (Variable | Value | Lower | Upper | Hit)"
+                "Sheet 1: Stream Table | Sheet 2: Unit Performance | "
+                "Sheet 3: Optimization Summary | Sheet 4: Bound Saturation | "
+                "Sheet 5: Project Economics & Cash Flow"
             ),
         )
     except ImportError:

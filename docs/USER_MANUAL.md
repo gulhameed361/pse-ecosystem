@@ -1,6 +1,6 @@
 # PSE Ecosystem — User Manual
 
-**Version:** 1.4.1 | **Date:** 2026-05-19 | **Status:** Physics Safety Net release
+**Version:** 1.5.0.dev | **Date:** 2026-05-19 | **Status:** Multi-Tier Optimization Engine release
 
 > Single source of truth for PSE Ecosystem users. Replaces `UI_GUIDE.md` (merged here in Phase 6)
 > and `SHOWCASE_WALKTHROUGH.md` (merged in Phase 5). For architecture details see `ARCHITECTURE.md`;
@@ -886,6 +886,89 @@ $$K_{WGS}(T) = \exp\!\left(\frac{4300}{T} - 3.84\right) \qquad \text{(van't Hoff
 ### SLP Linearisation
 
 $$f(x^k) + J(x^k)(x - x^k) = 0, \qquad J_{ij} = \frac{\partial f_i}{\partial x_j}\bigg|_{x^k}$$
+
+---
+
+## §4 Multi-Tier Optimization Dashboard (v1.5.0.dev)
+
+### 4.1 Overview
+
+The Optimization & Project Economics panel (Flowsheet Builder → Objective
+Function tab) replaces the flat radio-button list from v1.4.x with a
+**three-tier selector** and **context-dependent parameter cards**.
+
+| Tier | Purpose | Key parameters |
+|---|---|---|
+| **Technical** | Physical performance — energy, emissions, H₂ yield | Electricity price, operating hours, carbon tax |
+| **Economic** | Financial returns — OpEx, TAC, NPV, IRR | Plant life, WACC, tax rate, inflation, all utility prices |
+| **Technoeconomic** | Cost per unit product — LCOH, LCOE | All Economic parameters + feedstock prices |
+
+### 4.2 Step-by-step workflow
+
+1. **Load a flowsheet** from the Template Gallery or Custom Builder.
+2. Navigate to **Flowsheet Builder → Objective Function** tab.
+3. Select the **Optimization Category** (Technical / Economic / Technoeconomic).
+4. Select the specific **Objective** from the dropdown that appears.
+5. The relevant parameter expander opens automatically — fill in project values or accept industrial defaults.
+6. Click **Apply Objective**.
+7. Go to **Solver Monitor**, choose a solver mode, click **Run Solve**.
+8. Download **Results (XLSX)** — Sheet 5 ("Project Economics & Cash Flow") contains the full financial summary.
+
+### 4.3 Context-dependent parameters
+
+**Technical tier** — only operating hours and electricity price are shown.
+Carbon tax appears additionally when "Minimize Carbon Intensity" is selected.
+
+**Economic tier** — the Financial Parameters expander shows:
+- Plant economic life (default 20 years)
+- Discount / interest rate / WACC (default 8%)
+- Corporate tax rate (default 20%)
+- Inflation rate (default 2.5%)
+- Electricity price and annual operating hours
+
+**Technoeconomic tier** — the Project Economics expander shows all Financial
+Parameters plus feedstock prices (biomass 60 USD/t, water 0.5 USD/t,
+cooling water 0.35 USD/GJ) and carbon tax (50 USD/t CO₂).
+
+### 4.4 Interpreting the "Project Economics & Cash Flow" Excel sheet
+
+Sheet 5 is always written when a solve result is available and an objective
+config has been applied.  Rows include:
+
+| Metric | Unit | What it means |
+|---|---|---|
+| Plant Life | years | Economic lifetime $N$ |
+| Discount Rate (WACC) | % | Hurdle rate for NPV/IRR |
+| CRF | — | Capital recovery factor $= r(1+r)^N/((1+r)^N-1)$ |
+| Annualised CAPEX | USD/yr | Sourced from `result.kpis["capex_annual_USD"]` |
+| Annual OPEX | USD/yr | Sourced from `result.kpis["opex_annual_USD"]` |
+| TAC | USD/yr | CAPEX + OPEX |
+| LCOH | USD/kg H₂ | `nan` if H₂ KPI is absent (non-H₂ flowsheet) |
+| LCOE | USD/kWh | `nan` if power-output KPI is absent |
+| NPV | USD | At the chosen WACC over plant life |
+| IRR | % | `nan` if project never pays back undiscounted |
+| Objective Mode | — | The mode string applied before the solve |
+
+**NaN entries** are expected when the flowsheet does not produce the required
+output stream (e.g., LCOH is NaN for a power flowsheet, LCOE is NaN for a
+pure-chemistry flowsheet with no power variable).
+
+### 4.5 LP proxy relationships
+
+Exact NPV and IRR cannot be computed before the solve because they depend on
+the solution value. The LP therefore uses a *proxy* objective:
+
+| Mode | LP proxy | Post-solve calculation |
+|---|---|---|
+| Maximize NPV | Minimize TAC | `EconomicEngine.npv()` using KPI CAPEX/OPEX |
+| Maximize IRR | Minimize TAC | `EconomicEngine.irr()` via bisection |
+| Minimize LCOH | Minimize TAC + maximize H₂ outlet | `EconomicEngine.lcoh()` |
+| Minimize LCOE | Energy penalty + power-outlet reward | `EconomicEngine.lcoe()` |
+| Minimize Carbon Intensity | Carbon-tax penalty on CO₂ outlets | Direct from LP objective |
+
+The proxy equivalence holds exactly at steady state with fixed production
+rate; it is an approximation when the flowsheet has degrees of freedom in
+production rate.
 
 ### Methanation Equilibrium (Sabatier)
 

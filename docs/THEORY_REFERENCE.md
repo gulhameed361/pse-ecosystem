@@ -1,7 +1,7 @@
 # Theory Reference
 
-> The mathematical and process-systems-engineering underpinnings of the
-> PSE Ecosystem v0. For the high-level architecture see
+> **v1.5.0.dev** — The mathematical and process-systems-engineering
+> underpinnings of the PSE Ecosystem. For the high-level architecture see
 > [`ARCHITECTURE.md`](ARCHITECTURE.md); for code-level details see
 > [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md); for end-user usage see
 > [`USER_MANUAL.md`](USER_MANUAL.md).
@@ -695,6 +695,113 @@ update as you accrete a working bibliography.)
   SIAM, 2000. (For the trust-region update rules in §7.4.)
 - Eason, J. P.; Biegler, L. T. "A Trust Region Filter Method for Equation-Oriented Flowsheet Optimisation." *Computers & Chemical Engineering*, 86, 2016.
 - Hameed, A.; et al. "A Funnel-Based Trust-Region Filter for Flowsheet Optimisation." *AIChE J.*, 2021.
+
+---
+
+## §7 Project Economics & Technoeconomic Metrics (v1.5.0.dev)
+
+This section defines the financial mathematics embedded in
+`EconomicEngine` (`models/costing/economic_engine.py`) and exposed through
+the `ProjectEconomicsConfig` / `compute_project_economics()` bridge in
+`flowsheet_service.py`.
+
+### 7.1 Capital Recovery Factor (CRF)
+
+Converts a total installed capital cost to an equal series of annual
+payments over the plant life $N$ at discount rate $r$ (WACC):
+
+$$\text{CRF} = \frac{r(1+r)^N}{(1+r)^N - 1}$$
+
+For $r = 0$, $\text{CRF} = 1/N$ (straight-line amortisation).
+
+**Code:** `EconomicEngine.capital_recovery_factor()`
+
+### 7.2 Net Present Value (NPV)
+
+For a project with uniform annual cash flow $CF$, up-front capital $C_0$,
+and terminal salvage value $SV$:
+
+$$\text{NPV} = -C_0 + CF \cdot \frac{1 - (1+r)^{-N}}{r} + \frac{SV}{(1+r)^N}$$
+
+A positive NPV indicates the project returns more than the cost of capital;
+a negative NPV destroys value.
+
+**Code:** `EconomicEngine.npv(annual_net_cashflow, initial_capex, salvage_value=0)`
+
+**LP proxy:** For a steady-state flowsheet at fixed production rate,
+maximising NPV is equivalent to minimising TAC (total annualised cost),
+because $\text{NPV} \approx -\text{TAC}/\text{CRF} \times \text{annuity factor}$.
+The solver uses TAC coefficients; the exact NPV is computed post-solve.
+
+### 7.3 Internal Rate of Return (IRR)
+
+The IRR $r^*$ is the discount rate at which $\text{NPV}(r^*) = 0$:
+
+$$-C_0 + CF \cdot \frac{1 - (1+r^*)^{-N}}{r^*} = 0$$
+
+There is no closed-form solution; the implementation uses bisection over
+$r \in [0, 10]$ to tolerance $10^{-6}$ within 200 iterations.  Returns
+`NaN` when $CF \times N \leq C_0$ (project never pays back undiscounted).
+
+**Code:** `EconomicEngine.irr(initial_capex, annual_net_cashflow)`
+
+### 7.4 Levelized Cost of Hydrogen (LCOH)
+
+$$\text{LCOH} = \frac{\text{annualised CAPEX} + \text{annual OPEX}}{\dot{m}_{\text{H}_2} \times 3600 \times h_{\text{op}}}$$
+
+where $\dot{m}_{\text{H}_2}$ is in kg/s, $h_{\text{op}}$ is annual operating
+hours, giving LCOH in USD/kg H₂.
+
+For a DCF-rigorous form with time-varying costs and production:
+
+$$\text{LCOH} = \frac{\displaystyle\sum_{t=1}^{N} \frac{\text{CapEx}_t + \text{OpEx}_t}{(1+r)^t}}{\displaystyle\sum_{t=1}^{N} \frac{\dot{m}_{\text{H}_2,t}}{(1+r)^t}}$$
+
+The steady-state approximation above (used here) is equivalent when $\dot{m}$
+and costs are constant over the plant life.
+
+**Code:** `EconomicEngine.lcoh(capex_annual_USD, opex_annual_USD, h2_kg_per_s)`
+
+### 7.5 Levelized Cost of Energy (LCOE)
+
+$$\text{LCOE} = \frac{\text{annualised CAPEX} + \text{annual OPEX}}{E_{\text{annual}}}
+\quad [\text{USD/kWh}]$$
+
+where $E_{\text{annual}}$ is the net annual electrical energy output in kWh/yr.
+
+**Code:** `EconomicEngine.lcoe(capex_annual_USD, opex_annual_USD, energy_kWh_per_year)`
+
+### 7.6 Equipment Cost Scaling (Six-Tenths Rule)
+
+For a piece of equipment with known purchase cost $C_0$ at reference capacity
+$S_0$, the cost at a different capacity $S$ is:
+
+$$C = C_0 \left(\frac{S}{S_0}\right)^\alpha$$
+
+The default exponent $\alpha = 0.6$ is the chemical-engineering six-tenths
+rule (economies of scale). For exact linear scaling use $\alpha = 1$.
+
+**Code:** `EquipmentScalingRule(reference_cost_USD, reference_size, scaling_exponent=0.6).cost_at(size)`
+
+Typical $\alpha$ values (Turton et al., *Analysis, Synthesis and Design of
+Chemical Processes*, 4th ed.):
+
+| Equipment type | α |
+|---|---|
+| Compressor (centrifugal) | 0.60 |
+| Heat exchanger (shell & tube) | 0.65 |
+| Distillation column (vessel) | 0.57 |
+| Pump (centrifugal) | 0.33 |
+| PEM electrolyser stack | 0.85 |
+
+### 7.7 CEPCI Cost Escalation
+
+All SSLW purchase costs are expressed at the CE=500 index basis year (2001).
+To convert to a target year $y$:
+
+$$C_y = C_{\text{CE500}} \times \frac{\text{CEPCI}(y)}{500}$$
+
+The `sslw_cepci_factor()` convenience method on `EconomicEngine` computes this ratio.
+CEPCI values beyond 2024 are projected at 2.5%/yr compound growth.
 - IEA. *Global Hydrogen Review.* (Various years — current edition for
   techno-economic baselines.)
 - IRENA. *Green Hydrogen Cost Reduction.* IRENA, 2020.

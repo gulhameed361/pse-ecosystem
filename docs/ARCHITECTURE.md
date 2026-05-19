@@ -1,4 +1,4 @@
-# PSE Ecosystem — Architecture Blueprint (v1.4.1)
+# PSE Ecosystem — Architecture Blueprint (v1.5.0.dev)
 
 > Status: load-bearing document. The Layer 2 ↔ Layer 3 contract described
 > here is the lever that lets us scale from toy LP flowsheets to MINLP /
