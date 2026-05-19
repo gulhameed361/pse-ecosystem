@@ -10,6 +10,42 @@
 
 *321 tests pass (303 release + 18 audit-driven), 2 skipped (pre-existing v1.5.x investigation items), 0 failures.*
 
+### v1.5.0.dev-AUDIT3 — Comprehensive 3-layer audit (17 defects, 29 new tests)
+
+*350 tests pass, 2 skipped, 0 failures.*
+
+**Layer 3 (physics)** — 3 fixes:
+
+| ID | Severity | Fix |
+|---|---|---|
+| **L3-1** | 🔴 CRITICAL | OPEX time-unit standardisation: `BaseUnit._OPEX_CONVENTION` (`USD_per_year` / `USD_per_second` / `yield_coefficient`) ends the inconsistency where Excel Sheet 5 Annual OPEX was wrong by factor ~3×10⁷ when biomass units dominated |
+| **L3-2** | 🟡 Important | H₂ production KPI uid-prefix standardisation across PEMToy, ElectrolyserHF, BiomassGasifierHF, H2SeparatorPSA |
+| **L3-3** | 🟡 Important | BiomassGasifierHF closed-form analytical Jacobian (6×8 / 6×9) replaces 48-call FD fallback |
+
+**Layer 2 (solvers)** — 6 fixes:
+
+| ID | Severity | Fix |
+|---|---|---|
+| **L2-1** | 🔴 CRITICAL | `SolveMode.NLP_SCIPY` introduced as canonical alias for `NLP_IPOPT` (which actually uses scipy L-BFGS-B, not IPOPT) — docstring honesty |
+| **L2-2** | 🟡 Important | `scaling.compute_residual_row_scaling()` helper — foundation for v1.6 LP-row scaling |
+| **L2-3** | 🟡 Important | NLPDriver honours `cfg.eps_x` via step-norm callback |
+| **L2-4** | 🟡 Important | NLPDriver restart-with-perturbation (up to 3 attempts) — single L-BFGS-B failure no longer aborts the solve |
+| **L2-5** | 🟠 Medium | SLP MAX_ITER message reports final trust-region radius + explicit "Trust region collapsed" diagnostic |
+| **L2-6** | 🟠 Medium | `BaseFlowsheet.aggregate_kpis(x)` is the single source of truth; 4 duplicate `_aggregate_kpis` delegate to it (and skip-on-error per unit) |
+
+**Layer 1 (UI)** — 6 improvements:
+
+| ID | Priority | Improvement |
+|---|---|---|
+| **UI-1** | 🟡 High | Sankey diagram for material flows on Solver Monitor results |
+| **UI-2** | 🟡 High | **Solve History page** — rolling log of last 20 solves with metrics summary |
+| **UI-3** | 🟡 High | Save / Load flowsheet config as JSON on Flowsheet Builder (reproducibility) |
+| **UI-4** | 🟠 Medium | `PSE_PLOTLY_TEMPLATE` unifies fonts, colorway, axis grids, backgrounds across all charts |
+| **UI-5** | 🟠 Medium | 2D Pareto-style sweep tab — two parameters × ≤ 6×6 grid → KPI-vs-KPI scatter with converged/failed split |
+| **UI-6** | 🟠 Medium | "Reset to defaults" button alongside "Apply Objective" in every objective tier expander |
+
+---
+
 ### v1.5.0.dev-AUDIT — Hardening sweep (8 defects closed)
 
 | ID | Severity | Fix |

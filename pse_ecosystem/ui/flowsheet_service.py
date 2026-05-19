@@ -688,6 +688,149 @@ def compute_project_economics(
     ]
 
 
+# ── UI helpers (v1.5.0.dev-AUDIT3 Layer 1: UI-4/UI-1/UI-3) ───────────────────
+
+
+PSE_PLOTLY_TEMPLATE: Dict[str, Any] = {
+    "layout": {
+        "font":            {"family": "Helvetica, Arial, sans-serif", "size": 13},
+        "plot_bgcolor":    "#ffffff",
+        "paper_bgcolor":   "#ffffff",
+        "colorway":        ["#4a90e2", "#e07b00", "#2ca02c", "#d62728",
+                            "#9467bd", "#8c564b", "#e377c2", "#7f7f7f"],
+        "xaxis":           {"gridcolor": "#e6e6e6", "zerolinecolor": "#cccccc",
+                            "ticks": "outside"},
+        "yaxis":           {"gridcolor": "#e6e6e6", "zerolinecolor": "#cccccc",
+                            "ticks": "outside"},
+        "legend":          {"bgcolor": "rgba(255,255,255,0.85)",
+                            "bordercolor": "#d0d0d0", "borderwidth": 1},
+        "margin":          {"l": 60, "r": 30, "t": 50, "b": 50},
+    }
+}
+"""Unified Plotly layout template for every chart in the UI.
+
+v1.5.0.dev-AUDIT3 UI-4: previously each plot built its own ad-hoc layout —
+some white, some default grey, fonts inconsistent.  Apply via
+``fig.update_layout(**PSE_PLOTLY_TEMPLATE['layout'])`` after constructing
+any plotly figure.
+"""
+
+
+def build_sankey_data(flowsheet: "BaseFlowsheet",
+                       solution_x: Dict[str, float]) -> Dict[str, List]:
+    """Construct node + link arrays for a Plotly Sankey diagram of flows.
+
+    Returns a dict with keys:
+        ``labels``  : node names (one per unit)
+        ``sources`` : source-node indices for each link
+        ``targets`` : target-node indices for each link
+        ``values``  : link magnitudes (sum of all flow vars on the connection)
+        ``link_labels`` : hover-text per link describing components
+
+    v1.5.0.dev-AUDIT3 UI-1: quantitative topology view supplementing the
+    static Mermaid box-and-arrow diagram.
+    """
+    # Build node table: one per unit.
+    unit_ids = [u.unit_id for u in flowsheet.units]
+    name_to_idx = {uid: i for i, uid in enumerate(unit_ids)}
+
+    sources: List[int] = []
+    targets: List[int] = []
+    values:  List[float] = []
+    link_labels: List[str] = []
+
+    for conn in getattr(flowsheet, "connections", []):
+        # Connection holds two variable names (var_a, var_b). Parse unit_id
+        # prefix (first dotted segment) to find source and target nodes.
+        var_a = getattr(conn, "var_a", None)
+        var_b = getattr(conn, "var_b", None)
+        if not var_a or not var_b:
+            continue
+        src_uid = var_a.split(".", 1)[0]
+        tgt_uid = var_b.split(".", 1)[0]
+        if src_uid not in name_to_idx or tgt_uid not in name_to_idx:
+            continue
+        flow_val = abs(float(solution_x.get(var_a, 0.0)))
+        sources.append(name_to_idx[src_uid])
+        targets.append(name_to_idx[tgt_uid])
+        values.append(max(flow_val, 1e-12))   # plotly hates exact zeros
+        link_labels.append(f"{var_a.split('.')[-1]} = {flow_val:.4g}")
+
+    return {
+        "labels":     unit_ids,
+        "sources":    sources,
+        "targets":    targets,
+        "values":     values,
+        "link_labels": link_labels,
+    }
+
+
+def serialize_flowsheet_config(template_key: str,
+                                params: Dict[str, Any],
+                                custom_cfg: Optional[Dict] = None,
+                                objective_config: Optional[Dict] = None) -> str:
+    """Serialise a flowsheet selection + parameters to a JSON string.
+
+    Round-trips through ``deserialize_flowsheet_config`` for save/load.
+
+    v1.5.0.dev-AUDIT3 UI-3: reproducibility — exports everything needed to
+    re-run an identical solve from a fresh session.
+    """
+    import json
+    payload = {
+        "schema_version": "1.5.0.dev",
+        "template_key":   template_key,
+        "params":         params,
+        "custom_cfg":     custom_cfg,
+        "objective_config": objective_config,
+    }
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def deserialize_flowsheet_config(blob: str) -> Dict[str, Any]:
+    """Parse a JSON config emitted by ``serialize_flowsheet_config``.
+
+    Raises ``ValueError`` with a descriptive message on bad JSON or missing
+    required keys.
+    """
+    import json
+    try:
+        data = json.loads(blob)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON: {e}")
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected a JSON object, got {type(data).__name__}")
+    sv = data.get("schema_version")
+    if sv is None:
+        raise ValueError("Missing 'schema_version' field")
+    return data
+
+
+def record_solve_in_history(session_state, result, mode_label: str,
+                              objective_label: str, max_entries: int = 20) -> None:
+    """Append a compact record of a SolveResult to the session-state history.
+
+    v1.5.0.dev-AUDIT3 UI-2: powers the Solve History page; the list is capped
+    at ``max_entries`` (default 20) using FIFO eviction.
+    """
+    import datetime
+    history = session_state.setdefault("solve_history", [])
+    history.append({
+        "timestamp":  datetime.datetime.now().isoformat(timespec="seconds"),
+        "mode":       mode_label,
+        "objective":  objective_label,
+        "status":     str(result.status).split(".")[-1],
+        "iterations": result.iterations,
+        "obj_value":  result.objective,
+        "converged":  bool(result.converged),
+        "n_vars":     len(result.x),
+        "n_kpis":     len(result.kpis),
+        "message":    (result.message or "")[:200],
+    })
+    if len(history) > max_entries:
+        del history[: len(history) - max_entries]
+
+
 TYPE_ID_SUGGESTIONS: Dict[str, str] = {
     "PEMToy":                "pem",
     "GasifierToy":           "gasifier",

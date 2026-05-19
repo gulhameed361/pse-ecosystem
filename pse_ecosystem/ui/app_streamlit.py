@@ -364,12 +364,68 @@ def _page_flowsheet_builder():
                     )
 
         st.divider()
-        _fb_tabs = st.tabs(["1D Sensitivity Sweep", "Objective Function"])
+
+        # ── Save / Load flowsheet JSON (v1.5.0.dev-AUDIT3 UI-3) ──────────────
+        with st.expander("Save / Load Configuration", expanded=False):
+            from pse_ecosystem.ui.flowsheet_service import (
+                serialize_flowsheet_config, deserialize_flowsheet_config,
+            )
+            _save_col, _load_col = st.columns(2)
+            with _save_col:
+                st.caption(
+                    "Download the current template selection + parameters + "
+                    "objective config as a JSON file for reproducibility."
+                )
+                _cfg_blob = serialize_flowsheet_config(
+                    template_key=st.session_state.get("selected_template", chosen_key),
+                    params=st.session_state.get("template_params", {}),
+                    custom_cfg=st.session_state.get("custom_flowsheet"),
+                    objective_config=st.session_state.get("objective_config"),
+                )
+                st.download_button(
+                    label="⬇ Save Configuration (JSON)",
+                    data=_cfg_blob,
+                    file_name=f"pse_flowsheet_config.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+            with _load_col:
+                st.caption("Load a previously-saved JSON to restore the run setup.")
+                _upload = st.file_uploader(
+                    "Upload JSON", type=["json"], key="flowsheet_cfg_upload",
+                    label_visibility="collapsed",
+                )
+                if _upload is not None:
+                    try:
+                        _cfg = deserialize_flowsheet_config(_upload.read().decode("utf-8"))
+                        if _cfg.get("template_key"):
+                            st.session_state["selected_template"] = _cfg["template_key"]
+                        if _cfg.get("params"):
+                            st.session_state["template_params"] = _cfg["params"]
+                        if _cfg.get("custom_cfg"):
+                            st.session_state["custom_flowsheet"] = _cfg["custom_cfg"]
+                        if _cfg.get("objective_config"):
+                            st.session_state["objective_config"] = _cfg["objective_config"]
+                        st.success(
+                            f"Loaded config (schema v{_cfg.get('schema_version','?')}). "
+                            "Switch to the Solver Monitor to run."
+                        )
+                    except ValueError as _le:
+                        st.error(f"Bad JSON: {_le}")
+
+        _fb_tabs = st.tabs([
+            "1D Sensitivity Sweep",
+            "2D Pareto Sweep",
+            "Objective Function",
+        ])
 
         with _fb_tabs[0]:
             _section_sensitivity_sweep(st, chosen_key, spec)
 
         with _fb_tabs[1]:
+            _section_pareto_sweep(st, chosen_key, spec)
+
+        with _fb_tabs[2]:
             from pse_ecosystem.ui.flowsheet_service import OBJECTIVE_TIERS
             st.subheader("Optimization & Project Economics")
             st.caption(
@@ -544,22 +600,39 @@ def _page_flowsheet_builder():
                             key="obj_carbon_tax",
                         )
 
-            if st.button("Apply Objective", key="apply_objective_btn"):
-                st.session_state["objective_config"] = {
-                    "mode":          _obj_mode,
-                    "tier":          _tier,
-                    "elec_price":    float(_elec_price),
-                    "op_hours":      float(_op_hours),
-                    "plant_life_yr": int(_plant_life),
-                    "interest_rate": float(_int_rate),
-                    "tax_rate":      float(_tax_rate),
-                    "inflation_rate": float(_infl_rate),
-                    "biomass_price": float(_biomass_p),
-                    "water_price":   float(_water_p),
-                    "cw_price":      float(_cw_p),
-                    "carbon_tax":    float(_carbon_tax),
-                }
-                st.success(f"Objective set to: **{_obj_mode}**. Run from Solver Monitor.")
+            # v1.5.0.dev-AUDIT3 UI-6: Apply + Reset buttons side by side.
+            _apply_col, _reset_col = st.columns([1, 1])
+            with _apply_col:
+                if st.button("Apply Objective", key="apply_objective_btn",
+                             type="primary", use_container_width=True):
+                    st.session_state["objective_config"] = {
+                        "mode":          _obj_mode,
+                        "tier":          _tier,
+                        "elec_price":    float(_elec_price),
+                        "op_hours":      float(_op_hours),
+                        "plant_life_yr": int(_plant_life),
+                        "interest_rate": float(_int_rate),
+                        "tax_rate":      float(_tax_rate),
+                        "inflation_rate": float(_infl_rate),
+                        "biomass_price": float(_biomass_p),
+                        "water_price":   float(_water_p),
+                        "cw_price":      float(_cw_p),
+                        "carbon_tax":    float(_carbon_tax),
+                    }
+                    st.success(f"Objective set to: **{_obj_mode}**. Run from Solver Monitor.")
+            with _reset_col:
+                if st.button("Reset to defaults", key="reset_objective_btn",
+                             use_container_width=True,
+                             help="Clear all financial parameter widgets and the saved objective_config."):
+                    # Remove all obj_* widget keys so number_inputs revert to their default values.
+                    _to_clear = [
+                        k for k in list(st.session_state.keys())
+                        if k.startswith("obj_") or k.startswith("objective_mode__")
+                    ] + ["objective_config", "objective_mode"]
+                    for _k in _to_clear:
+                        st.session_state.pop(_k, None)
+                    st.success("Reset. Refresh the page if widgets don't update.")
+                    st.rerun()
 
             _oc = st.session_state.get("objective_config")
             if _oc:
@@ -670,12 +743,14 @@ def _section_sensitivity_sweep(st, chosen_key: str, spec) -> None:
                         mode="lines+markers",
                         name=col,
                     ))
+                from pse_ecosystem.ui.flowsheet_service import PSE_PLOTLY_TEMPLATE
                 fig_sw.update_layout(
                     title=f"Sensitivity: KPIs vs {sweep_param}",
                     xaxis_title=sweep_param,
                     yaxis_title="KPI value",
                     height=420,
                     legend=dict(orientation="h", y=-0.25),
+                    **PSE_PLOTLY_TEMPLATE["layout"],
                 )
                 st.plotly_chart(fig_sw, use_container_width=True)
 
@@ -688,6 +763,144 @@ def _section_sensitivity_sweep(st, chosen_key: str, spec) -> None:
             )
         except Exception as exc:
             st.error(f"Sweep failed: {exc}")
+
+
+# ── 2D Pareto sweep (v1.5.0.dev-AUDIT3 UI-5) ─────────────────────────────────
+
+def _section_pareto_sweep(st, chosen_key: str, spec) -> None:
+    """Vary two parameters across a small grid and scatter two KPIs against
+    each other. Visualises a trade-off frontier — the Pareto-style envelope
+    is the lower-left convex hull when both KPIs are 'minimise'."""
+    from pse_ecosystem.ui.flowsheet_service import load_template
+
+    defaults = dict(spec.default_params)
+    numeric_params = {
+        k: v for k, v in defaults.items()
+        if isinstance(v, (int, float)) and v != 0
+    }
+    if len(numeric_params) < 2:
+        st.info("Need at least 2 numeric parameters to run a 2D sweep.")
+        return
+
+    st.subheader("2D Pareto-style Trade-off")
+    st.caption(
+        "Sweeps two parameters across a small grid (≤ 6 × 6) and scatters two "
+        "KPIs against each other.  Each marker is one solved flowsheet — the "
+        "lower-left envelope is the Pareto frontier when both KPIs are 'lower is better'."
+    )
+
+    cA, cB = st.columns(2)
+    with cA:
+        st.markdown("**Parameter A**")
+        param_a = st.selectbox("Variable A", list(numeric_params.keys()),
+                               key=f"pareto_a_{chosen_key}", index=0)
+        a_default = float(numeric_params[param_a])
+        a_min = st.number_input("Min A", value=a_default * 0.5, format="%.4g",
+                                key=f"pareto_amin_{chosen_key}")
+        a_max = st.number_input("Max A", value=a_default * 1.5, format="%.4g",
+                                key=f"pareto_amax_{chosen_key}")
+        n_a = int(st.number_input("Points A", min_value=2, max_value=6, value=4,
+                                  key=f"pareto_na_{chosen_key}"))
+    with cB:
+        st.markdown("**Parameter B**")
+        param_b_options = [p for p in numeric_params if p != param_a]
+        param_b = st.selectbox("Variable B", param_b_options,
+                               key=f"pareto_b_{chosen_key}", index=0)
+        b_default = float(numeric_params[param_b])
+        b_min = st.number_input("Min B", value=b_default * 0.5, format="%.4g",
+                                key=f"pareto_bmin_{chosen_key}")
+        b_max = st.number_input("Max B", value=b_default * 1.5, format="%.4g",
+                                key=f"pareto_bmax_{chosen_key}")
+        n_b = int(st.number_input("Points B", min_value=2, max_value=6, value=4,
+                                  key=f"pareto_nb_{chosen_key}"))
+
+    if st.button("Run 2D Sweep", key=f"run_pareto_{chosen_key}"):
+        import numpy as np
+        import pandas as pd
+        from pse_ecosystem.solvers.orchestrator import Orchestrator
+        from pse_ecosystem.solvers.slp import SLPConfig
+        from pse_ecosystem.core.contracts import SolveMode
+
+        base_params = dict(st.session_state.get("template_params", defaults))
+        a_grid = np.linspace(a_min, a_max, n_a)
+        b_grid = np.linspace(b_min, b_max, n_b)
+        total = n_a * n_b
+
+        bar = st.progress(0.0, text=f"Sweeping 0/{total}")
+        rows = []
+        idx = 0
+        for a_val in a_grid:
+            for b_val in b_grid:
+                idx += 1
+                p = dict(base_params)
+                p[param_a] = a_val
+                p[param_b] = b_val
+                try:
+                    fs = load_template(chosen_key, p)
+                    orch = Orchestrator(flowsheet=fs, mode=SolveMode.FIXED_LP,
+                                        slp_config=SLPConfig(max_iter=40))
+                    res = orch.solve()
+                    row = {param_a: a_val, param_b: b_val,
+                           "converged": res.converged}
+                    row.update(res.kpis)
+                except Exception as exc:
+                    row = {param_a: a_val, param_b: b_val, "converged": False,
+                           "_error": f"{type(exc).__name__}: {exc}"}
+                rows.append(row)
+                bar.progress(idx / total, text=f"Sweeping {idx}/{total}")
+        bar.empty()
+
+        df = pd.DataFrame(rows)
+        st.session_state[f"pareto_df_{chosen_key}"] = df
+
+    # Visualise the most recent sweep result (persists across reruns).
+    df = st.session_state.get(f"pareto_df_{chosen_key}")
+    if df is not None and len(df):
+        kpi_cols = [c for c in df.columns
+                    if c not in (param_a, param_b, "converged", "_error")
+                    and df[c].dtype in (float, int)]
+        if len(kpi_cols) < 2:
+            st.warning("Need ≥ 2 numeric KPIs in the solve result to scatter.")
+        else:
+            cX, cY = st.columns(2)
+            with cX:
+                xk = st.selectbox("X-axis KPI", kpi_cols,
+                                  key=f"pareto_xk_{chosen_key}", index=0)
+            with cY:
+                yk = st.selectbox("Y-axis KPI", kpi_cols,
+                                  key=f"pareto_yk_{chosen_key}",
+                                  index=min(1, len(kpi_cols)-1))
+            import plotly.graph_objects as go
+            from pse_ecosystem.ui.flowsheet_service import PSE_PLOTLY_TEMPLATE
+            converged = df[df["converged"] == True]
+            failed    = df[df["converged"] == False]
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=converged[xk], y=converged[yk],
+                mode="markers",
+                marker=dict(size=10, color="#4a90e2",
+                            line=dict(color="#2c3e50", width=1)),
+                name=f"Converged ({len(converged)})",
+                hovertext=[
+                    f"{param_a}={row[param_a]:.4g}<br>{param_b}={row[param_b]:.4g}"
+                    for _, row in converged.iterrows()
+                ],
+            ))
+            if len(failed):
+                fig.add_trace(go.Scatter(
+                    x=failed[xk], y=failed[yk],
+                    mode="markers",
+                    marker=dict(size=8, color="#d62728", symbol="x"),
+                    name=f"Failed ({len(failed)})",
+                ))
+            fig.update_layout(
+                title=f"Pareto-style Trade-off: {yk} vs {xk}",
+                xaxis_title=xk, yaxis_title=yk,
+                height=460,
+                **PSE_PLOTLY_TEMPLATE["layout"],
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 # ── Custom flowsheet assembler ────────────────────────────────────────────────
@@ -1058,11 +1271,13 @@ def _page_gps_weather():
                 mode="lines", name="GHI [W/m²]",
                 line=dict(color="#f39c12", width=1),
             ))
+            from pse_ecosystem.ui.flowsheet_service import PSE_PLOTLY_TEMPLATE
             fig.update_layout(
                 title="Annual Solar GHI Profile",
                 xaxis_title="Hour of year",
                 yaxis_title="GHI [W/m²]",
                 height=350,
+                **PSE_PLOTLY_TEMPLATE["layout"],
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -1078,6 +1293,7 @@ def _page_gps_weather():
                 xaxis_title="Hour of year",
                 yaxis_title="Wind speed [m/s]",
                 height=350,
+                **PSE_PLOTLY_TEMPLATE["layout"],
             )
             st.plotly_chart(fig2, use_container_width=True)
 
@@ -1211,10 +1427,12 @@ def _page_solver_monitor():
                                    name="‖f‖", line=dict(dash="dash")),
                         secondary_y=True,
                     )
+                    from pse_ecosystem.ui.flowsheet_service import PSE_PLOTLY_TEMPLATE
                     fig_.update_layout(
                         title="SLP — Live Convergence",
                         xaxis_title="Iteration",
                         height=300,
+                        **PSE_PLOTLY_TEMPLATE["layout"],
                     )
                     fig_.update_yaxes(title_text="Objective",    secondary_y=False)
                     fig_.update_yaxes(title_text="Residual norm", secondary_y=True)
@@ -1279,6 +1497,14 @@ def _page_solver_monitor():
             live_chart.empty()
             st.session_state["last_result"] = result
             st.session_state["last_flowsheet"] = flowsheet   # for per-unit Excel export
+
+            # v1.5.0.dev-AUDIT3 UI-2: record this solve in the rolling history.
+            from pse_ecosystem.ui.flowsheet_service import record_solve_in_history
+            record_solve_in_history(
+                st.session_state, result,
+                mode_label=str(mode).split(".")[-1],
+                objective_label=_obj_mode_val,
+            )
 
         except Exception as exc:
             st.error(f"Solve failed: {exc}")
@@ -1349,7 +1575,9 @@ def _page_solver_monitor():
                        name="Residual norm", line=dict(dash="dash")),
             secondary_y=True,
         )
-        fig.update_layout(title="SLP Convergence", xaxis_title="Iteration", height=350)
+        from pse_ecosystem.ui.flowsheet_service import PSE_PLOTLY_TEMPLATE
+        fig.update_layout(title="SLP Convergence", xaxis_title="Iteration", height=350,
+                          **PSE_PLOTLY_TEMPLATE["layout"])
         fig.update_yaxes(title_text="Objective", secondary_y=False)
         fig.update_yaxes(title_text="Residual norm", secondary_y=True)
         st.plotly_chart(fig, use_container_width=True)
@@ -1395,15 +1623,51 @@ def _page_solver_monitor():
                 label = k.split(".")[-1].replace("_", " ")
                 col.metric(label, f"{v:.4g}")
 
+        # v1.5.0.dev-AUDIT3 UI-4: apply unified PSE Plotly theme to all charts.
+        from pse_ecosystem.ui.flowsheet_service import (
+            PSE_PLOTLY_TEMPLATE, build_sankey_data,
+        )
         fig_kpi = go.Figure(go.Bar(
             x=[k.split(".")[-1] for k in result.kpis],
             y=list(result.kpis.values()),
             marker_color="#4a90e2",
         ))
         fig_kpi.update_layout(
-            title="KPI Summary", xaxis_title="KPI", yaxis_title="Value", height=300
+            title="KPI Summary", xaxis_title="KPI", yaxis_title="Value", height=300,
+            **PSE_PLOTLY_TEMPLATE["layout"],
         )
         st.plotly_chart(fig_kpi, use_container_width=True)
+
+        # v1.5.0.dev-AUDIT3 UI-1: Sankey diagram for material flows.
+        _last_fs_sankey = st.session_state.get("last_flowsheet")
+        if _last_fs_sankey is not None and getattr(_last_fs_sankey, "connections", None):
+            try:
+                sankey_data = build_sankey_data(_last_fs_sankey, result.x)
+                if sankey_data["sources"]:
+                    fig_sankey = go.Figure(go.Sankey(
+                        node=dict(
+                            label=sankey_data["labels"],
+                            pad=20, thickness=20,
+                            line=dict(color="#666", width=0.5),
+                            color="#4a90e2",
+                        ),
+                        link=dict(
+                            source=sankey_data["sources"],
+                            target=sankey_data["targets"],
+                            value=sankey_data["values"],
+                            label=sankey_data["link_labels"],
+                            color="rgba(74,144,226,0.35)",
+                        ),
+                    ))
+                    fig_sankey.update_layout(
+                        title="Material Flow Sankey", height=400,
+                        font=PSE_PLOTLY_TEMPLATE["layout"]["font"],
+                        paper_bgcolor=PSE_PLOTLY_TEMPLATE["layout"]["paper_bgcolor"],
+                        margin=PSE_PLOTLY_TEMPLATE["layout"]["margin"],
+                    )
+                    st.plotly_chart(fig_sankey, use_container_width=True)
+            except Exception as _sankey_exc:
+                st.caption(f"Sankey unavailable: {_sankey_exc}")
 
     # Solution variables table
     if result.x:
@@ -1673,6 +1937,58 @@ def _page_help_center():
             st.markdown(_load_doc(_fname))
 
 
+# ── Page: Solve History (v1.5.0.dev-AUDIT3 UI-2) ─────────────────────────────
+
+def _page_solve_history() -> None:
+    """Rolling log of the last 20 solves in this session.
+
+    Persistent across page navigation (session_state-scoped). Useful for
+    comparing converged vs. infeasible runs after parameter sweeps without
+    re-running each solve.
+    """
+    st = _require_streamlit()
+    _init_state(st)
+
+    st.title("Solve History")
+    st.caption(
+        "Rolling log of the last 20 solves in this session.  Cleared on app reload."
+    )
+
+    history = st.session_state.get("solve_history", [])
+    if not history:
+        st.info(
+            "No solves yet. Run one from **Solver Monitor**; entries appear here "
+            "automatically (most-recent last)."
+        )
+        return
+
+    import pandas as pd
+    df = pd.DataFrame(history)
+    # Most-recent first for readability.
+    df = df.iloc[::-1].reset_index(drop=True)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total solves", len(history))
+    c2.metric("Converged", int(df["converged"].sum()))
+    c3.metric("Failed", int((~df["converged"]).sum()))
+    last_status = df.iloc[0]["status"] if len(df) else "—"
+    c4.metric("Most recent", last_status)
+
+    st.dataframe(
+        df[[
+            "timestamp", "mode", "objective", "status", "iterations",
+            "obj_value", "n_vars", "n_kpis", "message",
+        ]].style.format({"obj_value": "{:.6g}"}),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    if st.button("Clear history", type="secondary"):
+        st.session_state["solve_history"] = []
+        st.success("History cleared.")
+        st.rerun()
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -1690,6 +2006,7 @@ def main() -> None:
         st.Page(_page_flowsheet_builder,  title="Flowsheet Builder", icon="🔧"),
         st.Page(_page_gps_weather,        title="Site Weather",      icon="🌍"),
         st.Page(_page_solver_monitor,     title="Solver Monitor",    icon="📊"),
+        st.Page(_page_solve_history,      title="Solve History",     icon="📜"),
         st.Page(_page_help_center,        title="Help Center",       icon="📖"),
     ]
     pg = st.navigation(pages)

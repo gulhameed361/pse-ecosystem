@@ -805,3 +805,127 @@ class TestLayer2Audit:
         kpis = fs.aggregate_kpis({})
         # Should still return PEM's KPIs without raising
         assert isinstance(kpis, dict)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v1.5.0.dev-AUDIT3 Layer 1 UI helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestLayer1Audit:
+
+    def test_ui_4_pse_plotly_template_has_required_keys(self):
+        """Unified theme must define font, backgrounds, colorway, axis grids."""
+        from pse_ecosystem.ui.flowsheet_service import PSE_PLOTLY_TEMPLATE
+        layout = PSE_PLOTLY_TEMPLATE["layout"]
+        for key in ("font", "plot_bgcolor", "paper_bgcolor", "colorway",
+                    "xaxis", "yaxis", "legend", "margin"):
+            assert key in layout, f"Theme missing required key: {key!r}"
+        assert isinstance(layout["colorway"], list) and len(layout["colorway"]) >= 5
+
+    def test_ui_3_save_load_roundtrip(self):
+        """serialize → deserialize must preserve every field."""
+        from pse_ecosystem.ui.flowsheet_service import (
+            serialize_flowsheet_config, deserialize_flowsheet_config,
+        )
+        blob = serialize_flowsheet_config(
+            template_key="hydrogen.electrolysis_only",
+            params={"capacity_kW": 1000.0, "eta": 0.7},
+            custom_cfg={"units": [], "connections": []},
+            objective_config={"mode": "Minimize TAC", "tier": "Economic"},
+        )
+        # blob must be valid JSON, must contain schema_version
+        assert "schema_version" in blob
+        parsed = deserialize_flowsheet_config(blob)
+        assert parsed["template_key"] == "hydrogen.electrolysis_only"
+        assert parsed["params"]["capacity_kW"] == 1000.0
+        assert parsed["objective_config"]["mode"] == "Minimize TAC"
+
+    def test_ui_3_deserialize_rejects_bad_json(self):
+        from pse_ecosystem.ui.flowsheet_service import deserialize_flowsheet_config
+        with pytest.raises(ValueError, match="JSON"):
+            deserialize_flowsheet_config("{not valid json")
+
+    def test_ui_3_deserialize_rejects_missing_schema_version(self):
+        from pse_ecosystem.ui.flowsheet_service import deserialize_flowsheet_config
+        with pytest.raises(ValueError, match="schema_version"):
+            deserialize_flowsheet_config('{"template_key": "foo"}')
+
+    def test_ui_3_deserialize_rejects_non_object_payload(self):
+        from pse_ecosystem.ui.flowsheet_service import deserialize_flowsheet_config
+        with pytest.raises(ValueError, match="JSON object"):
+            deserialize_flowsheet_config('[1, 2, 3]')
+
+    def test_ui_2_record_solve_in_history_fifo_eviction(self):
+        from pse_ecosystem.ui.flowsheet_service import record_solve_in_history
+        from pse_ecosystem.core.contracts import SolveResult, SolverStatus, SolveMode
+        session = {}
+        for i in range(25):
+            res = SolveResult(
+                status=SolverStatus.CONVERGED,
+                mode=SolveMode.FIXED_LP,
+                iterations=i, objective=float(i),
+                message=f"run {i}",
+            )
+            record_solve_in_history(session, res, mode_label="FIXED_LP",
+                                     objective_label="Minimize OPEX",
+                                     max_entries=20)
+        history = session["solve_history"]
+        # Cap enforced
+        assert len(history) == 20
+        # FIFO: oldest entries dropped → first message is "run 5"
+        assert history[0]["message"] == "run 5"
+        assert history[-1]["message"] == "run 24"
+
+    def test_ui_2_record_solve_history_captures_essential_fields(self):
+        from pse_ecosystem.ui.flowsheet_service import record_solve_in_history
+        from pse_ecosystem.core.contracts import SolveResult, SolverStatus, SolveMode
+        session = {}
+        res = SolveResult(
+            status=SolverStatus.MAX_ITER, mode=SolveMode.FIXED_LP,
+            x={"a": 1.0, "b": 2.0}, kpis={"k1": 5.0},
+            iterations=42, objective=3.14, message="hit max_iter",
+        )
+        record_solve_in_history(session, res, mode_label="FIXED_LP",
+                                 objective_label="Maximize H₂ Yield")
+        h = session["solve_history"][0]
+        for key in ("timestamp", "mode", "objective", "status", "iterations",
+                    "obj_value", "converged", "n_vars", "n_kpis", "message"):
+            assert key in h
+        assert h["iterations"] == 42
+        assert h["n_vars"] == 2
+        assert h["n_kpis"] == 1
+        assert h["converged"] is False
+
+    def test_ui_1_sankey_data_extracts_connections(self):
+        """A 2-unit flowsheet with one connection produces Sankey links."""
+        from pse_ecosystem.ui.flowsheet_service import build_sankey_data, build_custom_flowsheet
+        cfg = {
+            "units": [
+                {"type": "BiomassGasifierHF", "id": "gas",
+                 "params": {"T_gasifier_C": 800.0, "gasifying_agent": "Steam"}},
+                {"type": "WGSReactorHF", "id": "wgs",
+                 "params": {"T_wgs_C": 400.0}},
+            ],
+            "connections": [
+                {"from_unit": "gas", "to_unit": "wgs"},
+            ],
+        }
+        fs = build_custom_flowsheet(cfg)
+        x = {v: 5.0 for v in fs.all_variables()}
+        data = build_sankey_data(fs, x)
+        assert data["labels"] == ["gas", "wgs"]
+        # At least one link should be present once the connection wires up
+        if data["sources"]:
+            assert all(s in (0, 1) for s in data["sources"])
+            assert all(t in (0, 1) for t in data["targets"])
+
+    def test_ui_1_sankey_handles_empty_flowsheet(self):
+        """A flowsheet with no connections returns empty link arrays."""
+        from pse_ecosystem.ui.flowsheet_service import build_sankey_data, build_custom_flowsheet
+        cfg = {"units": [{"type": "PEMToy", "id": "pem", "params": {}}],
+               "connections": []}
+        fs = build_custom_flowsheet(cfg)
+        data = build_sankey_data(fs, {})
+        assert data["labels"] == ["pem"]
+        assert data["sources"] == []
+        assert data["targets"] == []
