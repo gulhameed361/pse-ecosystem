@@ -1203,3 +1203,79 @@ next iteration.
 This is the standard "$\ell_1$-elastic" recovery used in SQP-style NLP
 solvers (e.g., SNOPT, Gurobi's barrier-with-relaxation mode).  See
 Fletcher & Leyffer (2002) for the convergence theory.
+
+---
+
+## §9. Safety Engineering Foundations
+
+### §9.1 ASME Pressure Vessel Sizing — UG-27(c)(1)
+
+For a thin-walled cylindrical shell under internal pressure, ASME Section VIII
+Division 1 Equation UG-27(c)(1) gives the minimum required wall thickness:
+
+$$\boxed{t = \frac{P \cdot R}{S \cdot E - 0.6\,P}}$$
+
+| Symbol | Definition | Typical value |
+|---|---|---|
+| $t$ | Minimum wall thickness [m] | — |
+| $P$ | Internal design pressure [Pa] | Operating pressure × 1.1 |
+| $R$ | Inner radius [m] | 0.5 m (default in PSE model) |
+| $S$ | Maximum allowable stress [Pa] | 138 MPa (SA-516-70, $\leq$ 300 °C) |
+| $E$ | Weld joint efficiency [-] | 1.0 (full radiography) |
+
+**Validity limit**: $P / (S \cdot E) < 0.385$.  Above this the thin-wall
+assumption breaks down; ASME Division 2 or UG-27(c)(2) (longitudinal stress)
+must be used.  `asme_minimum_wall_thickness()` raises `ValueError` when the
+limit is exceeded.
+
+**Worked example** (Compressor outlet, P = 50 bar, R = 0.5 m, SA-516-70):
+
+$$t = \frac{5 \times 10^6 \times 0.5}{138 \times 10^6 - 0.6 \times 5 \times 10^6}
+    = \frac{2.5 \times 10^6}{135 \times 10^6} \approx 18.5 \text{ mm}$$
+
+This exceeds the PSE model's 3 mm warning threshold → status "OK".
+
+### §9.2 Le Chatelier Flammability Estimation
+
+For a mixture of $n$ flammable gases, Le Chatelier (1891) gives the mixture
+lower and upper flammability limits (LFL, UFL) in air:
+
+$$\text{LFL}_\text{mix} = \frac{1}{\displaystyle\sum_{i=1}^{n} \frac{x_i}{\text{LFL}_i}},
+\qquad
+\text{UFL}_\text{mix} = \frac{1}{\displaystyle\sum_{i=1}^{n} \frac{x_i}{\text{UFL}_i}}$$
+
+where $x_i$ are the **renormalized mole fractions of flammable species only**
+(non-flammable N₂, CO₂, H₂O, O₂ are excluded before renormalization).
+
+**Flammability database** (vol% in air, NFPA 68 / IEC 60079-20-1):
+
+| Species | LFL [vol%] | UFL [vol%] |
+|---|---|---|
+| H₂ | 4.0 | 75.0 |
+| CO | 12.5 | 74.0 |
+| CH₄ | 5.0 | 15.0 |
+| C₂H₆ | 3.0 | 12.4 |
+| C₃H₈ | 2.1 | 9.5 |
+
+**Worked example** (syngas stream: H₂ = 50 mol%, CO = 50 mol%):
+
+$$\text{LFL}_\text{mix} = \frac{1}{0.5/4.0 + 0.5/12.5}
+    = \frac{1}{0.125 + 0.040} = \frac{1}{0.165} \approx 6.06 \text{ vol\%}$$
+
+### §9.3 Pressure Safety Margin
+
+The operating pressure margin is defined as:
+
+$$\text{margin} = \frac{P_\text{design} - P_\text{operating}}{P_\text{design}}$$
+
+By default $P_\text{design} = 1.1 \times P_\text{operating}$ (10 % engineering
+margin), giving margin $= 1 - 1/1.1 \approx 9.1\,\%$.  A WARNING is raised when
+margin $< 5\,\%$; a VIOLATION when margin $< 0$ (operating above design pressure).
+
+### §9.4 Non-intrusiveness Guarantee
+
+All three safety functions (`asme_minimum_wall_thickness`, `flammability_margins`,
+`operating_pressure_margin`) are **pure functions**: same inputs always produce the
+same outputs, no side effects, no access to solver state, no modification of unit
+residuals or bounds.  They are tested for this property in
+`tests/test_industrial_readiness.py::TestNonIntrusiveness`.

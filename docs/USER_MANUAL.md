@@ -1323,4 +1323,62 @@ This is accurate within 3 % of NIST steam-table values up to 1200 °C.
 
 ---
 
-*User Manual v1.5.0.dev — PSE Ecosystem | Private — University of Surrey*
+---
+
+## §16. Persona Toggle — Academic / Industrial (v1.5.0)
+
+The **View Mode** radio button in the sidebar switches between two presentation
+modes.  The underlying physics, solver, and solution are identical in both modes;
+only what is displayed changes.
+
+### How to switch
+
+1. Look for "View Mode" at the bottom of the left sidebar.
+2. Click **Academic** or **Industrial**.
+3. Navigate to the **Solver Monitor** page after a successful solve to see
+   the persona-specific analysis panels.
+
+### Academic view (Solver Monitor → Academic Analysis)
+
+| Panel | What it shows |
+|---|---|
+| Jacobian condition numbers | `np.linalg.cond(J)` for each unit's linearised model at x* |
+| KPI sensitivity derivatives | `∂KPI/∂var` from `LinearizedModel.kpi_gradients` (non-zero entries) |
+
+A condition number > 1000 is flagged in red — this typically indicates ill-scaled
+variables or near-singular physics (e.g., a reactor close to thermodynamic equilibrium).
+
+### Industrial view (Solver Monitor → Industrial Analysis)
+
+| Panel | What it shows |
+|---|---|
+| CapEx / OpEx bar chart | `unit.capex(x)` and `unit.opex_per_year(x)` per unit, grouped |
+| Total CapEx / Total OpEx metrics | Sum across all units |
+| Safety Margin table | ASME wall thickness, pressure margin, flammability — one row per check |
+
+### Safety Margin table columns
+
+| Column | Definition |
+|---|---|
+| Unit | Equipment ID |
+| Check | `ASME_wall_thickness` / `pressure_margin` / `flammability` |
+| Value | Computed result (wall thickness [m], margin fraction, or LFL margin [vol%]) |
+| Status | **OK** (green) / **WARNING** (orange) / **VIOLATION** (red) |
+| Detail | Human-readable summary with numeric values |
+
+**Important caveat**: the ASME wall thickness estimates use default vessel radius
+(0.5 m) unless the unit declares an explicit `vessel_radius_m` or `volume_m3`
+parameter.  These are engineering screening estimates, not a certified pressure
+vessel design calculation.  Always engage a qualified pressure-vessel engineer for
+final design.
+
+### Persistence
+
+The current persona is saved when you download a flowsheet JSON configuration
+(**Save Configuration** button on Flowsheet Builder → Save / Load Flowsheet Config).
+Re-opening the JSON restores the persona automatically.  Old config files without
+the `user_persona` key default to "Academic".
+
+---
+
+*User Manual v1.5.0 — PSE Ecosystem | Private — University of Surrey*

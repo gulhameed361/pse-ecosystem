@@ -1343,3 +1343,119 @@ iterations to find a feasible basis.
 The legacy bare `CGE_percent` key is now an alias for `CGE_LHV_percent`.
 Any new biomass-like unit that adds external-heat-supply inputs should
 follow the same convention: emit both a bare-LHV and a corrected variant.
+
+---
+
+## §14. Adding a Persona View (v1.5.0)
+
+The `user_persona` session-state key controls which branch renders in
+persona-aware page functions.  All persona logic is Layer-1 only.
+
+### Rendering rule
+
+```python
+_persona = st.session_state.get("user_persona", "Academic")
+if _persona == "Industrial":
+    _render_industrial_XXX(st, result, flowsheet)
+else:
+    _render_academic_XXX(st, result, flowsheet)
+```
+
+### Constraints
+
+1. **Never pass `user_persona` to flowsheet_service functions or solver calls.**
+   Persona is a presentation concern; solver APIs are persona-agnostic.
+2. **Never use `st.session_state["user_persona"]` in Layer 2 or Layer 3 code.**
+   The UI layer (Layer 1) owns this state key exclusively.
+3. **No new session_state keys from persona-branching code.**  Each branch must
+   use the same underlying data (`result.x`, `flowsheet.units`, KPIs).
+
+### Serialization
+
+If the persona should survive a Save / Load cycle, pass it to `serialize_flowsheet_config`:
+
+```python
+from pse_ecosystem.ui.flowsheet_service import serialize_flowsheet_config
+blob = serialize_flowsheet_config(
+    template_key=..., params=...,
+    user_persona=st.session_state.get("user_persona", "Academic"),
+)
+```
+
+On load: `st.session_state["user_persona"] = cfg.get("user_persona", "Academic")`.
+
+---
+
+## §15. Extending the Safety Framework (v1.5.0)
+
+### Adding a new flammable species
+
+Edit `_LE_CHATELIER_DB` in `pse_ecosystem/models/safety/safety_checks.py`:
+
+```python
+_LE_CHATELIER_DB["C4H10"] = {"LFL": 1.8, "UFL": 8.4}  # n-butane, NFPA 68
+```
+
+No other file needs to change.  The `flammability_margins()` function picks up
+the new species automatically for any stream that contains it.
+
+### Adding a new pressure-vessel unit type
+
+Edit `_ASME_VESSEL_UNIT_TYPES` in `pse_ecosystem/ui/flowsheet_service.py`:
+
+```python
+_ASME_VESSEL_UNIT_TYPES = frozenset({
+    "Compressor", "FlashVLHF", "CSTRHF",
+    "EquilibriumReactor", "GibbsReactor", "BiomassGasifierHF",
+    "MyNewReactorHF",  # add here
+})
+```
+
+### Exposing vessel geometry from a unit
+
+If the new unit has a known vessel radius or volume, add a field to its Params
+dataclass:
+
+```python
+@dataclass
+class MyNewReactorParams:
+    components: List[str]
+    vessel_radius_m: float = 0.8   # exposes radius to _extract_vessel_radius tier 1
+```
+
+`compute_safety_margins()` will automatically use this value and mark
+`radius_source = "params"` in the returned `SafetyMarginRow`.
+
+### Non-intrusiveness invariant
+
+All safety functions must remain POST-SOLVE only.  Never call them from:
+- `BaseUnit.residual()`
+- `BaseUnit.bounds()`
+- `build_objective_extra()`
+- `build_lp()` / `build_nlp_problem()`
+
+Add a `TestNonIntrusiveness` test in `test_industrial_readiness.py` for any
+new check function to enforce this invariant at CI time.
+
+### SafetyMarginRow schema
+
+```python
+@dataclass
+class SafetyMarginRow:
+    unit_id: str
+    unit_type: str
+    check_type: str     # "ASME_wall_thickness" | "pressure_margin" | "flammability"
+    value: float        # computed result
+    limit: float        # threshold for status evaluation
+    status: str         # "OK" | "WARNING" | "VIOLATION"
+    detail: str         # human-readable description
+    radius_source: str  # "params" | "volume_derived" | "default"
+```
+
+Status logic (current thresholds in `flowsheet_service.py`):
+
+| `check_type` | WARNING when | VIOLATION when |
+|---|---|---|
+| `ASME_wall_thickness` | `value < 0.003 m` | `ValueError` (over-pressure) |
+| `pressure_margin` | `value < 0.05` | `value < 0.0` |
+| `flammability` | `margin_to_LFL < 2 vol%` | `margin_to_LFL < 0 vol%` |

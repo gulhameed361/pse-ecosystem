@@ -1,8 +1,65 @@
 # PSE Ecosystem — System State Ledger
 
-**Version:** 1.5.0.dev0
-**Date:** 2026-05-19
-**Status:** v1.5.0.dev — Multi-Tier Optimization Engine. Three-tier objective framework (Technical / Economic / Technoeconomic), Project Economics Engine (NPV, IRR, LCOE, equipment scaling), dynamic context-dependent UI, Project Economics Excel sheet.
+**Version:** 1.5.0
+**Date:** 2026-05-20
+**Status:** v1.5.0 — Industrial Readiness Release. Dual-Persona UI (Academic / Industrial), ASME + flammability safety framework (post-solve only), 401 pytest + 24 system audit + 20 UI audit + 7 Streamlit smoke = 452 total checks.
+
+---
+
+## What's New in v1.5.0 — Industrial Readiness
+
+*401 pytest pass, 0 skipped, 0 failures.  +24 system_audit, 20 ui_audit.  34 new tests.*
+
+### Dual-Persona UI Toggle
+
+Session-state key `user_persona ∈ {"Academic", "Industrial"}` toggled by a sidebar
+`st.radio` widget initialised in `main()` before page dispatch.  Every page function
+sees a stable, pre-set persona for the entire Streamlit render cycle.
+
+**Academic view** (Solver Monitor):
+- Jacobian condition numbers per unit (re-linearisation at x* via `unit.linearize(PrimalGuess(values=result.x))`)
+- KPI sensitivity derivatives `∂KPI/∂var` from `LinearizedModel.kpi_gradients`
+
+**Industrial view** (Solver Monitor):
+- CapEx/OpEx grouped bar chart per unit (`unit.capex(x)` / `unit.opex_per_year(x)`)
+- ASME safety margin table and flammability indicators (see Safety Framework below)
+
+Same physics, same converged solution — only the presentation branch differs.
+
+`user_persona` is serialised in the flowsheet JSON (`serialize_flowsheet_config`
+now accepts `user_persona: str = "Academic"`).  Old configs without the key
+default to `"Academic"` on load (backward compatible).
+
+### ASME + Flammability Safety Framework
+
+New pure-Python module: `pse_ecosystem/models/safety/safety_checks.py`
+
+| Function | Formula | Reference |
+|---|---|---|
+| `asme_minimum_wall_thickness(P, R, S, E)` | t = P·R / (S·E − 0.6·P) | ASME VIII Div.1 UG-27(c)(1) |
+| `flammability_margins(composition)` | LFL_mix = 1 / Σ(x_i / LFL_i) | Le Chatelier (1891) |
+| `operating_pressure_margin(P_op, P_design)` | (P_design − P_op) / P_design | Engineering design practice |
+
+Flammability database: H₂ [4 / 75 vol%], CO [12.5 / 74], CH₄ [5 / 15], C₂H₆ [3 / 12.4], C₃H₈ [2.1 / 9.5].
+
+Bridge function `compute_safety_margins(flowsheet, solution_x)` in
+`flowsheet_service.py` applies these checks post-solve to whitelisted pressure-vessel
+units: `Compressor`, `FlashVLHF`, `CSTRHF`, `EquilibriumReactor`, `GibbsReactor`,
+`BiomassGasifierHF`.  Returns `List[SafetyMarginRow]`.
+
+**Critical constraint**: none of these functions enter `residual()`, `bounds()`, or
+the LP/NLP objective.  They are audit-only.  The `test_flammability_no_pse_imports`
+test (AST parse) enforces the layer boundary at CI time.
+
+### Layer boundary validation
+
+| Check | Result |
+|---|---|
+| `safety_checks.py` has zero `pse_ecosystem.*` imports | PASS (AST-verified by new test) |
+| `app_streamlit.py` has no direct `models.*` import | PASS (ui_audit check #3) |
+| `compute_safety_margins` defers import inside function body | PASS (matches existing pattern) |
+
+---
 
 ---
 

@@ -49,6 +49,7 @@ def _init_state(st) -> None:
     st.session_state.setdefault("weather_ghi", None)
     st.session_state.setdefault("weather_wind", None)
     st.session_state.setdefault("weather_site", None)
+    st.session_state.setdefault("user_persona", "Academic")    # v1.5.0 dual-persona
 
 
 # ── SI-unit inference for Excel export ────────────────────────────────────────
@@ -424,6 +425,7 @@ def _page_flowsheet_builder():
                     params=st.session_state.get("template_params", {}),
                     custom_cfg=st.session_state.get("custom_flowsheet"),
                     objective_config=st.session_state.get("objective_config"),
+                    user_persona=st.session_state.get("user_persona", "Academic"),
                 )
                 st.download_button(
                     label="⬇ Save Configuration (JSON)",
@@ -449,6 +451,8 @@ def _page_flowsheet_builder():
                             st.session_state["custom_flowsheet"] = _cfg["custom_cfg"]
                         if _cfg.get("objective_config"):
                             st.session_state["objective_config"] = _cfg["objective_config"]
+                        # v1.5.0: restore persona; old configs without the key default to Academic
+                        st.session_state["user_persona"] = _cfg.get("user_persona", "Academic")
                         st.success(
                             f"Loaded config (schema v{_cfg.get('schema_version','?')}). "
                             "Switch to the Solver Monitor to run."
@@ -1381,6 +1385,159 @@ def _page_gps_weather():
             st.plotly_chart(fig2, use_container_width=True)
 
 
+# ── Persona-specific solver-result views ─────────────────────────────────────
+
+def _render_academic_solver_view(st, result, flowsheet) -> None:
+    """Display Jacobian diagnostics and sensitivity derivatives (Academic persona)."""
+    from pse_ecosystem.core.contracts import PrimalGuess
+
+    st.subheader("Academic Analysis")
+
+    if flowsheet is None or not result.x:
+        st.info("No flowsheet available for Jacobian analysis.")
+        return
+
+    import numpy as np
+    import pandas as pd
+
+    guess = PrimalGuess(values=result.x, iteration=0)
+
+    cond_rows = []
+    grad_rows = []
+    for unit in flowsheet.units:
+        try:
+            lm = unit.linearize(guess)
+        except Exception:
+            continue
+        if lm.J.size > 0:
+            cond = float(np.linalg.cond(lm.J))
+            cond_rows.append({
+                "Unit": unit.unit_id,
+                "Type": type(unit).__name__,
+                "J rows": lm.J.shape[0],
+                "J cols": lm.J.shape[1],
+                "Condition number": cond,
+            })
+        for kpi_name, grad in lm.kpi_gradients.items():
+            for var, g in zip(lm.variables, grad):
+                if abs(g) > 1e-12:
+                    grad_rows.append({
+                        "Unit": unit.unit_id,
+                        "KPI": kpi_name,
+                        "Variable": var,
+                        "dKPI/dvar": g,
+                    })
+
+    if cond_rows:
+        st.markdown("**Jacobian condition numbers** (post-solve re-linearisation at x*)")
+        df_cond = pd.DataFrame(cond_rows)
+        max_cond = df_cond["Condition number"].max()
+        cond_color = "green" if max_cond < 100 else ("orange" if max_cond < 1000 else "red")
+        st.markdown(
+            f"Max condition: <span style='color:{cond_color}'><b>{max_cond:.3g}</b></span>",
+            unsafe_allow_html=True,
+        )
+        st.dataframe(
+            df_cond.style.format({"Condition number": "{:.3g}"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    if grad_rows:
+        with st.expander("KPI sensitivity derivatives  dKPI/dvar  (non-zero only)"):
+            st.dataframe(
+                pd.DataFrame(grad_rows).style.format({"dKPI/dvar": "{:.4g}"}),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+
+def _render_industrial_solver_view(st, result, flowsheet) -> None:
+    """Display CapEx/OpEx asset cards and ASME safety margins (Industrial persona)."""
+    from pse_ecosystem.ui.flowsheet_service import compute_safety_margins, SafetyMarginRow
+
+    st.subheader("Industrial Analysis")
+
+    if flowsheet is None or not result.x:
+        st.info("No flowsheet available for industrial analysis.")
+        return
+
+    import plotly.graph_objects as go
+    import pandas as pd
+    from pse_ecosystem.ui.flowsheet_service import PSE_PLOTLY_TEMPLATE
+
+    # ── CapEx / OpEx breakdown ────────────────────────────────────────────────
+    capex_vals, opex_vals, unit_labels = [], [], []
+    for unit in flowsheet.units:
+        try:
+            cx = unit.capex(result.x)
+            ox = unit.opex_per_year(result.x)
+        except Exception:
+            continue
+        if cx > 0.0 or ox > 0.0:
+            unit_labels.append(unit.unit_id)
+            capex_vals.append(cx)
+            opex_vals.append(ox)
+
+    if unit_labels:
+        fig_cost = go.Figure(data=[
+            go.Bar(name="CapEx (USD)", x=unit_labels, y=capex_vals,
+                   marker_color="#4a90e2"),
+            go.Bar(name="OpEx/yr (USD/yr)", x=unit_labels, y=opex_vals,
+                   marker_color="#e24a4a"),
+        ])
+        fig_cost.update_layout(
+            barmode="group",
+            title="Equipment Capital & Operating Cost",
+            xaxis_title="Unit",
+            yaxis_title="Cost [USD or USD/yr]",
+            height=350,
+            **PSE_PLOTLY_TEMPLATE["layout"],
+        )
+        st.plotly_chart(fig_cost, use_container_width=True)
+
+        total_capex = sum(capex_vals)
+        total_opex = sum(opex_vals)
+        c1, c2 = st.columns(2)
+        c1.metric("Total CapEx (USD)", f"${total_capex:,.0f}")
+        c2.metric("Total OpEx/yr (USD/yr)", f"${total_opex:,.0f}")
+
+    # ── ASME + flammability safety margins ────────────────────────────────────
+    st.markdown("**Engineering Safety Margins** *(post-solve audit; not a certified ASME analysis)*")
+    try:
+        safety_rows = compute_safety_margins(flowsheet, result.x)
+    except Exception as exc:
+        st.caption(f"Safety check unavailable: {exc}")
+        return
+
+    if not safety_rows:
+        st.success("No pressure-vessel units found in this flowsheet — no ASME checks required.")
+        return
+
+    _STATUS_COLOR = {"OK": "green", "WARNING": "orange", "VIOLATION": "red"}
+    rows_data = []
+    for row in safety_rows:
+        color = _STATUS_COLOR.get(row.status, "grey")
+        rows_data.append({
+            "Unit": row.unit_id,
+            "Check": row.check_type,
+            "Value": f"{row.value:.4g}" if row.value == row.value else "—",
+            "Status": row.status,
+            "Detail": row.detail,
+        })
+    df_safety = pd.DataFrame(rows_data)
+
+    def _color_status(val):
+        c = _STATUS_COLOR.get(val, "grey")
+        return f"color: {c}; font-weight: bold"
+
+    st.dataframe(
+        df_safety.style.applymap(_color_status, subset=["Status"]),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
 # ── Page 5: Solver Monitor ────────────────────────────────────────────────────
 
 def _page_solver_monitor():
@@ -1766,6 +1923,15 @@ def _page_solver_monitor():
             hide_index=True,
         )
 
+    # ── Persona-specific analysis view ────────────────────────────────────────
+    _persona = st.session_state.get("user_persona", "Academic")
+    _last_fs = st.session_state.get("last_flowsheet")
+    st.divider()
+    if _persona == "Industrial":
+        _render_industrial_solver_view(st, result, _last_fs)
+    else:
+        _render_academic_solver_view(st, result, _last_fs)
+
     # ── Excel download (3 sheets, unit-tagged) ────────────────────────────────
     try:
         import io
@@ -2087,6 +2253,26 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
+
+    _init_state(st)
+
+    # ── Persona toggle — set once in main() so every page sees a stable value ──
+    with st.sidebar:
+        st.divider()
+        st.caption("View Mode")
+        _persona_idx = 0 if st.session_state.get("user_persona", "Academic") == "Academic" else 1
+        _persona = st.radio(
+            "Persona",
+            ["Academic", "Industrial"],
+            index=_persona_idx,
+            key="persona_radio",
+            horizontal=True,
+        )
+        st.session_state["user_persona"] = _persona
+        if _persona == "Industrial":
+            st.caption("CapEx · ASME · finance")
+        else:
+            st.caption("Jacobians · residuals · derivatives")
 
     pages = [
         st.Page(_page_dashboard,         title="Dashboard",         icon="🏠"),

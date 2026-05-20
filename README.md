@@ -1,9 +1,25 @@
-# PSE Ecosystem (v1.5.0.dev)
+# PSE Ecosystem (v1.5.0)
 
 Application-centric Knowledge Ecosystem for Process Systems Engineering.  
 **Private — University of Surrey.**
 
 ---
+
+## What's new in v1.5.0 — Industrial Readiness
+
+- **Dual-Persona UI.** Sidebar toggle switches between **Academic** view (Jacobian
+  condition numbers, KPI sensitivity derivatives `∂KPI/∂var`, residual history) and
+  **Industrial** view (CapEx/OpEx grouped bar chart per unit, ASME vessel sizing,
+  flammability margin table).  Same physics, same solver, same converged solution —
+  only the analysis panels change.
+- **ASME + Flammability Safety Framework.**  New pure-Python module
+  `pse_ecosystem/models/safety/safety_checks.py` implements ASME VIII Div.1
+  UG-27(c)(1) wall thickness and Le Chatelier mixture LFL/UFL.  Post-solve only —
+  never enters the LP/NLP objective or constraint set.
+- **Persona persistence.** Flowsheet JSON configs now carry `user_persona`; old
+  configs without the field default to "Academic".
+- **34 new tests** (`tests/test_industrial_readiness.py`): ASME formula, Le Chatelier,
+  persona toggle, safety bridge, and non-intrusiveness verification (AST-level).
 
 ## What's new in v1.5.0.dev
 
@@ -26,7 +42,7 @@ Application-centric Knowledge Ecosystem for Process Systems Engineering.
 - **Standardised OPEX accounting.** Every unit declares an explicit `_OPEX_CONVENTION` (`USD_per_year` / `USD_per_second` / `yield_coefficient`); `BaseUnit.opex_per_year(x, operating_hours)` handles the conversion. Fixes the v1.4.x mixed-units defect that made Excel Sheet 5 OPEX wrong by a factor of ~3×10⁷.
 - **Unrestricted Assembly Freedom (v1.4.0).** Aspen-style Custom Flowsheet builder — no hard cap on unit count. 3-column specification grid with pre-filled engineering defaults; smart Unit ID dropdown re-seeds on Type change. **23 UI-selectable unit types** drawn from a 36-class Layer-3 catalogue.
 - **Unit Management System (v1.4.0).** Every float parameter with a convertible dimension (T, P, mass flow, mass, power, energy) shows a unit dropdown next to its value. Backend stays in SI; UI converts at the boundary. Excel export tags every numeric column with its SI unit.
-- **Analytical Verification.** Every unit exposes exact Jacobians; the 7-unit and 10-unit workshop chains validated by the automated test suite (**367 pytest + 24 system audit + 20 UI audit + 7 Streamlit smoke = 418 total checks**; 0 skipped, 0 failures).
+- **Analytical Verification.** Every unit exposes exact Jacobians; the 7-unit and 10-unit workshop chains validated by the automated test suite (**401 pytest + 24 system audit + 20 UI audit + 7 Streamlit smoke = 452 total checks**; 0 skipped, 0 failures).
 - **Live Help Center (v1.4.0).** A 6th nav page renders the workspace `docs/` markdown directly in the app.
 - **Excel Export.** Download a **5-sheet ledger** (Stream Table / Unit Performance / Optimization Summary / Bound Saturation / Project Economics & Cash Flow) to `.xlsx` from the Solver Monitor.
 - **Progressive Solver Tightening (default ON in v1.4.0).** SLP starts with loose tolerances (≈1e-3) and tightens to precision (≈1e-7) as iterations progress. Max Iterations slider extended to **1500**.

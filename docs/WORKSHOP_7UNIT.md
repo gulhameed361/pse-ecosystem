@@ -198,4 +198,41 @@ print(result.status, result.objective)
 
 ---
 
-*Workshop v1.4.0 — PSE Ecosystem | Private — University of Surrey*
+---
+
+## Step 8 — Industrial Safety Assessment (Industrial Persona, v1.5.0)
+
+After the solve converges, switch the sidebar toggle to **Industrial** to see the
+Safety Margin table on the Solver Monitor page.
+
+### ASME Wall Thickness — Compressor [7]
+
+The PSA hydrogen outlet is compressed from ≈ 5 bar to ≈ 70 bar. Using the default
+vessel radius of R = 0.5 m and SA-516-70 carbon steel (S = 138 MPa, E = 1.0):
+
+$$t = \frac{P \cdot R}{S \cdot E - 0.6\,P}
+    = \frac{70 \times 10^5 \times 0.5}{138 \times 10^6 - 0.6 \times 70 \times 10^5}
+    \approx \frac{3.5 \times 10^6}{133.8 \times 10^6}
+    \approx 26.2 \text{ mm}$$
+
+Status: **OK** (26.2 mm >> 3 mm minimum; note that radius_source = "default"
+because Compressor has no `vessel_radius_m` parameter — size confirmed by design).
+
+### Flammability Check — BiomassGasifierHF [2]
+
+Syngas outlet composition (approximate): H₂ = 28 mol%, CO = 33 mol%, CO₂ = 21 mol%,
+CH₄ = 4 mol%, H₂O = 14 mol%.
+
+Flammable species after excluding H₂O and CO₂: H₂ = 0.43 (renorm), CO = 0.51, CH₄ = 0.06.
+
+$$\text{LFL}_\text{mix} = \frac{1}{0.43/4.0 + 0.51/12.5 + 0.06/5.0}
+    \approx \frac{1}{0.108 + 0.041 + 0.012} = \frac{1}{0.161} \approx 6.2 \text{ vol\%}$$
+
+Mixture flammable fraction = 0.65 (65 mol% of stream is combustible) → well within
+the flammable range → status **WARNING** (margin_to_LFL = 6.2 − 65 = −58.8 vol%).
+This is expected: the gasifier outlet IS a fuel stream. The warning is informational;
+appropriate piping isolation and inerting procedures apply per site ATEX/NEC assessment.
+
+---
+
+*Workshop v1.5.0 — PSE Ecosystem | Private — University of Surrey*

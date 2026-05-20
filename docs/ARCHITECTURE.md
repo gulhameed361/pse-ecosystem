@@ -594,3 +594,58 @@ flowsheet. The parent SLP drives the `CompositeUnit` through its `exposed_inputs
 reads its `exposed_outputs`. The inner sub-flowsheet is solved via an inner SLP at
 each outer iteration. See `flowsheet_service.build_composite_unit()` and the
 `CompositeUnit` class in `flowsheets/base_flowsheet.py`.
+
+---
+
+## v1.5.0 — Industrial Readiness additions
+
+### Dual-Persona UI State Machine
+
+`st.session_state["user_persona"] ∈ {"Academic", "Industrial"}` is the single
+control variable for the presentation layer.  It is:
+
+1. **Initialised** by `_init_state(st)` via `setdefault("user_persona", "Academic")`.
+2. **Toggled** once per render cycle in `main()` via a sidebar `st.radio` before
+   `st.navigation()` dispatches to a page function.  Every page therefore sees a
+   stable, pre-set persona.
+3. **Persisted** in `serialize_flowsheet_config(…, user_persona=…)` so saved configs
+   restore the analyst's view mode.
+4. **Restored** in the load path: `_cfg.get("user_persona", "Academic")`.
+
+The persona **never** reaches Layer 2 or Layer 3.  It is a pure Layer-1 presentation
+concern.  The same `SolveResult` and the same `BaseFlowsheet` object underlie both views.
+
+### Safety Module Layer Position
+
+`pse_ecosystem/models/safety/safety_checks.py` is a pure-Python utility with no
+`pse_ecosystem.*` imports.  It lives in `models/safety/` (Layer 3 by path convention)
+but is dependency-free enough to be considered a pure-math utility.
+
+It is imported exclusively inside the body of `flowsheet_service.compute_safety_margins()`
+(deferred import pattern, matching `compute_project_economics` which defers
+`EconomicEngine`).  This preserves the single-gateway rule:
+`flowsheet_service.py` is the only Layer-1 file that imports from Layer 3.
+
+### compute_safety_margins() Gateway Rule
+
+```
+Layer 1 (app_streamlit.py)
+    ↓ calls
+flowsheet_service.compute_safety_margins(flowsheet, solution_x)
+    ↓ deferred import inside function body
+pse_ecosystem.models.safety.safety_checks  ← Layer 3 (pure math, no solver imports)
+```
+
+The `ui_audit.py` "Layer / app_streamlit.py has no direct models.* import" check
+and the `test_flammability_no_pse_imports` AST test in `test_industrial_readiness.py`
+enforce this boundary at CI time.
+
+### Post-Solve Only Invariant
+
+Safety checks are called exclusively after `Orchestrator.solve()` returns.
+They do not enter:
+- `BaseUnit.residual(x)` — not modified
+- `BaseUnit.bounds()` — not modified  
+- LP/NLP objective coefficients — not modified
+
+This guarantees zero numerical impact on convergence or solution quality.
