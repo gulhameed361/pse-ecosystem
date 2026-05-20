@@ -1,8 +1,66 @@
 # PSE Ecosystem — System State Ledger
 
-**Version:** 1.5.1
+**Version:** 1.5.2
 **Date:** 2026-05-20
-**Status:** v1.5.1 — Industrial Decision Support Release. Scenario Manager, Tornado Chart, Break-even Calculator, Investor Report, ASME material selector, CI benchmark, Equipment Datasheet. 431 pytest + 24 system audit + 20 UI audit + 7 Streamlit smoke = 482 total checks.
+**Status:** v1.5.2 — Bug-fix + Scenario Analysis Enhancement. 431 pytest + 20 UI audit = 451 total checks.
+
+---
+
+## What's New in v1.5.2 — Bug-fix + Scenario Analysis Enhancement
+
+*431 pytest pass, 0 skipped, 0 failures.  20/20 ui_audit pass.  No new test files
+(fixes are UI-path bugs; existing layer-compliance tests confirm clean state).*
+
+### Bug Fix 1 — Custom Flowsheet JSON Serialization Crash
+
+**Root cause**: `st.session_state["custom_flowsheet"]` stored the `BaseFlowsheet`
+object.  `serialize_flowsheet_config()` passed it directly to `json.dumps`, which
+raised `TypeError: Object of type BaseFlowsheet is not JSON serializable` on every
+page render after a custom flowsheet was built.
+
+**Cascade effect**: the crash at line 428 of `app_streamlit.py` halted page rendering
+before the tabbed section, which caused the Objective Function selector tab to also
+disappear.
+
+**Fix**: introduce a separate `st.session_state["custom_flowsheet_cfg"]` key that
+holds the JSON-serializable spec dict `{"units": [...], "connections": [...]}`.
+`serialize_flowsheet_config` now reads `custom_flowsheet_cfg`; the `BaseFlowsheet`
+object in `custom_flowsheet` is untouched and used only by the solver.  Load-from-JSON
+now restores `custom_flowsheet_cfg` and sets `custom_flowsheet = None` (user must
+click "Build & Select" to regenerate the object).
+
+**Files changed**: `app_streamlit.py` (`_init_state`, `_render_custom_assembler`,
+`_page_flowsheet_builder` save/load block), `pse_ecosystem/__init__.py`.
+
+### Bug Fix 2 — Pre-solve Validator Crash for Custom Templates
+
+**Root cause**: The Pre-solve Validator called `load_template("custom.user_flowsheet", {})`
+which produced an empty placeholder flowsheet rather than the user's assembled units.
+
+**Fix**: when `selected_template == "custom.user_flowsheet"`, read the already-built
+object from `st.session_state["custom_flowsheet"]` directly.  If the object is `None`
+(not yet built), show a descriptive warning and `st.stop()`.
+
+### Enhancement — Scenario Manager & Analysis
+
+**Scenario Manager** page renamed to **Scenario Manager & Analysis** (nav title and
+page heading updated).
+
+**New section: Sensitivity Analysis** (below the comparison table):
+
+| Mode | Re-solve? | Parameters covered |
+|---|---|---|
+| Economic sweep | No | Plant life, WACC, electricity price, biomass price, operating hours |
+| Engineering sweep | Yes (LP per point) | Any numeric template parameter (e.g. feed flow, temperature, pressure) |
+
+- User picks a captured scenario + sweep type + parameter + range + number of points.
+- Economic sweep re-computes `compute_project_economics()` (≈1 ms/point) and plots
+  LCOH, NPV, TAC vs. the selected economic parameter.
+- Engineering sweep calls `load_template()` + `Orchestrator.solve()` per point and
+  plots the first 5 KPIs vs. the selected engineering parameter.
+- Custom-assembled flowsheets are excluded from engineering sweeps (no fixed param
+  spec); users are directed to the Flowsheet Builder 1D Sensitivity Sweep tab instead.
+- Scenario record now stores `template_params` snapshot for use by engineering sweeps.
 
 ---
 

@@ -1,4 +1,4 @@
-# PSE Ecosystem (v1.5.1)
+# PSE Ecosystem (v1.5.2)
 
 **Industrial-grade process simulation with transparent, auditable physics.**  
 *Private — University of Surrey.*
@@ -29,6 +29,21 @@
 | Cost | Private — University research tool | £50k+/yr commercial licence |
 
 ---
+
+## What's new in v1.5.2 — Bug-fix + Scenario Analysis Enhancement
+
+- **Custom flowsheet crash fixed.** Building a custom flowsheet via the assembler and then
+  interacting with any page control raised `TypeError: Object of type BaseFlowsheet is not
+  JSON serializable`.  Root cause: `custom_flowsheet` session state held the Python object;
+  it is now stored separately as `custom_flowsheet_cfg` (a JSON-safe dict).  As a cascade,
+  the Objective Function selector tab and the Pre-solve Validator now work correctly for
+  custom flowsheets.
+- **Scenario Manager & Analysis.** The Scenario Manager page is renamed and gains a new
+  **Sensitivity Analysis** section: pick any captured scenario, choose a parameter (economic
+  or engineering), set a range, and visualise how LCOH / NPV / KPIs respond — without
+  leaving the page.  Economic sweeps complete in milliseconds (no re-solve);
+  engineering sweeps run a full LP per point.
+- **431 tests, 20/20 UI audit checks** — all green.
 
 ## What's new in v1.5.1 — Industrial Decision Support
 

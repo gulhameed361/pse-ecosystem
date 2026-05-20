@@ -1,6 +1,6 @@
 # PSE Ecosystem — User Manual
 
-**Version:** 1.5.0.dev | **Date:** 2026-05-19 | **Status:** Multi-Tier Optimization Engine release
+**Version:** 1.5.2 | **Date:** 2026-05-20 | **Status:** Bug-fix + Scenario Analysis Enhancement
 
 > Single source of truth for PSE Ecosystem users. Replaces `UI_GUIDE.md` (merged here in Phase 6)
 > and `SHOWCASE_WALKTHROUGH.md` (merged in Phase 5). For architecture details see `ARCHITECTURE.md`;
@@ -1471,4 +1471,51 @@ for final design and a certified ASME engineer for vessel design.*
 
 ---
 
-*User Manual v1.5.1 — PSE Ecosystem | Private — University of Surrey*
+## §20. Scenario Manager & Analysis (v1.5.2)
+
+The page was renamed from "Scenario Manager" to **Scenario Manager & Analysis** and
+gains a **Sensitivity Analysis** section below the comparison table.
+
+### Capturing a scenario
+
+1. Run a solve on the **Solver Monitor** page (any converged result).
+2. Navigate to **Scenario Manager & Analysis** (📋).
+3. Enter a name (e.g. "Base Case", "High WACC", "+30% Feed Flow") and click
+   **Capture current solve as scenario**.  Up to 4 scenarios are kept; the oldest
+   is evicted when a 5th is captured.
+
+### Running a sensitivity sweep on a scenario
+
+1. Scroll to the **Sensitivity Analysis** section at the bottom.
+2. Pick the scenario to analyse from the dropdown.
+3. Choose sweep type:
+
+   **Economic parameter (fast — no re-solve)**  
+   Sweeps economic inputs (plant life, WACC, electricity price, biomass price,
+   operating hours) through the range you set.  Each point calls
+   `compute_project_economics()` only (≈1 ms/point).  Plots LCOH, NPV, TAC vs.
+   the chosen parameter immediately.
+
+   **Engineering parameter (LP re-solve per point)**  
+   Sweeps any numeric template parameter (feed flow, temperature, pressure, …)
+   through the range you set.  Each point calls `load_template()` + `Orchestrator.solve()`.
+   Expect 1–5 s per point depending on flowsheet size.  Plots the first 5 KPIs vs.
+   the parameter.
+
+> **Custom flowsheets** (built via the Custom Assembler) cannot be swept with the
+> engineering option because they have no fixed parameter spec.  Use the
+> **1D Sensitivity Sweep** tab in the Flowsheet Builder for custom flowsheets instead.
+
+---
+
+## §21. Custom Flowsheet — Save / Load (v1.5.2 fix)
+
+When you build a custom flowsheet and then use **Save Configuration (JSON)**, the
+exported file captures the unit list and connection spec as JSON.  On **Load**,
+the spec is restored (under `custom_flowsheet_cfg`) but the `BaseFlowsheet` object
+is not reconstructed automatically.  Click **Build & Select** in the Custom Assembler
+to rebuild the live flowsheet from the loaded spec before running a solve.
+
+---
+
+*User Manual v1.5.2 — PSE Ecosystem | Private — University of Surrey*
