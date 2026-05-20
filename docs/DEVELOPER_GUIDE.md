@@ -1459,3 +1459,57 @@ Status logic (current thresholds in `flowsheet_service.py`):
 | `ASME_wall_thickness` | `value < 0.003 m` | `ValueError` (over-pressure) |
 | `pressure_margin` | `value < 0.05` | `value < 0.0` |
 | `flammability` | `margin_to_LFL < 2 vol%` | `margin_to_LFL < 0 vol%` |
+
+---
+
+## §16. Tornado Sensitivity & Economics Helpers (v1.5.1)
+
+### Adding a new perturb-able economic parameter to the tornado chart
+
+Edit `_TORNADO_PARAMS` in `pse_ecosystem/ui/flowsheet_service.py`:
+
+```python
+_TORNADO_PARAMS: List[Tuple[str, str, str]] = [
+    ...
+    ("my_new_field",  "My Parameter Label",  "frac"),  # ±perturbation_frac
+]
+```
+
+Mode options: `"frac"` (± fraction of base value), `"abs_yr"` (±5 yr integer, for plant life).
+
+### Adding a new section to the Investor Report
+
+`generate_investor_report()` builds a list of Markdown lines.  Add a new section
+by inserting lines in the appropriate position:
+
+```python
+lines += [
+    "## §X My New Section",
+    "",
+    "| Metric | Value |",
+    "|---|---|",
+    f"| My KPI | {my_value:.2f} |",
+    "",
+]
+```
+
+### Adding a gateway helper (layer boundary compliance)
+
+Any constant or function from `pse_ecosystem.models.*` that needs to reach
+`app_streamlit.py` MUST be wrapped in a thin gateway in `flowsheet_service.py`:
+
+```python
+def get_my_safety_constant() -> float:
+    """Gateway: deferred import keeps app_streamlit.py free of models.* imports."""
+    from pse_ecosystem.models.safety.safety_checks import MY_CONSTANT
+    return MY_CONSTANT
+```
+
+Then in `app_streamlit.py`:
+```python
+from pse_ecosystem.ui.flowsheet_service import get_my_safety_constant
+val = get_my_safety_constant()
+```
+
+The `test_no_pse_models_import_in_app_streamlit` AST check in
+`test_v151.py` (and the ui_audit layer check) will catch any violations.

@@ -1,9 +1,53 @@
-# PSE Ecosystem (v1.5.0)
+# PSE Ecosystem (v1.5.1)
 
-Application-centric Knowledge Ecosystem for Process Systems Engineering.  
-**Private — University of Surrey.**
+**Industrial-grade process simulation with transparent, auditable physics.**  
+*Private — University of Surrey.*
 
 ---
+
+## Who uses PSE Ecosystem?
+
+| User | What they do with it |
+|---|---|
+| **Research academic** | Build novel flowsheets fast, inspect exact Jacobians and residuals, run 2D Pareto sweeps, validate against literature |
+| **Process engineer** | Screen technologies, optimise operating points, generate engineering safety margins (ASME, LFL/UFL) |
+| **Project developer / VC** | Compare Base / Optimistic / Pessimistic scenarios, run tornado sensitivity, compute break-even H₂ price, download an investor-grade report |
+| **Regulatory analyst** | Audit every equation — all physics are explicit algebraic residuals with analytical Jacobians; no black-box solver |
+
+### Why not Aspen?
+
+| Capability | PSE Ecosystem | Aspen Plus |
+|---|---|---|
+| Auditable physics | Every equation visible as Python residuals | Compiled black-box |
+| Integrated technoeconomics | NPV / IRR / LCOH / LCOE in the same tool | Requires separate Aspen Process Economic Analyzer |
+| Analytical Jacobians | Yes — enables transparent sensitivity analysis | Finite-difference approximations |
+| Scenario comparison | Built-in Scenario Manager (4 scenarios, delta table) | Manual Excel |
+| Investor report | One-click Markdown/PDF download | Manual reporting |
+| Python extensible | Add a unit model in 50 lines of Python | Requires Aspen user models (Fortran/COM) |
+| ASME / flammability | Post-solve safety margins built in | Manual calculation |
+| Monte Carlo | Fast enough for stochastic sweeps (seconds/solve) | Minutes per solve |
+| Cost | Private — University research tool | £50k+/yr commercial licence |
+
+---
+
+## What's new in v1.5.1 — Industrial Decision Support
+
+- **Scenario Manager** (new nav page 📋). Capture up to 4 named solve results and compare them
+  side-by-side: Installed CAPEX, OPEX, TAC, LCOH, LCOE, NPV, IRR — with % delta vs Base, a Plotly bar
+  chart, and Excel export.
+- **Tornado Chart.** One-at-a-time sensitivity of LCOH/NPV/TAC to 8 economic parameters (±20 %),
+  rendered as a horizontal Plotly chart in the Industrial view.  Instantly answers "what kills the deal?"
+- **Break-even Calculator.** Enter an expected H₂ market price; get NPV with revenue, margin USD/kg,
+  and payback period.  The break-even price equals the LCOH — confirmed analytically.
+- **Investor Report.** One-click Markdown download with 6 sections: process description, KPIs, project
+  economics, ASME safety table, tornado sensitivity, and fully-explicit assumptions list.
+- **ASME Material Selector.** Dropdown for 6 shell materials (carbon steel → Hastelloy C-276), each
+  with ASME allowable stress; propagates to wall-thickness calculation.
+- **Carbon Intensity Benchmark.** Compare computed CI (kg CO₂/kg H₂) against SMR, blue H₂, grid
+  electrolysis, and the green H₂ target.
+- **Equipment Datasheet** (Excel Sheet 6). Per-unit: T/P bounds, CapEx, ASME minimum wall thickness.
+- **Solve time** displayed in convergence banner ("Solved in X.X s").
+- **30 new tests** in `test_v151.py`. 431 pytest total; 482 total checks.
 
 ## What's new in v1.5.0 — Industrial Readiness
 
@@ -42,7 +86,7 @@ Application-centric Knowledge Ecosystem for Process Systems Engineering.
 - **Standardised OPEX accounting.** Every unit declares an explicit `_OPEX_CONVENTION` (`USD_per_year` / `USD_per_second` / `yield_coefficient`); `BaseUnit.opex_per_year(x, operating_hours)` handles the conversion. Fixes the v1.4.x mixed-units defect that made Excel Sheet 5 OPEX wrong by a factor of ~3×10⁷.
 - **Unrestricted Assembly Freedom (v1.4.0).** Aspen-style Custom Flowsheet builder — no hard cap on unit count. 3-column specification grid with pre-filled engineering defaults; smart Unit ID dropdown re-seeds on Type change. **23 UI-selectable unit types** drawn from a 36-class Layer-3 catalogue.
 - **Unit Management System (v1.4.0).** Every float parameter with a convertible dimension (T, P, mass flow, mass, power, energy) shows a unit dropdown next to its value. Backend stays in SI; UI converts at the boundary. Excel export tags every numeric column with its SI unit.
-- **Analytical Verification.** Every unit exposes exact Jacobians; the 7-unit and 10-unit workshop chains validated by the automated test suite (**401 pytest + 24 system audit + 20 UI audit + 7 Streamlit smoke = 452 total checks**; 0 skipped, 0 failures).
+- **Analytical Verification.** Every unit exposes exact Jacobians; the 7-unit and 10-unit workshop chains validated by the automated test suite (**431 pytest + 24 system audit + 20 UI audit + 7 Streamlit smoke = 482 total checks**; 0 skipped, 0 failures).
 - **Live Help Center (v1.4.0).** A 6th nav page renders the workspace `docs/` markdown directly in the app.
 - **Excel Export.** Download a **5-sheet ledger** (Stream Table / Unit Performance / Optimization Summary / Bound Saturation / Project Economics & Cash Flow) to `.xlsx` from the Solver Monitor.
 - **Progressive Solver Tightening (default ON in v1.4.0).** SLP starts with loose tolerances (≈1e-3) and tightens to precision (≈1e-7) as iterations progress. Max Iterations slider extended to **1500**.

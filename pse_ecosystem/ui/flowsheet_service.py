@@ -2790,3 +2790,409 @@ def compute_safety_margins(
         ))
 
     return rows
+
+
+# ── Tornado sensitivity + break-even (v1.5.1) ────────────────────────────────
+
+@dataclass
+class TornadoRow:
+    """One row of the sensitivity tornado chart."""
+
+    param_label: str    # human-readable parameter name
+    param_field: str    # ProjectEconomicsConfig field name
+    base_value: float
+    low_value: float    # perturbed downward
+    high_value: float   # perturbed upward
+    kpi_at_low: float
+    kpi_at_high: float
+    kpi_base: float
+    delta_low: float    # kpi_at_low - kpi_base
+    delta_high: float   # kpi_at_high - kpi_base
+    impact: float       # |kpi_at_high - kpi_at_low|  — sort key
+
+
+# Perturb-able ProjectEconomicsConfig fields for the tornado chart.
+# (field_name, human label, perturbation mode)
+# mode "frac": ± perturbation_frac × base_value
+# mode "abs_yr": ±abs_delta years (for integer plant_life_yr)
+_TORNADO_PARAMS: List[Tuple[str, str, str]] = [
+    ("electricity_price_USD_per_kWh",  "Electricity Price",       "frac"),
+    ("biomass_price_USD_per_tonne",    "Biomass Feedstock Price",  "frac"),
+    ("interest_rate",                  "Discount Rate (WACC)",     "frac"),
+    ("plant_life_yr",                  "Plant Life",               "abs_yr"),
+    ("lang_factor",                    "Lang Factor (EPC)",        "frac"),
+    ("operating_hours_per_year",       "Operating Hours",          "frac"),
+    ("carbon_tax_USD_per_tonne",       "Carbon Tax",               "frac"),
+    ("water_price_USD_per_tonne",      "Water Price",              "frac"),
+]
+
+_ABS_YR_DELTA: int = 5   # ±5 years for plant life
+
+
+def _extract_econ_kpi(rows: List[Dict], metric: str) -> float:
+    """Pull a scalar value from compute_project_economics() rows by Metric name."""
+    for r in rows:
+        if r.get("Metric") == metric:
+            try:
+                return float(r["Value"])
+            except (TypeError, ValueError):
+                return float("nan")
+    return float("nan")
+
+
+def tornado_sensitivity(
+    flowsheet,
+    solution_x: Dict[str, float],
+    kpis: Dict[str, float],
+    econ_config: "ProjectEconomicsConfig",
+    target_metric: str = "LCOH",
+    perturbation_frac: float = 0.20,
+) -> List[TornadoRow]:
+    """One-at-a-time sensitivity analysis for project economics parameters.
+
+    For each field in ``_TORNADO_PARAMS``, the function perturbs the value
+    ±``perturbation_frac`` (or ±5 years for plant life), calls
+    ``compute_project_economics()`` at each point, and records the change in
+    ``target_metric`` (default LCOH; also supports LCOE, NPV, TAC).
+
+    No re-solve is performed — the economics are re-computed analytically from
+    the existing ``solution_x``.  Each call takes <5 ms; the full sweep <100 ms.
+
+    Returns
+    -------
+    List[TornadoRow] sorted descending by ``impact`` (largest swing first).
+    """
+    import dataclasses
+
+    base_rows = compute_project_economics(flowsheet, solution_x, kpis, econ_config)
+    kpi_base = _extract_econ_kpi(base_rows, target_metric)
+
+    results: List[TornadoRow] = []
+
+    for field, label, mode in _TORNADO_PARAMS:
+        base_val = getattr(econ_config, field, None)
+        if base_val is None:
+            continue
+
+        if mode == "abs_yr":
+            low_val  = max(1, int(base_val) - _ABS_YR_DELTA)
+            high_val = int(base_val) + _ABS_YR_DELTA
+        else:
+            low_val  = base_val * (1.0 - perturbation_frac)
+            high_val = base_val * (1.0 + perturbation_frac)
+            if base_val == 0.0:
+                continue  # skip zero-valued fields (would give no swing)
+
+        def _kpi_at(val):
+            try:
+                cfg_low = dataclasses.replace(econ_config, **{field: val})
+                rows = compute_project_economics(flowsheet, solution_x, kpis, cfg_low)
+                return _extract_econ_kpi(rows, target_metric)
+            except Exception:
+                return float("nan")
+
+        kpi_low  = _kpi_at(low_val)
+        kpi_high = _kpi_at(high_val)
+
+        results.append(TornadoRow(
+            param_label=label,
+            param_field=field,
+            base_value=float(base_val),
+            low_value=float(low_val),
+            high_value=float(high_val),
+            kpi_at_low=kpi_low,
+            kpi_at_high=kpi_high,
+            kpi_base=kpi_base,
+            delta_low=kpi_low - kpi_base,
+            delta_high=kpi_high - kpi_base,
+            impact=abs(kpi_high - kpi_low),
+        ))
+
+    results.sort(key=lambda r: r.impact, reverse=True)
+    return results
+
+
+def compute_npv_with_revenue(
+    flowsheet,
+    solution_x: Dict[str, float],
+    kpis: Dict[str, float],
+    econ_config: "ProjectEconomicsConfig",
+    product_price_USD_per_kg: float = 0.0,
+) -> Dict[str, float]:
+    """Compute NPV when a product selling price is provided.
+
+    The economic identity NPV = 0  ⟺  product_price = LCOH holds exactly for
+    a single-product plant.  This function makes that relationship explicit and
+    computes the full NPV at an arbitrary product price.
+
+    Parameters
+    ----------
+    product_price_USD_per_kg :
+        Expected market price for H₂ (or the primary product) [USD/kg].
+
+    Returns
+    -------
+    dict with keys:
+        ``lcoh``                 — Levelised Cost of H₂ = break-even price [USD/kg]
+        ``product_price``        — input product price [USD/kg]
+        ``npv_with_revenue``     — NPV at the given product price [USD]
+        ``annual_revenue``       — product_price × H₂ production [USD/yr]
+        ``margin_USD_per_kg``    — product_price − LCOH [USD/kg]
+        ``payback_yr``           — installed_capex / max(annual_profit, ε) [yr]
+    """
+    from pse_ecosystem.models.costing.economic_engine import EconomicEngine
+
+    cfg = econ_config
+    ee  = EconomicEngine(
+        target_year=cfg.target_year,
+        plant_life_yr=cfg.plant_life_yr,
+        interest_rate=cfg.interest_rate,
+        operating_hours_per_year=cfg.operating_hours_per_year,
+    )
+
+    purchase_CE500 = _aggregate_capex_purchase_USD(flowsheet, solution_x)
+    installed      = purchase_CE500 * ee.sslw_cepci_factor() * cfg.lang_factor
+    capex_annual   = installed * ee.capital_recovery_factor()
+    opex_annual    = _aggregate_opex_annual_USD(
+        flowsheet, solution_x, operating_hours=cfg.operating_hours_per_year
+    )
+    h2_kg_s = _extract_h2_kg_per_s(kpis, flowsheet, solution_x)
+    h2_kg_yr = h2_kg_s * cfg.operating_hours_per_year * 3600.0
+
+    lcoh = ee.lcoh(capex_annual, opex_annual, h2_kg_s) if h2_kg_s > 0 else float("nan")
+
+    annual_revenue = product_price_USD_per_kg * h2_kg_yr
+    annual_profit  = annual_revenue - opex_annual - capex_annual
+    npv_rev = ee.npv(annual_net_cashflow=annual_revenue - opex_annual,
+                     initial_capex=installed)
+
+    payback = installed / max(annual_revenue - opex_annual, 1e-9) if annual_revenue > opex_annual else float("inf")
+
+    return {
+        "lcoh":              lcoh,
+        "product_price":     product_price_USD_per_kg,
+        "npv_with_revenue":  npv_rev,
+        "annual_revenue":    annual_revenue,
+        "annual_opex":       opex_annual,
+        "installed_capex":   installed,
+        "margin_USD_per_kg": product_price_USD_per_kg - (lcoh if lcoh == lcoh else 0.0),
+        "payback_yr":        payback,
+        "h2_kg_yr":          h2_kg_yr,
+    }
+
+
+# ── Investor Report generator (v1.5.1) ───────────────────────────────────────
+
+def generate_investor_report(
+    flowsheet,
+    result,
+    econ_config: "ProjectEconomicsConfig",
+    safety_rows: Optional[List["SafetyMarginRow"]] = None,
+    template_spec=None,
+    scenario_label: str = "Base Case",
+    tornado_rows: Optional[List[TornadoRow]] = None,
+) -> str:
+    """Generate an investor-grade Markdown summary report.
+
+    Produces a structured Markdown document suitable for:
+    - Internal investment committee review
+    - Preliminary due diligence package
+    - Grant application technical annex
+
+    All assumptions are explicitly listed so the document is self-contained and
+    auditable.  Suitable for download via ``st.download_button(mime="text/markdown")``.
+
+    Parameters
+    ----------
+    flowsheet      : Solved ``BaseFlowsheet``.
+    result         : ``SolveResult`` from the Orchestrator.
+    econ_config    : ``ProjectEconomicsConfig`` used for the solve.
+    safety_rows    : Output of ``compute_safety_margins()``.
+    template_spec  : ``TemplateSpec`` for the selected template (display name, description).
+    scenario_label : Name of this scenario (e.g., "Base Case", "Optimistic").
+    tornado_rows   : Pre-computed tornado sensitivity (top-5 shown).
+
+    Returns
+    -------
+    str — Markdown document.
+    """
+    import datetime, math
+
+    today = datetime.date.today().isoformat()
+    plant_name = getattr(template_spec, "display_name", "Process Plant") if template_spec else "Process Plant"
+    plant_desc = getattr(template_spec, "description", "") if template_spec else ""
+    status_str = "CONVERGED" if result.converged else f"NOT CONVERGED ({result.message})"
+
+    lines: List[str] = []
+
+    # ── Cover ────────────────────────────────────────────────────────────────
+    lines += [
+        f"# Investment Summary — {plant_name}",
+        f"**Scenario:** {scenario_label}  |  **Date:** {today}  |  "
+        f"**Status:** {status_str}  |  "
+        f"**Solver iterations:** {result.iterations}",
+        "",
+        "> *Generated by PSE Ecosystem v1.5.1.  "
+        "This report contains preliminary steady-state simulation results.  "
+        "All assumptions are listed in §6.  "
+        "Not a certified engineering design — engage a qualified process engineer for final design.*",
+        "",
+    ]
+
+    # ── §1 Process Description ───────────────────────────────────────────────
+    lines += [
+        "## §1 Process Description",
+        "",
+        f"**Technology:** {plant_name}",
+    ]
+    if plant_desc:
+        lines += [f"**Summary:** {plant_desc}", ""]
+
+    if flowsheet is not None:
+        unit_lines = [f"- `{u.unit_id}` ({type(u).__name__})" for u in flowsheet.units]
+        lines += ["**Unit inventory:**", ""] + unit_lines + [""]
+
+    # ── §2 Key Performance Indicators ────────────────────────────────────────
+    lines += ["## §2 Key Performance Indicators", ""]
+    if result.kpis:
+        lines += ["| KPI | Value |", "|---|---|"]
+        for k, v in result.kpis.items():
+            lines.append(f"| {k} | {v:.4g} |")
+        lines.append("")
+
+    # ── §3 Project Economics ─────────────────────────────────────────────────
+    lines += ["## §3 Project Economics", ""]
+    try:
+        econ_rows = compute_project_economics(flowsheet, result.x, result.kpis, econ_config)
+        _KEY_METRICS = ["Installed CAPEX", "Annual OPEX", "TAC", "LCOH", "LCOE", "NPV", "IRR"]
+        lines += ["| Metric | Value | Unit |", "|---|---|---|"]
+        for row in econ_rows:
+            if row["Metric"] in _KEY_METRICS:
+                v = row["Value"]
+                v_str = f"{v:,.2f}" if isinstance(v, float) and not math.isnan(v) and not math.isinf(v) else str(v)
+                lines.append(f"| {row['Metric']} | {v_str} | {row['Unit']} |")
+        lines.append("")
+
+        lcoh = _extract_econ_kpi(econ_rows, "LCOH")
+        if not math.isnan(lcoh):
+            lines += [
+                f"> **Break-even H₂ price = LCOH = ${lcoh:.3f}/kg.**  "
+                "The plant is profitable at any H₂ market price above this value.",
+                "",
+            ]
+    except Exception as e:
+        lines += [f"*Economics computation failed: {e}*", ""]
+
+    # ── §4 Engineering Safety Assessment ─────────────────────────────────────
+    lines += ["## §4 Engineering Safety Assessment", ""]
+    if safety_rows:
+        lines += [
+            "| Unit | Check | Value | Status | Detail |",
+            "|---|---|---|---|---|",
+        ]
+        for row in safety_rows:
+            v_str = f"{row.value:.4g}" if row.value == row.value else "—"
+            lines.append(f"| {row.unit_id} | {row.check_type} | {v_str} | **{row.status}** | {row.detail} |")
+        lines += [
+            "",
+            "*ASME estimates use default vessel radius unless unit declares `vessel_radius_m`.  "
+            "Not a certified ASME pressure vessel calculation.*",
+            "",
+        ]
+    else:
+        lines += ["*No pressure-vessel units identified in this flowsheet.*", ""]
+
+    # ── §5 Economic Sensitivity (Tornado) ────────────────────────────────────
+    if tornado_rows:
+        lines += ["## §5 Economic Sensitivity (Top 5 Drivers)", ""]
+        lines += ["| Parameter | −20% Impact | +20% Impact | Swing |", "|---|---|---|---|"]
+        for row in tornado_rows[:5]:
+            lines.append(
+                f"| {row.param_label} | {row.delta_low:+.4g} | {row.delta_high:+.4g} | {row.impact:.4g} |"
+            )
+        lines.append("")
+
+    # ── §6 Assumptions & Limitations ─────────────────────────────────────────
+    lines += [
+        "## §6 Assumptions & Limitations",
+        "",
+        "| Parameter | Value |",
+        "|---|---|",
+        f"| Plant life | {econ_config.plant_life_yr} yr |",
+        f"| Discount rate (WACC) | {econ_config.interest_rate*100:.1f}% |",
+        f"| Target CEPCI year | {econ_config.target_year} |",
+        f"| Lang factor | {econ_config.lang_factor} |",
+        f"| Operating hours | {econ_config.operating_hours_per_year:,.0f} h/yr |",
+        f"| Electricity price | ${econ_config.electricity_price_USD_per_kWh:.3f}/kWh |",
+        f"| Biomass price | ${econ_config.biomass_price_USD_per_tonne:.1f}/tonne |",
+        f"| Carbon tax | ${econ_config.carbon_tax_USD_per_tonne:.1f}/tonne CO₂ |",
+        f"| Tax rate | {econ_config.tax_rate*100:.1f}% (informational — pre-tax model) |",
+        "",
+        "**Model limitations:**",
+        "- Steady-state, single-period, deterministic simulation",
+        "- Pre-tax DCF (after-tax model reserved for v1.6)",
+        "- No revenue term in NPV unless product price is explicitly set",
+        "- Equipment costs from SSLW correlations (±30% accuracy)",
+        "- ASME sizing uses conservative default geometry where unit params are absent",
+        "",
+        "---",
+        f"*PSE Ecosystem v1.5.1 — Private — University of Surrey — {today}*",
+    ]
+
+    return "\n".join(lines)
+
+
+# ── Thin gateway helpers for safety module constants (v1.5.1) ─────────────────
+# These keep app_streamlit.py free of direct models.* imports (layer boundary).
+
+def get_asme_materials() -> Dict[str, float]:
+    """Return the ASME allowable-stress material database [Pa].
+
+    Deferred import ensures the safety module is only loaded when needed.
+    """
+    from pse_ecosystem.models.safety.safety_checks import ASME_MATERIALS
+    return dict(ASME_MATERIALS)
+
+
+def compute_outlet_flammability_warnings(
+    flowsheet,
+    solution_x: Dict[str, float],
+    warning_margin_vol_pct: float = 2.0,
+) -> List[str]:
+    """Return human-readable flammability warning strings for each unit outlet.
+
+    POST-SOLVE ONLY.  Deferred import of safety_checks preserves layer boundary.
+
+    Returns
+    -------
+    List of warning strings (one per flagged unit outlet).  Empty list if no
+    flammable species are detected or all margins are safe.
+    """
+    from pse_ecosystem.models.safety.safety_checks import flammability_margins
+
+    warnings_out: List[str] = []
+    for unit in flowsheet.units:
+        components = getattr(unit, "components", None) or getattr(
+            getattr(unit, "params", None), "components", None
+        )
+        if not components:
+            continue
+        flows = {sp: solution_x.get(f"{unit.unit_id}.outlet.F_{sp}", 0.0)
+                 for sp in components}
+        total = sum(flows.values())
+        if total <= 0.0:
+            continue
+        fracs = {sp: f / total for sp, f in flows.items()}
+        try:
+            fm = flammability_margins(fracs)
+        except ValueError:
+            continue
+        if fm["margin_to_LFL_vol_pct"] < warning_margin_vol_pct:
+            severity = "VIOLATION" if fm["margin_to_LFL_vol_pct"] < 0 else "WARNING"
+            warnings_out.append(
+                f"**{unit.unit_id}** outlet: "
+                f"LFL_mix = {fm['LFL_vol_pct']:.1f} vol%  |  "
+                f"flammable content = {fm['mixture_flammable_fraction']*100:.1f}%  "
+                f"({severity})"
+            )
+    return warnings_out

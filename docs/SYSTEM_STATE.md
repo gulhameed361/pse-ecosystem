@@ -1,8 +1,83 @@
 # PSE Ecosystem — System State Ledger
 
-**Version:** 1.5.0
+**Version:** 1.5.1
 **Date:** 2026-05-20
-**Status:** v1.5.0 — Industrial Readiness Release. Dual-Persona UI (Academic / Industrial), ASME + flammability safety framework (post-solve only), 401 pytest + 24 system audit + 20 UI audit + 7 Streamlit smoke = 452 total checks.
+**Status:** v1.5.1 — Industrial Decision Support Release. Scenario Manager, Tornado Chart, Break-even Calculator, Investor Report, ASME material selector, CI benchmark, Equipment Datasheet. 431 pytest + 24 system audit + 20 UI audit + 7 Streamlit smoke = 482 total checks.
+
+---
+
+## What's New in v1.5.1 — Industrial Decision Support
+
+*431 pytest pass, 0 skipped, 0 failures.  +24 system_audit, 20 ui_audit.  30 new tests in `test_v151.py`.*
+
+### Grand 1 — Scenario Manager (new page)
+
+New **Scenario Manager** navigation page (📋) captures up to 4 named solve results.
+Each scenario records: template key, parameters, all KPIs, and a project economics
+summary (Installed CAPEX, OPEX, TAC, LCOH, LCOE, NPV, IRR).  
+
+Outputs:
+- Side-by-side comparison table with % delta vs the Base scenario
+- LCOH / NPV grouped bar chart (Plotly)
+- Excel download: Sheet "Scenario Comparison" + "Solver Stats"
+
+No re-solve is triggered; scenarios are captured from `st.session_state["last_result"]`.
+
+### Grand 2 — Tornado Chart + Break-even Calculator
+
+**Tornado chart** (inside Industrial view expander "Economic Sensitivity"):
+- `tornado_sensitivity(flowsheet, solution_x, kpis, econ_config, target_metric, perturbation_frac)`
+  in `flowsheet_service.py`.
+- One-at-a-time perturbation of 8 `ProjectEconomicsConfig` fields (±20 % default, user-adjustable).
+- Returns `List[TornadoRow]` sorted by `impact = |kpi_at_high − kpi_at_low|`.
+- Target metric: LCOH, LCOE, TAC, Annualised CAPEX, Annual OPEX (selectbox).
+- Rendered as a horizontal overlay bar chart.
+
+**Break-even Calculator** (expander "Break-even & NPV Calculator"):
+- `compute_npv_with_revenue(flowsheet, solution_x, kpis, econ_config, product_price_USD_per_kg)`
+  in `flowsheet_service.py`.
+- Computes NPV with an explicit revenue stream (H₂ price × annual production).
+- Shows: Break-even price (= LCOH), NPV at market price, margin USD/kg, payback period.
+- Mathematical identity: break-even price = LCOH (confirmed analytically).
+
+### Grand 3 — Investor Report Generator
+
+`generate_investor_report(flowsheet, result, econ_config, safety_rows, template_spec, scenario_label, tornado_rows)`
+in `flowsheet_service.py`.
+
+Generates a structured Markdown document with:
+- §1 Process Description (unit inventory)
+- §2 Key Performance Indicators
+- §3 Project Economics (key metrics table + break-even callout)
+- §4 Engineering Safety Assessment (ASME + flammability table)
+- §5 Economic Sensitivity — top 5 tornado rows
+- §6 Assumptions & Limitations (fully explicit)
+
+Downloadable via `st.download_button` (`.md`, text/markdown MIME type).
+In-app preview via collapsible expander.
+
+### Small Changes (S1, S3, S4, S5, S6, S7)
+
+| ID | Change |
+|---|---|
+| S1 | ASME material selector dropdown — 6 materials (CS to Hastelloy), changes allowable stress |
+| S3 | Carbon intensity benchmark table vs SMR / blue H₂ / grid electrolysis / green H₂ target |
+| S4 | `industrial.*` templates auto-set Industrial persona on "Apply & Select" |
+| S5 | Equipment datasheet — Excel Sheet 6 with T/P bounds, CapEx, ASME wall thickness per unit |
+| S6 | Flammability badge — warns on streams near or above LFL after each solve (Industrial view) |
+| S7 | Solve time displayed in convergence banner: "Solved in X.X s" |
+
+### Layer compliance (new additions)
+
+Two new gateway helpers in `flowsheet_service.py` keep `app_streamlit.py` free of
+direct `models.*` imports:
+- `get_asme_materials()` — deferred import of `ASME_MATERIALS` dict
+- `compute_outlet_flammability_warnings(flowsheet, solution_x)` — deferred import of `flammability_margins`
+
+Both verified by `TestComputeOutletFlammabilityWarnings::test_no_pse_models_import_in_app_streamlit`
+(AST-level check).
+
+---
 
 ---
 

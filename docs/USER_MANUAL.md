@@ -1381,4 +1381,94 @@ the `user_persona` key default to "Academic".
 
 ---
 
-*User Manual v1.5.0 — PSE Ecosystem | Private — University of Surrey*
+---
+
+## §17. Scenario Manager (v1.5.1)
+
+The **Scenario Manager** page (📋 in the sidebar) lets you capture up to 4 named
+solve results and compare them side-by-side.
+
+### Capturing a scenario
+
+1. Run a solve on the **Solver Monitor** page (must be converged).
+2. Go to **Scenario Manager**.
+3. Enter a scenario name (e.g., "Base Case", "High WACC", "+20% CAPEX").
+4. Click **Capture current solve as scenario**.
+
+The scenario records: template, solver iterations, all KPIs, and a project economics
+summary computed at the current economic configuration.
+
+### Comparison table
+
+- Rows: Installed CAPEX, Annual OPEX, TAC, LCOH, LCOE, NPV, IRR.
+- Columns: each scenario.
+- Delta column: % change relative to the first (Base) scenario.
+- LCOH / NPV bar chart for visual comparison.
+- Excel download: "Scenario Comparison" + "Solver Stats" sheets.
+
+### Workflow example (Base / Optimistic / Pessimistic)
+
+1. Solve with default parameters → Capture as "Base Case"
+2. Reduce electricity price to $0.03/kWh on the Objective Function tab → Re-solve → Capture as "Optimistic"
+3. Increase WACC to 12% → Re-solve → Capture as "Pessimistic"
+4. Download the comparison Excel for your feasibility report
+
+---
+
+## §18. Economic Sensitivity — Tornado Chart & Break-even (v1.5.1)
+
+Both tools are in the **Industrial view** → Solver Monitor → expanders below the
+ASME safety table.  Available only when user_persona = "Industrial".
+
+### Tornado Chart
+
+Shows how much the selected KPI (LCOH, LCOE, TAC, etc.) changes when each
+economic parameter is perturbed ±20 % (user-adjustable).
+
+- **Left bars (red)**: KPI change when parameter is reduced by X %
+- **Right bars (blue)**: KPI change when parameter is increased by X %
+- Sorted by total swing (largest impact at the top)
+
+**Use case**: identify the 2–3 parameters that drive your investment case.
+Typically electricity price and plant life dominate LCOH; WACC dominates NPV.
+
+### Break-even Calculator
+
+Enter an expected H₂ market price.  The tool computes:
+
+| Output | Definition |
+|---|---|
+| Break-even price (LCOH) | Minimum selling price for NPV = 0 |
+| NPV at market price | Net Present Value with revenue stream |
+| Margin vs LCOH | market_price − LCOH (positive = profitable) |
+| Payback period | installed_capex / (revenue − OPEX) |
+
+**Key identity**: break-even price = LCOH.  If the market price exceeds the LCOH,
+the project has a positive NPV.
+
+---
+
+## §19. Investor Report Generator (v1.5.1)
+
+After a converged solve, in the **Industrial view**, scroll to the bottom of the
+Industrial Analysis section.
+
+1. Enter a scenario label (used in the report header).
+2. Click **⬇ Download Investor Report (.md)**.
+3. Open the `.md` file in any Markdown viewer (VS Code, Typora, GitHub, etc.)
+   or convert to PDF via browser print.
+
+**Report sections:**
+- §1 Process Description (unit inventory from the flowsheet)
+- §2 Key Performance Indicators (all KPIs from the solve)
+- §3 Project Economics (CAPEX, OPEX, TAC, LCOH, NPV, IRR + break-even callout)
+- §4 Engineering Safety Assessment (ASME + flammability table)
+- §5 Economic Sensitivity — top 5 tornado rows
+- §6 Assumptions & Limitations (all economic parameters listed explicitly)
+
+*This is a preliminary engineering estimate.  Engage a qualified process engineer
+for final design and a certified ASME engineer for vessel design.*
+
+---
+
+*User Manual v1.5.1 — PSE Ecosystem | Private — University of Surrey*

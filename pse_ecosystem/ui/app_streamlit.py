@@ -50,6 +50,8 @@ def _init_state(st) -> None:
     st.session_state.setdefault("weather_wind", None)
     st.session_state.setdefault("weather_site", None)
     st.session_state.setdefault("user_persona", "Academic")    # v1.5.0 dual-persona
+    st.session_state.setdefault("last_solve_elapsed", None)   # v1.5.1 solve timing
+    st.session_state.setdefault("scenarios", [])              # v1.5.1 scenario manager
 
 
 # ── SI-unit inference for Excel export ────────────────────────────────────────
@@ -359,6 +361,9 @@ def _page_flowsheet_builder():
                 if st.form_submit_button("Apply & Select", type="primary"):
                     st.session_state["selected_template"] = chosen_key
                     st.session_state["template_params"] = updated
+                    # Auto-set Industrial persona for industrial.* templates
+                    if chosen_key.startswith("industrial."):
+                        st.session_state["user_persona"] = "Industrial"
                     st.success(
                         f"Template **{spec.display_name}** selected. "
                         "Go to **Solver Monitor** to run, or use the sweep below."
@@ -1452,9 +1457,32 @@ def _render_academic_solver_view(st, result, flowsheet) -> None:
             )
 
 
+def _build_econ_config_from_session(st) -> "ProjectEconomicsConfig":
+    """Reconstruct a ProjectEconomicsConfig from session state objective_config."""
+    from pse_ecosystem.ui.flowsheet_service import ProjectEconomicsConfig
+    oc = st.session_state.get("objective_config") or {}
+    return ProjectEconomicsConfig(
+        plant_life_yr=int(oc.get("plant_life_yr", 20)),
+        interest_rate=float(oc.get("interest_rate", 0.08)),
+        tax_rate=float(oc.get("tax_rate", 0.20)),
+        inflation_rate=float(oc.get("inflation_rate", 0.025)),
+        operating_hours_per_year=float(oc.get("op_hours", 8000.0)),
+        electricity_price_USD_per_kWh=float(oc.get("elec_price", 0.05)),
+        biomass_price_USD_per_tonne=float(oc.get("biomass_price", 60.0)),
+        water_price_USD_per_tonne=float(oc.get("water_price", 0.5)),
+        cooling_water_price_USD_per_GJ=float(oc.get("cw_price", 0.35)),
+        carbon_tax_USD_per_tonne=float(oc.get("carbon_tax", 50.0)),
+    )
+
+
 def _render_industrial_solver_view(st, result, flowsheet) -> None:
-    """Display CapEx/OpEx asset cards and ASME safety margins (Industrial persona)."""
-    from pse_ecosystem.ui.flowsheet_service import compute_safety_margins, SafetyMarginRow
+    """Display CapEx/OpEx, safety margins, tornado chart, break-even, and report download."""
+    from pse_ecosystem.ui.flowsheet_service import (
+        compute_safety_margins, SafetyMarginRow,
+        tornado_sensitivity, compute_npv_with_revenue,
+        generate_investor_report, PSE_PLOTLY_TEMPLATE,
+        get_template,
+    )
 
     st.subheader("Industrial Analysis")
 
@@ -1464,7 +1492,8 @@ def _render_industrial_solver_view(st, result, flowsheet) -> None:
 
     import plotly.graph_objects as go
     import pandas as pd
-    from pse_ecosystem.ui.flowsheet_service import PSE_PLOTLY_TEMPLATE
+
+    econ_cfg = _build_econ_config_from_session(st)
 
     # ── CapEx / OpEx breakdown ────────────────────────────────────────────────
     capex_vals, opex_vals, unit_labels = [], [], []
@@ -1497,45 +1526,210 @@ def _render_industrial_solver_view(st, result, flowsheet) -> None:
         st.plotly_chart(fig_cost, use_container_width=True)
 
         total_capex = sum(capex_vals)
-        total_opex = sum(opex_vals)
+        total_opex  = sum(opex_vals)
         c1, c2 = st.columns(2)
         c1.metric("Total CapEx (USD)", f"${total_capex:,.0f}")
         c2.metric("Total OpEx/yr (USD/yr)", f"${total_opex:,.0f}")
 
+    # ── Carbon Intensity benchmark ────────────────────────────────────────────
+    _CI_KEY_SUFFIX = "CI_kg_CO2_per_kg_H2"
+    _ci_kpis = {k: v for k, v in result.kpis.items() if k.endswith(_CI_KEY_SUFFIX)}
+    if _ci_kpis:
+        _CI_BENCHMARKS = {
+            "SMR (unabated)": 9.0,
+            "Blue H₂ (SMR + CCS 90%)": 1.8,
+            "Grid electrolysis (UK 2024)": 24.0,
+            "Green H₂ target (<1 kg CO₂/kg)": 1.0,
+        }
+        ci_val = list(_ci_kpis.values())[0]
+        st.markdown("**Carbon Intensity Benchmark**")
+        bench_rows = []
+        for bench_name, bench_val in _CI_BENCHMARKS.items():
+            diff = ci_val - bench_val
+            bench_rows.append({
+                "Reference pathway": bench_name,
+                "CI [kg CO₂/kg H₂]": f"{bench_val:.1f}",
+                "This design vs reference": f"{diff:+.2f}",
+                "Better?": "Yes" if diff < 0 else "No",
+            })
+        st.dataframe(
+            pd.DataFrame(bench_rows).style.applymap(
+                lambda v: "color: green" if v == "Yes" else "color: red",
+                subset=["Better?"],
+            ),
+            use_container_width=True, hide_index=True,
+        )
+
+    # ── ASME material selector ────────────────────────────────────────────────
+    from pse_ecosystem.ui.flowsheet_service import get_asme_materials
+    _asme_mats = get_asme_materials()
+    _material_choice = st.selectbox(
+        "Shell material (ASME allowable stress)",
+        list(_asme_mats.keys()),
+        key="asme_material_selector",
+    )
+    _allowable_stress = _asme_mats[_material_choice]
+
     # ── ASME + flammability safety margins ────────────────────────────────────
-    st.markdown("**Engineering Safety Margins** *(post-solve audit; not a certified ASME analysis)*")
+    st.markdown("**Engineering Safety Margins** *(post-solve audit — not a certified ASME analysis)*")
+    safety_rows: list = []
     try:
-        safety_rows = compute_safety_margins(flowsheet, result.x)
+        safety_rows = compute_safety_margins(
+            flowsheet, result.x,
+            allowable_stress_Pa=_allowable_stress,
+        )
     except Exception as exc:
         st.caption(f"Safety check unavailable: {exc}")
-        return
-
-    if not safety_rows:
-        st.success("No pressure-vessel units found in this flowsheet — no ASME checks required.")
-        return
 
     _STATUS_COLOR = {"OK": "green", "WARNING": "orange", "VIOLATION": "red"}
-    rows_data = []
-    for row in safety_rows:
-        color = _STATUS_COLOR.get(row.status, "grey")
-        rows_data.append({
-            "Unit": row.unit_id,
-            "Check": row.check_type,
-            "Value": f"{row.value:.4g}" if row.value == row.value else "—",
-            "Status": row.status,
-            "Detail": row.detail,
-        })
-    df_safety = pd.DataFrame(rows_data)
+    if safety_rows:
+        rows_data = []
+        for row in safety_rows:
+            rows_data.append({
+                "Unit":   row.unit_id,
+                "Check":  row.check_type,
+                "Value":  f"{row.value:.4g}" if row.value == row.value else "—",
+                "Status": row.status,
+                "Detail": row.detail,
+            })
+        df_safety = pd.DataFrame(rows_data)
 
-    def _color_status(val):
-        c = _STATUS_COLOR.get(val, "grey")
-        return f"color: {c}; font-weight: bold"
+        def _color_status(val):
+            return f"color: {_STATUS_COLOR.get(val, 'grey')}; font-weight: bold"
 
-    st.dataframe(
-        df_safety.style.applymap(_color_status, subset=["Status"]),
-        use_container_width=True,
-        hide_index=True,
-    )
+        st.dataframe(
+            df_safety.style.applymap(_color_status, subset=["Status"]),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.success("No pressure-vessel units identified — no ASME checks generated.")
+
+    # ── Economic Sensitivity (Tornado) ────────────────────────────────────────
+    with st.expander("Economic Sensitivity — Tornado Chart", expanded=False):
+        _target = st.selectbox(
+            "KPI to analyse", ["LCOH", "LCOE", "TAC", "Annualised CAPEX", "Annual OPEX"],
+            key="tornado_target_metric",
+        )
+        _pct = st.slider("Perturbation (%)", min_value=5, max_value=50, value=20, step=5,
+                         key="tornado_pct") / 100.0
+
+        try:
+            t_rows = tornado_sensitivity(
+                flowsheet, result.x, result.kpis, econ_cfg,
+                target_metric=_target, perturbation_frac=_pct,
+            )
+            t_rows_valid = [r for r in t_rows if r.impact > 0]
+        except Exception as exc:
+            st.warning(f"Tornado computation failed: {exc}")
+            t_rows_valid = []
+
+        if t_rows_valid:
+            # Horizontal bar chart — bars show [delta_low, delta_high] relative to base
+            params   = [r.param_label for r in t_rows_valid]
+            d_low    = [r.delta_low   for r in t_rows_valid]
+            d_high   = [r.delta_high  for r in t_rows_valid]
+
+            fig_t = go.Figure()
+            fig_t.add_trace(go.Bar(
+                name=f"−{int(_pct*100)}%",
+                y=params, x=d_low,
+                orientation="h",
+                marker_color="#e24a4a",
+            ))
+            fig_t.add_trace(go.Bar(
+                name=f"+{int(_pct*100)}%",
+                y=params, x=d_high,
+                orientation="h",
+                marker_color="#4a90e2",
+            ))
+            fig_t.update_layout(
+                barmode="overlay",
+                title=f"Δ{_target} vs ±{int(_pct*100)}% parameter perturbation",
+                xaxis_title=f"Δ{_target}",
+                height=max(300, 50 * len(t_rows_valid) + 80),
+                **PSE_PLOTLY_TEMPLATE["layout"],
+            )
+            st.plotly_chart(fig_t, use_container_width=True)
+        else:
+            st.info(f"No sensitivity detected for {_target} — check that the flowsheet has non-zero economics.")
+
+    # ── Break-even Calculator ─────────────────────────────────────────────────
+    with st.expander("Break-even & NPV Calculator", expanded=False):
+        st.caption(
+            "Enter an expected H₂ selling price to compute NPV with revenue.  "
+            "The break-even price equals the LCOH."
+        )
+        h2_price = st.number_input(
+            "H₂ market price (USD/kg)", min_value=0.0, value=3.0, step=0.1,
+            format="%.2f", key="breakeven_h2_price",
+        )
+        try:
+            be = compute_npv_with_revenue(
+                flowsheet, result.x, result.kpis, econ_cfg,
+                product_price_USD_per_kg=h2_price,
+            )
+            lcoh = be["lcoh"]
+            npv_rev = be["npv_with_revenue"]
+            margin = be["margin_USD_per_kg"]
+            payback = be["payback_yr"]
+
+            import math
+            b1, b2, b3, b4 = st.columns(4)
+            b1.metric("Break-even price (LCOH)", f"${lcoh:.2f}/kg" if not math.isnan(lcoh) else "N/A")
+            b2.metric("NPV at market price", f"${npv_rev:,.0f}",
+                      delta=f"{'positive' if npv_rev >= 0 else 'negative'}",
+                      delta_color="normal" if npv_rev >= 0 else "inverse")
+            b3.metric("Margin vs LCOH", f"${margin:+.2f}/kg",
+                      delta_color="normal" if margin >= 0 else "inverse")
+            b4.metric("Payback period", f"{payback:.1f} yr" if payback < 1e6 else "∞")
+        except Exception as exc:
+            st.warning(f"Break-even computation failed: {exc}")
+
+    # ── Investor Report download ──────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("**Investor Report**")
+
+    _selected_key = st.session_state.get("selected_template")
+    _spec = None
+    if _selected_key:
+        try:
+            _spec = get_template(_selected_key)
+        except Exception:
+            pass
+
+    _scenario_label = st.text_input("Scenario name for report", value="Base Case",
+                                    key="report_scenario_label")
+
+    try:
+        t_rows_for_report = tornado_sensitivity(
+            flowsheet, result.x, result.kpis, econ_cfg,
+            target_metric="LCOH", perturbation_frac=0.20,
+        ) if result.x else []
+    except Exception:
+        t_rows_for_report = []
+
+    try:
+        _report_md = generate_investor_report(
+            flowsheet=flowsheet,
+            result=result,
+            econ_config=econ_cfg,
+            safety_rows=safety_rows,
+            template_spec=_spec,
+            scenario_label=_scenario_label,
+            tornado_rows=t_rows_for_report,
+        )
+        st.download_button(
+            label="⬇ Download Investor Report (.md)",
+            data=_report_md,
+            file_name=f"pse_investor_report_{_scenario_label.replace(' ', '_')}.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
+        with st.expander("Preview Report"):
+            st.markdown(_report_md)
+    except Exception as exc:
+        st.warning(f"Report generation failed: {exc}")
 
 
 # ── Page 5: Solver Monitor ────────────────────────────────────────────────────
@@ -1725,13 +1919,17 @@ def _page_solver_monitor():
                     econ_config=_econ_cfg,
                 )
 
+                import time as _time
                 orch = Orchestrator(
                     flowsheet=flowsheet,
                     mode=mode,
                     slp_config=slp_cfg,
                     technology_choices=tech_choices,
                 )
+                _t0 = _time.perf_counter()
                 result = orch.solve()
+                _solve_elapsed = _time.perf_counter() - _t0
+                st.session_state["last_solve_elapsed"] = _solve_elapsed
 
             # Collapse the live chart — the final chart below is higher quality.
             live_chart.empty()
@@ -1759,15 +1957,18 @@ def _page_solver_monitor():
         st.info("Press **Run Solve** to start.")
         return
 
+    _elapsed = st.session_state.get("last_solve_elapsed")
+    _elapsed_str = f"  |  Solved in **{_elapsed:.1f} s**" if _elapsed is not None else ""
+
     if result.converged:
         st.success(
             f"Converged in **{result.iterations}** iteration(s)  |  "
-            f"Objective: **{result.objective:.4g}**"
+            f"Objective: **{result.objective:.4g}**{_elapsed_str}"
         )
     else:
         st.error(
             f"Solver status: **{str(result.status).split('.')[-1]}**  |  "
-            f"{result.message}"
+            f"{result.message}{_elapsed_str}"
         )
         _status_name = str(result.status).split(".")[-1]
         _tips = {
@@ -1922,6 +2123,21 @@ def _page_solver_monitor():
             use_container_width=True,
             hide_index=True,
         )
+
+        # S6: Flammability badge in stream table (Industrial view)
+        if st.session_state.get("user_persona") == "Industrial":
+            _last_fs_badge = st.session_state.get("last_flowsheet")
+            if _last_fs_badge is not None:
+                try:
+                    from pse_ecosystem.ui.flowsheet_service import compute_outlet_flammability_warnings
+                    _flamm_warnings = compute_outlet_flammability_warnings(
+                        _last_fs_badge, result.x
+                    )
+                    if _flamm_warnings:
+                        st.warning("**Flammability Flags** *(streams near or above LFL)*\n\n" +
+                                   "\n\n".join(_flamm_warnings))
+                except Exception:
+                    pass
 
     # ── Persona-specific analysis view ────────────────────────────────────────
     _persona = st.session_state.get("user_persona", "Academic")
@@ -2079,6 +2295,40 @@ def _page_solver_monitor():
                     "Unit":   "—",
                 }]).to_excel(_writer, sheet_name="Project Economics", index=False)
 
+            # Sheet 6: Equipment Datasheet (v1.5.1)
+            if _last_fs is not None and result.x:
+                _ds_rows = []
+                try:
+                    from pse_ecosystem.ui.flowsheet_service import compute_safety_margins
+                    _ds_safety = {r.unit_id: r for r in compute_safety_margins(_last_fs, result.x)
+                                  if r.check_type == "ASME_wall_thickness"}
+                except Exception:
+                    _ds_safety = {}
+                for _unit in _last_fs.units:
+                    try:
+                        _bnds = _unit.bounds()
+                        _t_min = min((v[0] for k, v in _bnds.items() if k.endswith(".T") or "T" in k.split(".")[-1]), default=float("nan"))
+                        _t_max = max((v[1] for k, v in _bnds.items() if k.endswith(".T") or "T" in k.split(".")[-1]), default=float("nan"))
+                        _p_max = max((v[1] for k, v in _bnds.items() if k.endswith(".P") or "P" in k.split(".")[-1]), default=float("nan"))
+                        _cx  = _unit.capex(result.x)
+                        _ox  = _unit.opex_per_year(result.x)
+                        _asme = _ds_safety.get(_unit.unit_id)
+                        _ds_rows.append({
+                            "Tag":          _unit.unit_id,
+                            "Type":         type(_unit).__name__,
+                            "T_min [K]":    _t_min,
+                            "T_max [K]":    _t_max,
+                            "P_max [Pa]":   _p_max,
+                            "CapEx [USD]":  round(_cx, 2),
+                            "OpEx [USD/yr]": round(_ox, 2),
+                            "ASME t_min [mm]": round(_asme.value * 1000, 2) if _asme and _asme.value == _asme.value else "N/A",
+                            "ASME status":  _asme.status if _asme else "N/A",
+                        })
+                    except Exception:
+                        continue
+                if _ds_rows:
+                    _pd.DataFrame(_ds_rows).to_excel(_writer, sheet_name="Equipment Datasheet", index=False)
+
         st.download_button(
             label="⬇ Download Results (XLSX)",
             data=_buf.getvalue(),
@@ -2087,7 +2337,8 @@ def _page_solver_monitor():
             help=(
                 "Sheet 1: Stream Table | Sheet 2: Unit Performance | "
                 "Sheet 3: Optimization Summary | Sheet 4: Bound Saturation | "
-                "Sheet 5: Project Economics & Cash Flow"
+                "Sheet 5: Project Economics & Cash Flow | "
+                "Sheet 6: Equipment Datasheet"
             ),
         )
     except ImportError:
@@ -2153,6 +2404,197 @@ def _load_doc(rel_name: str) -> str:
     raw = candidate.read_bytes()
     digest = hashlib.sha1(raw).hexdigest()
     return _read(str(candidate), digest)
+
+
+def _page_scenario_manager() -> None:
+    """Scenario Manager — compare up to 4 named design scenarios side-by-side."""
+    st = _require_streamlit()
+    _init_state(st)
+
+    st.title("Scenario Manager")
+    st.caption(
+        "Capture the current solve result as a named scenario, then compare up to "
+        "4 scenarios side-by-side.  Each scenario records the template, parameters, "
+        "economic configuration, and all KPIs from the last solve."
+    )
+
+    from pse_ecosystem.ui.flowsheet_service import (
+        ProjectEconomicsConfig, compute_project_economics,
+        get_template, PSE_PLOTLY_TEMPLATE,
+    )
+    import math, pandas as pd, plotly.graph_objects as go
+
+    _MAX_SCENARIOS = 4
+
+    # ── Capture current solve as a scenario ──────────────────────────────────
+    result    = st.session_state.get("last_result")
+    flowsheet = st.session_state.get("last_flowsheet")
+    tmpl_key  = st.session_state.get("selected_template")
+
+    if result is not None and result.converged and flowsheet is not None:
+        with st.form("capture_scenario_form"):
+            _name = st.text_input(
+                "Scenario name",
+                value=f"Scenario {len(st.session_state['scenarios']) + 1}",
+                placeholder="e.g. Base Case, High WACC, +20% CapEx",
+            )
+            _submitted = st.form_submit_button("Capture current solve as scenario",
+                                               type="primary")
+
+        if _submitted and _name.strip():
+            oc = st.session_state.get("objective_config") or {}
+            try:
+                econ_cfg = _build_econ_config_from_session(st)
+            except Exception:
+                econ_cfg = None
+
+            econ_rows: list = []
+            if econ_cfg is not None:
+                try:
+                    econ_rows = compute_project_economics(
+                        flowsheet, result.x, result.kpis, econ_cfg, oc
+                    )
+                except Exception:
+                    pass
+
+            def _ev(metric):
+                for r in econ_rows:
+                    if r.get("Metric") == metric:
+                        try:
+                            return float(r["Value"])
+                        except (TypeError, ValueError):
+                            return float("nan")
+                return float("nan")
+
+            record = {
+                "name":         _name.strip(),
+                "template_key": tmpl_key or "—",
+                "iterations":   result.iterations,
+                "objective":    result.objective,
+                "kpis":         dict(result.kpis),
+                # Economics summary
+                "installed_capex":  _ev("Installed CAPEX"),
+                "annual_opex":      _ev("Annual OPEX"),
+                "tac":              _ev("TAC"),
+                "lcoh":             _ev("LCOH"),
+                "lcoe":             _ev("LCOE"),
+                "npv":              _ev("NPV"),
+                "irr":              _ev("IRR"),
+                # Config snapshot
+                "econ_config": {
+                    "plant_life_yr":   econ_cfg.plant_life_yr if econ_cfg else None,
+                    "interest_rate":   econ_cfg.interest_rate if econ_cfg else None,
+                    "elec_price":      econ_cfg.electricity_price_USD_per_kWh if econ_cfg else None,
+                    "biomass_price":   econ_cfg.biomass_price_USD_per_tonne if econ_cfg else None,
+                    "op_hours":        econ_cfg.operating_hours_per_year if econ_cfg else None,
+                },
+            }
+
+            scenarios = st.session_state["scenarios"]
+            if len(scenarios) >= _MAX_SCENARIOS:
+                scenarios.pop(0)  # evict oldest
+            scenarios.append(record)
+            st.session_state["scenarios"] = scenarios
+            st.success(f"Scenario '{_name.strip()}' captured ({len(scenarios)}/{_MAX_SCENARIOS}).")
+            st.rerun()
+    else:
+        st.info(
+            "No converged solve available.  Run a solve on the **Solver Monitor** page first, "
+            "then return here to capture it as a scenario."
+        )
+
+    # ── Scenario list + clear ────────────────────────────────────────────────
+    scenarios = st.session_state.get("scenarios", [])
+    if not scenarios:
+        st.info("No scenarios captured yet.  Solve a flowsheet and use the form above.")
+        return
+
+    col_clear, _ = st.columns([1, 4])
+    if col_clear.button("Clear all scenarios"):
+        st.session_state["scenarios"] = []
+        st.rerun()
+
+    st.subheader(f"Comparison — {len(scenarios)} scenario(s)")
+
+    # ── Side-by-side comparison table ────────────────────────────────────────
+    _ECON_METRICS = [
+        ("Installed CAPEX", "installed_capex", "USD"),
+        ("Annual OPEX",     "annual_opex",     "USD/yr"),
+        ("TAC",             "tac",             "USD/yr"),
+        ("LCOH",            "lcoh",            "USD/kg H₂"),
+        ("LCOE",            "lcoe",            "USD/kWh"),
+        ("NPV",             "npv",             "USD"),
+        ("IRR",             "irr",             "%"),
+    ]
+
+    table_rows = []
+    for label, key, unit in _ECON_METRICS:
+        row_vals = {"Metric": label, "Unit": unit}
+        base_val = scenarios[0].get(key, float("nan"))
+        for i, sc in enumerate(scenarios):
+            v = sc.get(key, float("nan"))
+            v_str = f"{v:,.2f}" if isinstance(v, float) and not math.isnan(v) and not math.isinf(v) else "—"
+            if i > 0 and isinstance(v, float) and isinstance(base_val, float) and not math.isnan(v) and not math.isnan(base_val) and base_val != 0:
+                delta_pct = (v - base_val) / abs(base_val) * 100
+                v_str += f"  ({delta_pct:+.1f}%)"
+            row_vals[sc["name"]] = v_str
+        table_rows.append(row_vals)
+
+    st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+    st.caption("Δ% values are relative to the first (Base) scenario.")
+
+    # ── Solver stats ─────────────────────────────────────────────────────────
+    st.subheader("Solver Summary")
+    stat_rows = []
+    for sc in scenarios:
+        stat_rows.append({
+            "Scenario":    sc["name"],
+            "Template":    sc["template_key"],
+            "Iterations":  sc["iterations"],
+            "Objective":   f"{sc['objective']:.4g}",
+        })
+    st.dataframe(pd.DataFrame(stat_rows), use_container_width=True, hide_index=True)
+
+    # ── LCOH / NPV bar chart ──────────────────────────────────────────────────
+    names    = [sc["name"] for sc in scenarios]
+    lcoh_vals = [sc.get("lcoh", float("nan")) for sc in scenarios]
+    npv_vals  = [sc.get("npv",  float("nan")) for sc in scenarios]
+
+    if any(not math.isnan(v) for v in lcoh_vals):
+        fig_sc = go.Figure()
+        fig_sc.add_trace(go.Bar(name="LCOH (USD/kg)", x=names, y=lcoh_vals,
+                                marker_color="#4a90e2", yaxis="y1"))
+        fig_sc.add_trace(go.Bar(name="NPV (USD ×1M)", x=names,
+                                y=[v / 1e6 if not math.isnan(v) else float("nan")
+                                   for v in npv_vals],
+                                marker_color="#50c878", yaxis="y2"))
+        fig_sc.update_layout(
+            barmode="group",
+            title="LCOH and NPV comparison",
+            yaxis=dict(title="LCOH [USD/kg H₂]"),
+            yaxis2=dict(title="NPV [M USD]", overlaying="y", side="right"),
+            height=380,
+            **PSE_PLOTLY_TEMPLATE["layout"],
+        )
+        st.plotly_chart(fig_sc, use_container_width=True)
+
+    # ── Excel download of scenario table ────────────────────────────────────
+    try:
+        import io
+        import pandas as _pd
+        _buf = io.BytesIO()
+        with _pd.ExcelWriter(_buf, engine="openpyxl") as _writer:
+            _pd.DataFrame(table_rows).to_excel(_writer, sheet_name="Scenario Comparison", index=False)
+            _pd.DataFrame(stat_rows).to_excel(_writer, sheet_name="Solver Stats", index=False)
+        st.download_button(
+            label="⬇ Download Scenario Comparison (XLSX)",
+            data=_buf.getvalue(),
+            file_name="pse_scenario_comparison.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+    except ImportError:
+        pass
 
 
 def _page_help_center():
@@ -2275,12 +2717,13 @@ def main() -> None:
             st.caption("Jacobians · residuals · derivatives")
 
     pages = [
-        st.Page(_page_dashboard,         title="Dashboard",         icon="🏠"),
-        st.Page(_page_flowsheet_builder,  title="Flowsheet Builder", icon="🔧"),
-        st.Page(_page_gps_weather,        title="Site Weather",      icon="🌍"),
-        st.Page(_page_solver_monitor,     title="Solver Monitor",    icon="📊"),
-        st.Page(_page_solve_history,      title="Solve History",     icon="📜"),
-        st.Page(_page_help_center,        title="Help Center",       icon="📖"),
+        st.Page(_page_dashboard,          title="Dashboard",          icon="🏠"),
+        st.Page(_page_flowsheet_builder,  title="Flowsheet Builder",  icon="🔧"),
+        st.Page(_page_gps_weather,        title="Site Weather",       icon="🌍"),
+        st.Page(_page_solver_monitor,     title="Solver Monitor",     icon="📊"),
+        st.Page(_page_scenario_manager,   title="Scenario Manager",   icon="📋"),
+        st.Page(_page_solve_history,      title="Solve History",      icon="📜"),
+        st.Page(_page_help_center,        title="Help Center",        icon="📖"),
     ]
     pg = st.navigation(pages)
     pg.run()

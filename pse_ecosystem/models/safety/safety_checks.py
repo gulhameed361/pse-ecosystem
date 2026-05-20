@@ -32,6 +32,17 @@ _DEFAULT_ALLOWABLE_STRESS_PA: float = 138_000_000.0  # 138 MPa = 20,000 psi
 # Default joint efficiency: full radiography (seamless or 100% X-ray)
 _DEFAULT_JOINT_EFFICIENCY: float = 1.0
 
+# ASME material allowable stress database [Pa] at ≤ 300 °C (20,000 psi reference)
+# Source: ASME Section II Part D — representative values for common shell materials
+ASME_MATERIALS: Dict[str, float] = {
+    "SA-516-70 (Carbon Steel)":        138_000_000.0,  # 20,000 psi
+    "SA-240-316L (Stainless Steel)":   115_000_000.0,  # 16,700 psi
+    "SA-240-304 (Stainless Steel)":    138_000_000.0,  # 20,000 psi
+    "SA-240-2205 (Duplex SS)":         172_000_000.0,  # 24,900 psi
+    "SB-127 Alloy 400 (Monel)":        138_000_000.0,  # 20,000 psi
+    "SB-575 Alloy C-276 (Hastelloy)":  172_000_000.0,  # 25,000 psi
+}
+
 
 # ── ASME VIII Div. 1 UG-27(c)(1) ─────────────────────────────────────────────
 
@@ -204,6 +215,7 @@ __all__ = [
     "asme_minimum_wall_thickness",
     "operating_pressure_margin",
     "flammability_margins",
+    "ASME_MATERIALS",
     "_LE_CHATELIER_DB",
     "_DEFAULT_ALLOWABLE_STRESS_PA",
     "_DEFAULT_JOINT_EFFICIENCY",
