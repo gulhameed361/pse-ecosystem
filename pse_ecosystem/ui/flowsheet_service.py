@@ -1561,21 +1561,38 @@ def build_custom_flowsheet(config: Dict[str, Any]) -> "BaseFlowsheet":
                 fs.connect(out_port, in_port,
                            description=f"{conn['from_unit']} → {conn['to_unit']}")
             except ValueError:
-                # Variable-count mismatch (usually T/P present on one port but not the other).
-                # Fall back to linking only component flow variables (.F_*).
+                # Variable-count mismatch (T/P flags differ or component counts differ).
+                # Phase 1 — try flow-only pairing (F_ vars only on both ports).
                 from pse_ecosystem.flowsheets.base_flowsheet import Connection as _Conn
                 a_flows = [v for v in out_port.variable_names() if ".F_" in v]
                 b_flows = [v for v in in_port.variable_names() if ".F_" in v]
-                if len(a_flows) == len(b_flows) and a_flows:
+                n_a, n_b = len(a_flows), len(b_flows)
+                if n_a == n_b and a_flows:
+                    # Same component count but T/P mismatch — exact flow-only link.
                     for va, vb in zip(a_flows, b_flows):
                         fs.connections.append(_Conn(
                             var_a=va, var_b=vb,
                             description=f"{conn['from_unit']} → {conn['to_unit']} (flow-only)",
                         ))
-                else:
+                elif n_a != n_b and (n_a > 0 or n_b > 0):
+                    # Phase 2 — zero-fill padder: match by species name, zero-fill
+                    # inlet vars that have no matching outlet, leave surplus outlet
+                    # vars free.
+                    a_map = {v.rsplit("F_", 1)[-1]: v for v in a_flows}
+                    b_map = {v.rsplit("F_", 1)[-1]: v for v in b_flows}
+                    matched = set(a_map) & set(b_map)
+                    for sp in matched:
+                        fs.connections.append(_Conn(
+                            var_a=a_map[sp], var_b=b_map[sp],
+                            description=(f"{conn['from_unit']} → {conn['to_unit']}"
+                                         f" (padded:{sp})"),
+                        ))
+                    for sp in set(b_map) - matched:
+                        fs.extra_equalities.append(({b_map[sp]: 1.0}, 0.0))
                     conn_warnings.append(
                         f"{conn['from_unit']} → {conn['to_unit']}: "
-                        f"component count mismatch ({len(a_flows)} vs {len(b_flows)}), skipped"
+                        f"component count padded ({n_a} → {n_b}); "
+                        f"{len(set(b_map) - matched)} inlet species zero-filled"
                     )
         elif out_port is None and in_port is None:
             conn_warnings.append(

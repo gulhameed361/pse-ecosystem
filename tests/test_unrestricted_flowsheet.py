@@ -289,8 +289,8 @@ def test_progressive_tightening_default_on():
 # ── Tests: version consistency ────────────────────────────────────────────────
 
 
-def test_version_is_v150dev():
-    assert PSE_VERSION == "1.5.0.dev0", f"pse_ecosystem.__version__ = {PSE_VERSION!r}"
+def test_version_is_v152():
+    assert PSE_VERSION == "1.5.2", f"pse_ecosystem.__version__ = {PSE_VERSION!r}"
 
 
 def test_pyproject_version_matches_package():

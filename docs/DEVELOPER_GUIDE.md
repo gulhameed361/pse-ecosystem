@@ -1513,3 +1513,54 @@ val = get_my_safety_constant()
 
 The `test_no_pse_models_import_in_app_streamlit` AST check in
 `test_v151.py` (and the ui_audit layer check) will catch any violations.
+
+---
+
+## §17. UI API Conventions — Pandas Styler & Plotly Template (v1.5.2)
+
+### §17.1 DataFrame Styling — use `.map()`, not `.applymap()`
+
+Pandas 2.0 removed `DataFrame.style.applymap()`. All cell-level styling in
+`app_streamlit.py` **must** use `.map()` instead:
+
+```python
+# v1.5.2 correct (Pandas 2.0+)
+df.style.map(_color_fn, subset=["Status"])
+
+# WRONG — raises AttributeError on Pandas >= 2.0
+df.style.applymap(_color_fn, subset=["Status"])
+```
+
+The industrial-persona ASME safety table at `_render_industrial_solver_view`
+uses this pattern. If you add a new styled dataframe, use `.map()`.
+
+### §17.2 Plotly layout — strip colliding keys before template unpack
+
+`PSE_PLOTLY_TEMPLATE["layout"]` (defined in `flowsheet_service.py`) contains
+the key `"yaxis"`.  Any chart that passes an explicit `yaxis=dict(...)` argument
+**and** also unpacks `**PSE_PLOTLY_TEMPLATE["layout"]` will raise a
+`TypeError: update_layout() got multiple values for keyword argument 'yaxis'`.
+
+**Pattern for multi-axis charts** (e.g. Scenario Manager dual-bar):
+
+```python
+# Strip keys that collide with explicit kwargs before unpacking the template.
+_layout = {k: v for k, v in PSE_PLOTLY_TEMPLATE["layout"].items()
+           if k not in ("yaxis", "yaxis2", "barmode")}
+fig.update_layout(
+    barmode="group",
+    yaxis=dict(title="..."),
+    yaxis2=dict(title="...", overlaying="y", side="right"),
+    **_layout,
+)
+```
+
+**Pattern for single-axis charts** (no collision risk):
+
+```python
+fig.update_layout(**PSE_PLOTLY_TEMPLATE["layout"])
+```
+
+The regression test `test_zero_fill_padder_plotly_layout_no_key_collision` in
+`test_ui_assembly_logic.py` verifies that the template does not gain `barmode`
+or `yaxis2` keys (which would make the strip logic stale).

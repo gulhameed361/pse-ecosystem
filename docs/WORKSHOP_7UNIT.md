@@ -1,6 +1,6 @@
 # 7-Unit Aspen-Style Workshop — Biomass → H₂
 
-**Version:** 1.5.0.dev | **Date:** 2026-05-19 | **Status:** Canonical Workshop (synchronized with v1.5.0.dev multi-tier optimization)
+**Version:** 1.5.2 | **Date:** 2026-05-20 | **Status:** Canonical Workshop (synchronized with v1.5.2)
 
 > Step-by-step build of the validated 7-unit biomass-to-hydrogen chain using the
 > Custom Flowsheet builder. Use this file as the answer key: the input matrices
@@ -60,7 +60,30 @@ storage → gasifier → cyclone → wgs → cooler → psa → comp
 ```
 
 UI headline: **7 units, 6 connection(s).**
-Internal port-variable equalities: **31** (one per shared species + T + P per connection; see `THEORY_REFERENCE.md` §11.8 for the breakdown).
+Internal port-variable equalities: **33** (see `THEORY_REFERENCE.md` §11.8 for the exact breakdown — the final `psa → comp` link contributes 8 equalities because both ports carry T and P).
+
+### Port Translation Layer
+
+The 7-unit chain crosses a physical phase boundary: Unit 1 (`BiomassStorageHF`) exposes
+a **1-species solid stream** (`dry_out.F_Biomass`), while all downstream units handle
+a **6-species syngas mixture** (`H2, CO, CO2, H2O, CH4, N2`).
+
+The connection `storage → gasifier` is a 1-to-1 exact match because
+`gasifier.biomass_in_port` is also a 1-species solid port. The gasifier
+*internally* converts the 1-component Biomass feed into a 6-component syngas outlet.
+No translation layer is needed for the standard chain.
+
+**Zero-fill padder (v1.5.2)** — if you build a *non-standard* path that directly
+connects a 1-species storage outlet to a 6-species inlet (e.g. `storage → cyclone`
+without the gasifier), the assembler now applies an automatic zero-fill padder instead
+of skipping the connection:
+
+- Species present in both ports are wired with equality constraints.
+- Species present only in the inlet are pinned to zero via `extra_equalities`.
+- A non-fatal warning is recorded and displayed in the UI under the connection table.
+
+This allows topologically incomplete flowsheets to be explored without a hard crash,
+while the non-zero warning cues the user that a phase-conversion unit is missing.
 
 ---
 
@@ -99,7 +122,7 @@ For 1.0 kg/s wet Pine Wood feed (Moisture content 0.17 → 0.83 kg/s dry):
 | PSA H₂ enrichment split                   | s_H₂,PSA           | 0.85 to outlet_0         | §11.6                                     |
 | Compressor outlet (P_out / P_in)^((γ−1)/γ)| (P_r)^0.286        | ≈ 3.35                   | §11.7 (γ ≈ 1.4 mixture)                   |
 | Compressor outlet temperature             | T_out,comp         | ≈ 1243 K (multi-species) | §11.7                                     |
-| Total connection equalities (LP)          | n_eq               | 31                       | §11.8                                     |
+| Total connection equalities (LP)          | n_eq               | 33                       | §11.8                                     |
 | User-visible connection count             | n_streams          | 6                        | Builder display                           |
 
 H₂ overall yield depends on the gasifier element balance, the WGS conversion, and the PSA split. Treat this column as the analytical reference; small deviations (< 2 %) from solver output are expected because the LP linearises the equilibrium constraints.

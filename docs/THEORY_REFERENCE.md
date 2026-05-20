@@ -1,6 +1,6 @@
 # Theory Reference
 
-> **v1.5.0.dev** — The mathematical and process-systems-engineering
+> **v1.5.2** — The mathematical and process-systems-engineering
 > underpinnings of the PSE Ecosystem. For the high-level architecture see
 > [`ARCHITECTURE.md`](ARCHITECTURE.md); for code-level details see
 > [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md); for end-user usage see
@@ -1113,22 +1113,53 @@ $$\left(\frac{5 \times 10^6}{101325}\right)^{0.286} \approx 3.35 \implies T_{out
 
 ### §11.8 Connection Topology — Variable Equalities
 
-Each connection in the workshop chain is an equality constraint in the Pyomo LP:
+Each connection in the workshop chain generates one equality constraint per shared variable.
+Let $H(x) = 0$ denote the full set of port-variable equalities; the 7-unit chain produces
+exactly **33 scalar equations**:
 
-| Connection | Type | Variables linked |
-|---|---|---|
-| `storage.dry_out.F_Biomass` = `gasifier.biomass_in.F_Biomass` | Full-port | 1 variable |
-| `gasifier.syngas_out.F_{c}` = `cyclone.inlet.F_{c}` (×6) | Flow-only | 6 variables |
-| `cyclone.outlet_0.F_{c}` = `wgs.syngas_in.F_{c}` (×6) | Flow-only | 6 variables |
-| `wgs.shifted_out.F_{c}` = `cooler.inlet.F_{c}` (×6) | Full-port | 6 variables |
-| `cooler.outlet.F_{c}` = `psa.inlet.F_{c}` (×6) | Full-port | 6 variables |
-| `psa.outlet_0.F_{c}` = `comp.inlet.F_{c}` (×6) | Flow-only | 6 variables |
+$$H(x) = \begin{bmatrix} H_{\text{conn},1}(x) \\ \vdots \\ H_{\text{conn},6}(x) \end{bmatrix} = 0 \quad \in \mathbb{R}^{33}$$
 
-**Total:** 31 connection equality constraints across the 7 units.
+| Connection | Port type (outlet → inlet) | $|H_{\text{conn}}|$ |
+|---|---|:---:|
+| `storage.dry_out` → `gasifier.biomass_in` | 1-comp solid, no T/P → 1-comp solid, no T/P (full-port) | 1 |
+| `gasifier.syngas_out` → `cyclone.inlet` | 6-comp gas, **no T/P** → 6-comp gas, with T/P (flow-only) | 6 |
+| `cyclone.outlet_0` → `wgs.syngas_in` | 6-comp gas, with T/P → 6-comp gas, **no T/P** (flow-only) | 6 |
+| `wgs.shifted_out` → `cooler.inlet` | 6-comp gas, no T/P → 6-comp gas, no T/P (full-port) | 6 |
+| `cooler.outlet` → `psa.inlet` | 6-comp gas, **no T/P** → 6-comp gas, with T/P (flow-only) | 6 |
+| `psa.outlet_0` → `comp.inlet` | 6-comp gas, with T/P → 6-comp gas, with T/P (full-port) | 8 |
+| **Total** | | **33** |
 
-Flow-only connections arise when one port includes T and P variables and the other does not.
-The `build_custom_flowsheet()` flow-only fallback (§5.1 in ARCHITECTURE.md) handles this
-automatically.
+Flow-only connections arise when the outlet port carries no T/P variables but the inlet
+port does (or vice versa). The `build_custom_flowsheet()` fallback in
+`flowsheet_service.py` detects the `ValueError` from `BaseFlowsheet.connect()` and links
+only the 6 `F_` variables.
+
+### §11.9 Component-Mismatch Zero-Fill Padder (v1.5.2)
+
+When a Custom Builder connection links two ports with **different component counts**
+(e.g. a 1-species solid `storage.dry_out` connected directly to a 6-species gas
+`cyclone.inlet`), the flow-only fallback cannot pair variables.  The **zero-fill padder**
+in `build_custom_flowsheet()` handles this by:
+
+1. **Name-matching**: for each species $s$ present in both the outlet and inlet port's
+   `F_` variable set, an equality $x_{\text{out},s} = x_{\text{in},s}$ is added.
+
+2. **Zero-fill**: for each species $s'$ present only in the inlet port (no matching
+   outlet source), the equality $x_{\text{in},s'} = 0$ is added as an
+   `extra_equality` constraint.  This pins the unmatched inlet flow to zero without
+   requiring an explicit unit.
+
+3. **Free surplus**: outlet species with no matching inlet are left as free
+   optimisation variables (they appear only in the outlet unit's own residuals).
+
+Formally, let $\mathcal{A}$ be the outlet species set, $\mathcal{B}$ the inlet species
+set.  The padder adds:
+
+$$x_{\text{out},s} - x_{\text{in},s} = 0 \quad \forall s \in \mathcal{A} \cap \mathcal{B}$$
+$$x_{\text{in},s'} = 0 \quad \forall s' \in \mathcal{B} \setminus \mathcal{A}$$
+
+A user-visible warning (not a fatal skip) is recorded in `fs._conn_warnings` listing
+the number of zero-filled species.
 
 ---
 

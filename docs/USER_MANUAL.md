@@ -1516,6 +1516,29 @@ the spec is restored (under `custom_flowsheet_cfg`) but the `BaseFlowsheet` obje
 is not reconstructed automatically.  Click **Build & Select** in the Custom Assembler
 to rebuild the live flowsheet from the loaded spec before running a solve.
 
+## §22. Custom Flowsheet — Component-Mismatch Zero-Fill (v1.5.2)
+
+When you connect two units in the Custom Assembler and the outlet port has a
+**different number of species** from the inlet port (e.g. a 1-species solid
+storage unit connected directly to a 6-species syngas separator), the system
+now applies an automatic **zero-fill padder** instead of skipping the connection:
+
+- **Species in common** (matched by chemical name) are connected with equality
+  constraints as normal.
+- **Species present only at the inlet** (no matching outlet source) are pinned
+  to zero — the LP solver sees them as zero-flow inlets.
+- A **non-fatal warning** appears in the connection status table below the
+  assembler, listing how many species were zero-filled.
+
+**What this means in practice:** you can explore a shortened chain (e.g.
+`storage → cyclone`) without the gasifier and the app will not crash. However
+the physics will be incorrect (Biomass doesn't flow into H₂ lines), so treat
+such runs as topology exploration only. Insert the correct phase-conversion unit
+(BiomassGasifierHF) for meaningful KPI results.
+
+**The 7-unit workshop chain is unaffected** — every sequential port pair in that
+chain has identical species sets, so the padder is never triggered.
+
 ---
 
 *User Manual v1.5.2 — PSE Ecosystem | Private — University of Surrey*

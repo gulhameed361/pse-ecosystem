@@ -1,4 +1,4 @@
-# PSE Ecosystem — Architecture Blueprint (v1.5.0.dev)
+# PSE Ecosystem — Architecture Blueprint (v1.5.2)
 
 > Status: load-bearing document. The Layer 2 ↔ Layer 3 contract described
 > here is the lever that lets us scale from toy LP flowsheets to MINLP /
@@ -7,7 +7,30 @@
 
 ---
 
-## 0. v1.5.0.dev highlights (Multi-Tier Optimization Engine)
+## 0. v1.5.2 highlights — Dual-Persona Stabilisation
+
+### Port Coherence — Zero-Fill Padder
+
+`build_custom_flowsheet()` in `flowsheet_service.py` now handles **component-count
+mismatches** between connected ports without skipping the connection:
+
+- **Same count, T/P mismatch** → flow-only fallback (unchanged from v1.5.1).
+- **Different count** → zero-fill padder: species-name matching, then
+  `extra_equalities` to pin unmatched inlet species to zero.
+  See `THEORY_REFERENCE.md §11.9` for the formal constraint set.
+
+### UI API — Pandas 2.0 and Plotly template collision
+
+- `df.style.applymap()` → `df.style.map()` throughout `app_streamlit.py`
+  (Pandas 2.0 removed `applymap`).
+- `fig.update_layout(**PSE_PLOTLY_TEMPLATE["layout"])` on multi-axis charts
+  now strips colliding keys (`yaxis`, `yaxis2`, `barmode`) before unpack to
+  prevent `TypeError: got multiple values for keyword argument`.
+  See `DEVELOPER_GUIDE.md §17` for the canonical patterns.
+
+---
+
+## 0b. v1.5.0.dev highlights (Multi-Tier Optimization Engine)
 
 The v1.5 release adds three things on top of the v1.4 three-layer split:
 

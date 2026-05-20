@@ -188,7 +188,57 @@ def test_7_unit_chain_connection_count(seven_unit_fs):
     )
 
 
+def test_7_unit_chain_exact_equality_count(seven_unit_fs):
+    """Both Academic and Industrial persona share the same physical core: 33 equalities."""
+    assert len(seven_unit_fs.connections) == 33, (
+        f"Expected 33 port-variable equalities, got {len(seven_unit_fs.connections)}. "
+        f"Warnings: {seven_unit_fs._conn_warnings}"
+    )
+
+
 def test_7_unit_chain_no_fatal_warnings(seven_unit_fs):
     fatal = [w for w in seven_unit_fs._conn_warnings
              if "mismatch" in w.lower() or "skipped" in w.lower()]
     assert fatal == [], f"Fatal connection warnings found: {fatal}"
+
+
+# ── Zero-fill padder tests ─────────────────────────────────────────────────────
+
+def test_zero_fill_padder_connects_matched_species():
+    """Storage (1 comp: Biomass) → SeparatorHF (6 comps) triggers padder.
+    Matched species are connected; unmatched inlet species are zero-filled."""
+    cfg = {
+        "units": [
+            {"type": "BiomassStorageHF", "id": "storage", "params": {}},
+            {
+                "type": "SeparatorHF", "id": "cyclone",
+                "params": {"components": SYNGAS_6, "n_outlets": 2},
+            },
+        ],
+        "connections": [{"from_unit": "storage", "to_unit": "cyclone"}],
+    }
+    fs = build_custom_flowsheet(cfg)
+    # No connection is skipped — padder must have fired.
+    skipped = [w for w in fs._conn_warnings if "skipped" in w.lower()]
+    assert skipped == [], f"Connection skipped instead of padded: {skipped}"
+    # Biomass doesn't match any syngas species → 0 connections, 6 zero-fills.
+    padded_warns = [w for w in fs._conn_warnings if "padded" in w.lower()]
+    assert padded_warns, "Expected at least one 'padded' warning from zero-fill path"
+    # All 6 inlet F_ vars should be pinned to 0 via extra_equalities.
+    assert len(fs.extra_equalities) == 6, (
+        f"Expected 6 zero-fill equalities, got {len(fs.extra_equalities)}"
+    )
+
+
+def test_zero_fill_padder_plotly_layout_no_key_collision():
+    """PSE_PLOTLY_TEMPLATE['layout'] must not contain keys that collide with
+    explicit update_layout() kwargs in _page_scenario_manager."""
+    from pse_ecosystem.ui.flowsheet_service import PSE_PLOTLY_TEMPLATE
+    layout = PSE_PLOTLY_TEMPLATE["layout"]
+    collision_keys = {"barmode", "yaxis2"}
+    # 'yaxis' IS in the template but is stripped via _sc_layout; verify it's there so
+    # the collision-strip logic stays necessary and correct.
+    assert "yaxis" in layout, "Template lost 'yaxis' key — strip logic is stale"
+    assert not collision_keys & set(layout), (
+        f"Template gained a key that collides with scenario chart: {collision_keys & set(layout)}"
+    )

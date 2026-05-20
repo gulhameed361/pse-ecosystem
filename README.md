@@ -30,20 +30,23 @@
 
 ---
 
-## What's new in v1.5.2 — Bug-fix + Scenario Analysis Enhancement
+## What's new in v1.5.2 — Dual-Persona Stabilisation + Scenario Analysis Enhancement
 
-- **Custom flowsheet crash fixed.** Building a custom flowsheet via the assembler and then
-  interacting with any page control raised `TypeError: Object of type BaseFlowsheet is not
-  JSON serializable`.  Root cause: `custom_flowsheet` session state held the Python object;
-  it is now stored separately as `custom_flowsheet_cfg` (a JSON-safe dict).  As a cascade,
-  the Objective Function selector tab and the Pre-solve Validator now work correctly for
-  custom flowsheets.
-- **Scenario Manager & Analysis.** The Scenario Manager page is renamed and gains a new
-  **Sensitivity Analysis** section: pick any captured scenario, choose a parameter (economic
-  or engineering), set a range, and visualise how LCOH / NPV / KPIs respond — without
-  leaving the page.  Economic sweeps complete in milliseconds (no re-solve);
-  engineering sweeps run a full LP per point.
-- **431 tests, 20/20 UI audit checks** — all green.
+- **Pandas 2.0 Styler fixed.** `df.style.applymap()` → `df.style.map()` in the Industrial
+  ASME safety table; resolves `AttributeError` on Pandas ≥ 2.0.
+- **Plotly keyword collision fixed.** Scenario Manager dual-bar chart now strips colliding
+  template keys (`yaxis`, `barmode`) before `update_layout()` unpack; resolves `TypeError`.
+- **Zero-fill port padder.** Custom Flowsheet Builder no longer skips connections between
+  ports with different component counts. Unmatched inlet species are zero-filled; a
+  non-fatal warning is displayed. Enables exploration of topologically incomplete chains.
+- **Exact equality count confirmed: 33.** The 7-unit workshop chain produces exactly 33
+  port-variable equalities in both Academic and Industrial personas (corrects stale 31
+  in prior docs). Locked by new regression test.
+- **Custom flowsheet crash fixed.** `BaseFlowsheet` object no longer serialised directly;
+  `custom_flowsheet_cfg` session-state key holds the JSON-safe spec dict.
+- **Scenario Manager & Analysis.** Renamed page gains a new **Sensitivity Analysis**
+  section for economic and engineering sweeps.
+- **434 tests, 20/20 UI audit checks** — all green.
 
 ## What's new in v1.5.1 — Industrial Decision Support
 

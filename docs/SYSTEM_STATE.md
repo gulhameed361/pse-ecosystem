@@ -2,14 +2,46 @@
 
 **Version:** 1.5.2
 **Date:** 2026-05-20
-**Status:** v1.5.2 — Bug-fix + Scenario Analysis Enhancement. 431 pytest + 20 UI audit = 451 total checks.
+**Status:** v1.5.2 — Dual-Persona Stabilisation + Scenario Analysis Enhancement. 434 pytest + 20 UI audit = 454 total checks.
 
 ---
 
-## What's New in v1.5.2 — Bug-fix + Scenario Analysis Enhancement
+## What's New in v1.5.2 — Dual-Persona Stabilisation
 
-*431 pytest pass, 0 skipped, 0 failures.  20/20 ui_audit pass.  No new test files
-(fixes are UI-path bugs; existing layer-compliance tests confirm clean state).*
+*434 pytest pass, 0 skipped, 0 failures.  20/20 ui_audit pass.*
+
+### Bug Fix A — Pandas 2.0 `applymap` AttributeError (Industrial Persona)
+
+**Root cause**: `df_safety.style.applymap()` in `_render_industrial_solver_view`
+raises `AttributeError: 'Styler' object has no attribute 'applymap'` on Pandas ≥ 2.0.
+
+**Fix**: Changed to `df_safety.style.map()` (line 1616 of `app_streamlit.py`).
+
+### Bug Fix B — Plotly `yaxis` Keyword Collision (Scenario Manager)
+
+**Root cause**: `fig_sc.update_layout(yaxis=..., **PSE_PLOTLY_TEMPLATE["layout"])`
+in `_page_scenario_manager` raised `TypeError: got multiple values for keyword
+argument 'yaxis'` because the template already contains `"yaxis"`.
+
+**Fix**: Compute `_sc_layout` by excluding `"yaxis"`, `"yaxis2"`, and `"barmode"`
+from the template before unpacking. Documented in `DEVELOPER_GUIDE.md §17.2`.
+
+### Bug Fix C — Component-Mismatch Port Connection Skip
+
+**Root cause**: `build_custom_flowsheet()` silently skipped connections between
+ports with different component counts (e.g. 1-species storage → 6-species separator),
+recording a fatal warning.
+
+**Fix**: Zero-fill padder (v1.5.2) — matches species by name, pads unmatched inlet
+species to zero via `extra_equalities`. Documented in `THEORY_REFERENCE.md §11.9`.
+New tests: `test_zero_fill_padder_connects_matched_species` and
+`test_7_unit_chain_exact_equality_count` (confirms 33 equalities).
+
+### Bug Fix D — Version Drift: `pyproject.toml` vs `__init__.py`
+
+`pyproject.toml` was pinned at `1.5.0.dev0` while `__init__.py` exported `1.5.2`.
+Updated `pyproject.toml` to `1.5.2`; test renamed from `test_version_is_v150dev`
+to `test_version_is_v152`.
 
 ### Bug Fix 1 — Custom Flowsheet JSON Serialization Crash
 

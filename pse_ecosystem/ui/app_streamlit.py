@@ -1613,7 +1613,7 @@ def _render_industrial_solver_view(st, result, flowsheet) -> None:
             return f"color: {_STATUS_COLOR.get(val, 'grey')}; font-weight: bold"
 
         st.dataframe(
-            df_safety.style.applymap(_color_status, subset=["Status"]),
+            df_safety.style.map(_color_status, subset=["Status"]),
             use_container_width=True,
             hide_index=True,
         )
@@ -2584,13 +2584,15 @@ def _page_scenario_manager() -> None:
                                 y=[v / 1e6 if not math.isnan(v) else float("nan")
                                    for v in npv_vals],
                                 marker_color="#50c878", yaxis="y2"))
+        _sc_layout = {k: v for k, v in PSE_PLOTLY_TEMPLATE["layout"].items()
+                      if k not in ("yaxis", "yaxis2", "barmode")}
         fig_sc.update_layout(
             barmode="group",
             title="LCOH and NPV comparison",
             yaxis=dict(title="LCOH [USD/kg H₂]"),
             yaxis2=dict(title="NPV [M USD]", overlaying="y", side="right"),
             height=380,
-            **PSE_PLOTLY_TEMPLATE["layout"],
+            **_sc_layout,
         )
         st.plotly_chart(fig_sc, use_container_width=True)
 
