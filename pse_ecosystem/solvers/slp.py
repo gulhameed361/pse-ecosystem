@@ -167,12 +167,19 @@ class SLPConfig:
     """
 
     scale_rows: bool = False
-    """v1.5.0.dev-AUDIT4 (#2): per-residual-row scaling on every LP build.
-    Applies ``1/max(‖J_row‖∞, 1)`` to each row of J and f0 so the LP solver
-    sees well-balanced constraint magnitudes.  Off by default to preserve
-    v1.5 LP topology bit-for-bit; opt in for ill-conditioned flowsheets
-    where one row's magnitude dwarfs the others (mixing element balances
-    at 100 mol/s with equilibrium residuals at 1e-3 mol²/s)."""
+    """Per-residual-row scaling on every LP build (opt-in).
+
+    When True, applies ``1/max(‖J_row‖∞, 1)`` to each row of J and f0 so the
+    LP solver sees well-balanced constraint magnitudes.  Beneficial for
+    flowsheets that mix element-balance rows (~100 mol/s) with equilibrium-
+    residual rows (~1e-3 mol²/s), causing a 5-order-of-magnitude difference
+    that degrades LP solver accuracy.
+
+    Left False by default because it changes the LP solution trajectory —
+    existing calibrated test cases (including the 10-unit grand challenge) were
+    tuned without scaling.  Enable explicitly for new ill-conditioned flowsheets
+    where one residual row's magnitude dwarfs the others:
+        SLPConfig(scale_rows=True, ...)"""
 
 
 @dataclass

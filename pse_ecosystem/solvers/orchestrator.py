@@ -203,8 +203,8 @@ class Orchestrator:
             nlp_result.message = f"[ADAPTIVE stage 2/3] {nlp_result.message}"
             if nlp_result.converged:
                 return nlp_result
-        except Exception:  # noqa: BLE001
-            pass  # NLP unavailable — proceed directly to TRF
+        except (ImportError, ModuleNotFoundError, RuntimeError, AttributeError):
+            pass  # NLP driver unavailable or scipy missing — proceed to TRF
 
         # Stage 3: Trust-Region (most robust — uses filter globalization)
         from pse_ecosystem.solvers.trust_region_driver import TrustRegionDriver, TRFConfig

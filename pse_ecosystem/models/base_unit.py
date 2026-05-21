@@ -24,7 +24,10 @@ Layer 2 must never import this module — it talks to units exclusively through
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from enum import Enum
 from typing import Dict, List, Tuple
+
+__all__ = ["BaseUnit", "OPEXConvention"]
 
 import numpy as np
 
@@ -35,6 +38,30 @@ from pse_ecosystem.core.contracts import (
     StreamPort,
     UnitResponse,
 )
+
+
+class OPEXConvention(str, Enum):
+    """Governs how ``objective_contribution()`` coefficients map to USD/yr.
+
+    Inheriting from ``str`` keeps the enum values equal to their string
+    literals so existing comparisons such as ``== "USD_per_year"`` still work.
+    """
+
+    USD_PER_YEAR = "USD_per_year"
+    """Coefficient × variable_value is already in USD/yr.  This is the default
+    and covers units that embed ``electricity_price × operating_hours`` in
+    their objective coefficient (e.g. PEMToy, ElectrolyserHF)."""
+
+    USD_PER_SECOND = "USD_per_second"
+    """Coefficient × variable_value is USD/s (rate basis).
+    ``opex_per_year()`` multiplies by ``3600 × operating_hours`` to annualise.
+    Used by units whose decision variable is a mass or molar flow rate and
+    whose coefficient is a per-unit utility price (e.g. BiomassGasifierHF)."""
+
+    YIELD_COEFFICIENT = "yield_coefficient"
+    """Coefficient is an LP yield/penalty, not an operating cost.
+    ``opex_per_year()`` returns 0 for these units (e.g. H2SeparatorPSA
+    where ``−1.0`` on the H₂ outlet flow maximises recovery)."""
 
 
 _DEFAULT_FD_STEP = 1e-6
@@ -54,17 +81,13 @@ class BaseUnit(ABC):
     #: Optional unit-supplied trust-region radius (in variable units).
     trust_region: float | None = None
 
-    #: OPEX convention for ``objective_contribution()`` coefficients.
-    #: ``"USD_per_year"`` (default) — coefficient × variable_value = USD/yr.
-    #: ``"USD_per_second"`` — coefficient × variable_value = USD/s (rate basis,
-    #:   typically because the variable is a flow in kg/s and the coefficient
-    #:   is a per-unit price in USD/kg).  ``opex_per_year(x, hours)`` multiplies
-    #:   by 3600 × hours to convert to USD/yr.
-    #: ``"yield_coefficient"`` — coefficient is a yield/penalty for the LP
-    #:   objective (e.g., −1 to maximise an outlet flow) and does NOT represent
-    #:   an operating cost; ``opex_per_year`` returns 0 for these units.
-    #: See v1.5.0.dev-AUDIT2 (Layer 3 audit, L3-1) for the rationale.
-    _OPEX_CONVENTION: str = "USD_per_year"
+    #: OPEX convention governing how ``objective_contribution()`` coefficients
+    #: translate to annual operating cost.  See :class:`OPEXConvention` for
+    #: full semantics.  Subclasses override at class level:
+    #:   ``_OPEX_CONVENTION = OPEXConvention.USD_PER_SECOND``
+    #: String literals ("USD_per_year" etc.) remain accepted for
+    #: backwards-compatibility because ``OPEXConvention`` inherits ``str``.
+    _OPEX_CONVENTION: OPEXConvention = OPEXConvention.USD_PER_YEAR
 
     # ── Abstract interface ────────────────────────────────────────────────
 
@@ -131,8 +154,9 @@ class BaseUnit(ABC):
     def control_hooks(self) -> Dict[str, str]:
         """Optional control pairing: {controlled_var: manipulated_var}.
 
-        Returns an empty dict by default.  For display and documentation
-        only in v0.2 — not consumed by any solver path.
+        Returns an empty dict by default.  Informational only — not consumed
+        by any solver path.  Override to declare pairing for documentation or
+        future control-loop integration.
         """
         return {}
 

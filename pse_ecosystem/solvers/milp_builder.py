@@ -203,7 +203,7 @@ def extract_milp_solution(model: pyo.ConcreteModel) -> tuple[Dict[str, float], D
 
 
 def select_milp_solver(preferred: Optional[str] = None) -> pyo.SolverFactory:
-    candidates = [preferred] if preferred else ["cbc", "glpk", "appsi_highs", "highs"]
+    candidates = [preferred] if preferred else ["appsi_highs", "highs", "cbc", "glpk"]
     for name in candidates:
         if not name:
             continue

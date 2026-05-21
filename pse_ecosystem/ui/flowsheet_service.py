@@ -346,6 +346,43 @@ class ProjectEconomicsConfig:
         """Annual electricity cost coefficient [USD / kW / yr]."""
         return self.electricity_price_USD_per_kWh * self.operating_hours_per_year
 
+    # CAPEX scaling coefficient for linear-capex electrolysers [USD/kW].
+    # NREL 2024 reference: PEM electrolysis system ~1 200 USD/kW (stack + BoP).
+    pem_capex_USD_per_kW: float = 1_200.0
+
+
+@dataclass
+class ProductionConfig:
+    """Optional product-price model enabling meaningful NPV / IRR computation.
+
+    When passed to ``compute_project_economics()``, annual revenue is computed
+    as ``annual_production × product_price``, allowing the DCF model to
+    calculate a cash flow that is not purely negative.
+
+    All price fields default to 0, producing the pre-v1.5.3 behaviour
+    (revenue = 0, NPV always negative, IRR always NaN).  Set at least one
+    price to enable revenue-side economics.
+
+    Parameters
+    ----------
+    h2_price_USD_per_kg :
+        Green hydrogen sale price [USD/kg H₂].
+        IRENA 2023 green H₂ cost target: 2–4 USD/kg by 2030.
+    electricity_sale_price_USD_per_kWh :
+        Electricity export price [USD/kWh].
+        Used when the flowsheet exports power (e.g. CHP or gas-to-power).
+    heat_sale_price_USD_per_GJ :
+        Heat/steam export price [USD/GJ].
+    methane_price_USD_per_GJ :
+        Synthetic methane (SNG) sale price [USD/GJ].
+        1 GJ ≈ 26.9 kg CH₄ at LHV (50 MJ/kg).
+    """
+
+    h2_price_USD_per_kg: float = 0.0
+    electricity_sale_price_USD_per_kWh: float = 0.0
+    heat_sale_price_USD_per_GJ: float = 0.0
+    methane_price_USD_per_GJ: float = 0.0
+
 
 # ── SafetyMarginRow — post-solve engineering safety check result ──────────────
 
@@ -388,6 +425,103 @@ OBJECTIVE_TIERS: Dict[str, List[str]] = {
         "Minimize LCOE (Levelized Cost of Energy)",
     ],
 }
+
+# Objective modes where the LP proxy is TAC minimisation but the true metric
+# (NPV, IRR) is evaluated post-solve from KPIs.  The UI should display a
+# banner for these so the analyst knows the LP is not directly optimising the
+# labelled metric.
+OBJECTIVE_LP_PROXY_NOTE: Dict[str, str] = {
+    "Maximize NPV (Net Present Value)": (
+        "The LP optimises a **TAC proxy** (CAPEX annualisation + OPEX). "
+        "True NPV is computed post-solve and requires a revenue model "
+        "(set product prices in ProductionConfig)."
+    ),
+    "Maximize IRR (Internal Rate of Return)": (
+        "The LP optimises a **TAC proxy** (CAPEX annualisation + OPEX). "
+        "True IRR is computed post-solve and requires a revenue model "
+        "(set product prices in ProductionConfig)."
+    ),
+}
+
+
+# ── Topology helpers ─────────────────────────────────────────────────────────
+
+def _topological_unit_order(flowsheet: "BaseFlowsheet") -> List[str]:
+    """Return unit_ids in feed-forward (topological) order.
+
+    Uses Kahn's algorithm on the directed connection graph.  Units with no
+    resolved ordering (cycles or isolated units) are appended in their
+    declaration order.  The result is used to identify the most-downstream
+    unit without relying on lexicographic naming.
+    """
+    unit_ids: List[str] = [u.unit_id for u in flowsheet.units]
+    # Build adjacency: predecessor count and successor sets.
+    in_degree: Dict[str, int] = {uid: 0 for uid in unit_ids}
+    successors: Dict[str, List[str]] = {uid: [] for uid in unit_ids}
+    for conn in getattr(flowsheet, "connections", []):
+        src = getattr(conn, "var_a", "").split(".", 1)[0]
+        tgt = getattr(conn, "var_b", "").split(".", 1)[0]
+        if src == tgt or src not in in_degree or tgt not in in_degree:
+            continue
+        if tgt not in successors.get(src, []):
+            successors[src].append(tgt)
+            in_degree[tgt] += 1
+
+    queue = [uid for uid in unit_ids if in_degree[uid] == 0]
+    order: List[str] = []
+    while queue:
+        node = queue.pop(0)
+        order.append(node)
+        for succ in successors.get(node, []):
+            in_degree[succ] -= 1
+            if in_degree[succ] == 0:
+                queue.append(succ)
+    # Append any remaining (cycle members) in declaration order.
+    remaining = [uid for uid in unit_ids if uid not in set(order)]
+    return order + remaining
+
+
+def _most_downstream_h2_outlet(
+    flowsheet: "BaseFlowsheet",
+    all_vars: List[str],
+) -> Optional[str]:
+    """Return the H₂ outlet variable of the most-downstream unit in the chain.
+
+    Walks the topologically sorted unit list from last to first, looking for a
+    unit that has an F_H2 flow variable on an outlet-like port.  Falls back to
+    the lexicographically last variable if topology gives no clear answer.
+    """
+    def _is_h2_outlet_var(v: str) -> bool:
+        parts = v.split(".")
+        return (
+            len(parts) >= 3
+            and parts[-1].lower() == "f_h2"
+            and any(tag in parts[1].lower() for tag in ("out", "product", "h2", "vapor"))
+        )
+
+    h2_vars = [v for v in all_vars if _is_h2_outlet_var(v)]
+    if not h2_vars:
+        # Widen fallback: any variable ending in .F_H2
+        h2_vars = [v for v in all_vars if v.split(".")[-1].lower() == "f_h2"]
+    if not h2_vars:
+        return None
+
+    # Build set of unit_ids that have H₂ outlet variables.
+    h2_unit_vars: Dict[str, List[str]] = {}
+    for v in h2_vars:
+        uid = v.split(".", 1)[0]
+        h2_unit_vars.setdefault(uid, []).append(v)
+
+    # Walk topological order from last to find the most-downstream H₂ unit.
+    topo = _topological_unit_order(flowsheet)
+    for uid in reversed(topo):
+        if uid in h2_unit_vars:
+            candidates = h2_unit_vars[uid]
+            # Prefer "outlet" tag over others.
+            outlet_cands = [v for v in candidates if "outlet" in v.split(".", 2)[1].lower()]
+            return outlet_cands[0] if outlet_cands else candidates[0]
+
+    return sorted(h2_vars)[-1]  # lexicographic last as final fallback
 
 
 # ── Type-specific Unit ID suggestions ────────────────────────────────────────
@@ -442,7 +576,9 @@ def build_objective_extra(
 
     # ── Energy penalty ───────────────────────────────────────────────────────
     # Add electricity price × hours on any decision variable representing
-    # shaft work or electrical power draw.
+    # shaft work or electrical power draw.  Use suffix matching (preceded by
+    # a dot) to avoid false positives on variables that merely contain these
+    # strings (e.g. "net_electricity_kw_limit").
     _energy_modes = (
         "Minimize Energy",
         "Minimize TAC",
@@ -452,15 +588,18 @@ def build_objective_extra(
         "Maximize IRR (Internal Rate of Return)",
         "Minimize LCOE (Levelized Cost of Energy)",
     )
+    _energy_suffixes = (".w_shaft", ".w_elec_kw", ".electricity_kw",
+                        ".w_net_kw", ".power_kw")
     if mode in _energy_modes:
         for v in all_vars:
             lv = v.lower()
-            if any(k in lv for k in ("w_shaft", "w_elec_kw", "electricity_kw")):
+            if any(lv.endswith(sfx) for sfx in _energy_suffixes):
                 obj[v] = obj.get(v, 0.0) + energy_coeff
 
     # ── Annualised CAPEX for linear-capex units ───────────────────────────────
-    # ElectrolyserHF has strictly linear capex: 700 USD/kW.
-    # Annualised = 700 × CRF per kW → inject on the W_elec_kW decision variable.
+    # ElectrolyserHF has strictly linear capex: capex_coeff USD/kW (default 1200
+    # per NREL 2024 estimate, configurable via econ_config.pem_capex_USD_per_kW).
+    # Annualised = capex_coeff × CRF per kW → inject on the W_elec_kW variable.
     # SSLW-correlated units (Compressor, HXN, vessels) have non-linear capex;
     # their costs are captured post-solve in kpis() and the Excel report.
     _capex_modes = (
@@ -470,29 +609,28 @@ def build_objective_extra(
         "Maximize IRR (Internal Rate of Return)",
     )
     if mode in _capex_modes:
+        _pem_capex = (
+            econ_config.pem_capex_USD_per_kW if econ_config is not None else 1_200.0
+        )
+        from pse_ecosystem.models.dac.electrolyser_hf import ElectrolyserHF
         for unit in flowsheet.units:
-            if type(unit).__name__ == "ElectrolyserHF":
+            if isinstance(unit, ElectrolyserHF):
                 w_var = next(
                     (v for v in all_vars
-                     if unit.unit_id in v and "w_elec_kw" in v.lower()),
+                     if unit.unit_id in v and v.lower().endswith(".w_elec_kw")),
                     None,
                 )
                 if w_var:
-                    obj[w_var] = obj.get(w_var, 0.0) + 700.0 * crf  # $70/kW/yr
+                    obj[w_var] = obj.get(w_var, 0.0) + _pem_capex * crf
 
     # ── H₂ yield maximisation ────────────────────────────────────────────────
-    # Negative coefficient (−1.0) on the last H₂ outlet flow variable in the chain.
-    # "Last" is determined by lexicographic sort; for sequential chains this gives
-    # the most downstream H₂ variable.
-    def _is_h2_outlet(v: str) -> bool:
-        parts = v.split(".")
-        return len(parts) >= 3 and parts[-1].lower() == "f_h2" and "out" in parts[1].lower()
-
+    # Negative coefficient (−1.0) on the H₂ outlet flow of the most-downstream
+    # unit in the connection graph (topology-aware, not lexicographic).
     if mode in ("Maximize H₂ Yield", "Minimize LCOH (Levelized Cost of H₂)",
                 "Minimize Specific Energy Consumption"):
-        h2_candidates = sorted(v for v in all_vars if _is_h2_outlet(v))
-        if h2_candidates:
-            obj[h2_candidates[-1]] = obj.get(h2_candidates[-1], 0.0) - 1.0
+        best_h2_var = _most_downstream_h2_outlet(flowsheet, all_vars)
+        if best_h2_var is not None:
+            obj[best_h2_var] = obj.get(best_h2_var, 0.0) - 1.0
 
     # ── Carbon intensity minimisation ────────────────────────────────────────
     # Penalise CO₂ outlet flows by the carbon tax rate scaled to an annual cost.
@@ -512,10 +650,12 @@ def build_objective_extra(
     # Minimise cost per unit of electrical output: same energy penalty as
     # "Minimize Energy" (numerator proxy); power outlet variables get a negative
     # coefficient to reward high output (denominator proxy).
+    _power_out_suffixes = (".w_net_kw", ".power_out_kw", ".w_turbine_kw",
+                           ".total_useful_output_kw")
     if mode == "Minimize LCOE (Levelized Cost of Energy)":
         for v in all_vars:
             lv = v.lower()
-            if any(k in lv for k in ("w_net_kw", "power_out_kw", "w_turbine_kw")):
+            if any(lv.endswith(sfx) for sfx in _power_out_suffixes):
                 obj[v] = obj.get(v, 0.0) - energy_coeff
 
     return obj, False
@@ -550,11 +690,7 @@ def _aggregate_opex_annual_USD(flowsheet: "BaseFlowsheet",
     total = 0.0
     for unit in flowsheet.units:
         try:
-            # Pass hours; fall back if a v1.4 unit hasn't been migrated.
             total += float(unit.opex_per_year(solution_x, operating_hours))
-        except TypeError:
-            # Backward-compat shim for any caller still on the v1.4 (x,) signature.
-            total += float(unit.opex_per_year(solution_x))
         except Exception:
             continue
     return total
@@ -588,19 +724,21 @@ def _extract_h2_kg_per_s(kpis: Dict[str, float],
 
 
 def _extract_power_out_kW(kpis: Dict[str, float]) -> float:
-    """Find net electrical output in kW.
+    """Find total net electrical output across all power-producing units [kW].
 
-    Priority order:
-      1. KPI keys ending in ``W_elec_kW`` (CHP, PEM — note PEM consumes power
-         so this can be negative if PEM dominates).
-      2. KPI keys ending in ``total_useful_output_kW`` (CHP combined output).
-      3. KPI keys ending in ``power_out_kW`` / ``W_net_kW`` (forward-compat).
+    Sums across all matching KPI keys so multi-generator flowsheets (e.g. two
+    CHP units) report their combined output rather than the single largest unit.
+
+    Priority order (tried in sequence; first non-empty set wins):
+      1. KPI keys ending in ``total_useful_output_kW`` (CHP combined output).
+      2. KPI keys ending in ``power_out_kW`` / ``W_net_kW`` (forward-compat).
+      3. KPI keys ending in ``W_elec_kW`` (PEM consumes power so this can be
+         negative when electrolysers dominate — included as last resort).
     """
     for suffix in ("total_useful_output_kW", "power_out_kW", "W_net_kW"):
         vals = [v for k, v in kpis.items() if k.endswith(suffix)]
         if vals:
-            return max(vals)
-    # Fallback: sum any W_elec_kW; this favours generation-dominant flowsheets.
+            return sum(vals)
     elec = [v for k, v in kpis.items() if k.endswith("W_elec_kW")]
     return sum(elec) if elec else 0.0
 
@@ -611,6 +749,7 @@ def compute_project_economics(
     kpis: Dict[str, float],
     econ_config: Optional[ProjectEconomicsConfig] = None,
     obj_config: Optional[Dict] = None,
+    prod_config: Optional["ProductionConfig"] = None,
 ) -> List[Dict]:
     """Compute project-economics rows for the Excel 'Project Economics' sheet.
 
@@ -621,11 +760,14 @@ def compute_project_economics(
 
     Parameters
     ----------
-    flowsheet  : ``BaseFlowsheet`` that was solved (provides per-unit capex/opex).
-    solution_x : ``SolveResult.x`` — the solution dictionary.
-    kpis       : ``SolveResult.kpis`` — aggregated unit KPIs.
-    econ_config: ``ProjectEconomicsConfig`` instance (uses defaults when None).
-    obj_config : Raw ``objective_config`` dict from session state (metadata only).
+    flowsheet   : ``BaseFlowsheet`` that was solved (provides per-unit capex/opex).
+    solution_x  : ``SolveResult.x`` — the solution dictionary.
+    kpis        : ``SolveResult.kpis`` — aggregated unit KPIs.
+    econ_config : ``ProjectEconomicsConfig`` instance (uses defaults when None).
+    obj_config  : Raw ``objective_config`` dict from session state (metadata only).
+    prod_config : Optional ``ProductionConfig`` with product sale prices.
+                  When None (default), revenue is zero and NPV/IRR are flagged
+                  as "N/A — no revenue model" in the returned rows.
 
     Returns
     -------
@@ -638,6 +780,13 @@ def compute_project_economics(
         → × sslw_cepci_factor(target_year)   [target-year USD]
         → × lang_factor                      [installed cost USD]
         → × CRF(r, N)                        [USD/yr]
+
+    The revenue pipeline (when prod_config is provided):
+      H₂ revenue    = h2_kg_per_s × 3600 × op_hours × h2_price_USD_per_kg
+      Power revenue = power_kW × op_hours × electricity_sale_price_USD_per_kWh
+      annual_CF     = revenue − opex_annual  (pre-tax)
+      NPV           = −installed_capex + CF × PVF(r, N)
+      IRR           = r* such that NPV(r*) = 0
     """
     from pse_ecosystem.models.costing.economic_engine import EconomicEngine
 
@@ -665,11 +814,23 @@ def compute_project_economics(
         if power_kw > 0 else float("nan")
     )
     installed = capex_annual / ee.capital_recovery_factor()
-    # Cash flow assumption (v1.5.0.dev): pre-tax, treating annual OPEX as a net
-    # outflow and ignoring product revenue (the LP doesn't know prices).  v1.6
-    # will add a revenue stream + after-tax DCF using cfg.tax_rate/inflation.
-    npv = ee.npv(annual_net_cashflow=-opex_annual, initial_capex=installed)
-    irr = ee.irr(initial_capex=installed, annual_net_cashflow=-opex_annual)
+
+    # ── Revenue & DCF (requires ProductionConfig with non-zero prices) ───────
+    # Revenue is zero when prod_config is None or all prices are zero.
+    # In that case NPV is always negative (pure-cost plant) and IRR is NaN —
+    # both are labelled "N/A (no revenue)" to avoid misleading the analyst.
+    pc = prod_config
+    revenue_annual = 0.0
+    has_revenue = False
+    if pc is not None:
+        h2_rev  = h2_kg_s * 3600.0 * cfg.operating_hours_per_year * pc.h2_price_USD_per_kg
+        pwr_rev = power_kw * cfg.operating_hours_per_year * pc.electricity_sale_price_USD_per_kWh
+        revenue_annual = h2_rev + pwr_rev
+        has_revenue = revenue_annual > 0.0
+
+    annual_net_cashflow = revenue_annual - opex_annual
+    npv = ee.npv(annual_net_cashflow=annual_net_cashflow, initial_capex=installed)
+    irr = ee.irr(initial_capex=installed, annual_net_cashflow=annual_net_cashflow)
 
     import math
 
@@ -680,11 +841,13 @@ def compute_project_economics(
             return float("inf")
         return round(r * 100.0, 4)
 
+    _na = "N/A (no revenue model)"
+
     return [
         {"Metric": "Plant Life",            "Value": cfg.plant_life_yr,                          "Unit": "years"},
         {"Metric": "Discount Rate (WACC)",  "Value": round(cfg.interest_rate * 100, 2),          "Unit": "%"},
-        {"Metric": "Tax Rate",              "Value": round(cfg.tax_rate * 100, 2),               "Unit": "% (informational)"},
-        {"Metric": "Inflation Rate",        "Value": round(cfg.inflation_rate * 100, 2),         "Unit": "% (informational)"},
+        {"Metric": "Tax Rate",              "Value": round(cfg.tax_rate * 100, 2),               "Unit": "% (informational — pre-tax model)"},
+        {"Metric": "Inflation Rate",        "Value": round(cfg.inflation_rate * 100, 2),         "Unit": "% (informational — pre-tax model)"},
         {"Metric": "Target Year (CEPCI)",   "Value": cfg.target_year,                            "Unit": "—"},
         {"Metric": "CEPCI Escalation",      "Value": round(ee.sslw_cepci_factor(), 4),           "Unit": "× CE500"},
         {"Metric": "Lang Factor",           "Value": cfg.lang_factor,                            "Unit": "—"},
@@ -697,13 +860,15 @@ def compute_project_economics(
         {"Metric": "Installed CAPEX",       "Value": round(installed, 2),                        "Unit": "USD"},
         {"Metric": "Annualised CAPEX",      "Value": round(capex_annual, 2),                     "Unit": "USD/yr"},
         {"Metric": "Annual OPEX",           "Value": round(opex_annual, 2),                      "Unit": "USD/yr"},
+        {"Metric": "Annual Revenue",        "Value": round(revenue_annual, 2) if has_revenue else _na, "Unit": "USD/yr"},
+        {"Metric": "Annual Net Cash Flow",  "Value": round(annual_net_cashflow, 2) if has_revenue else _na, "Unit": "USD/yr"},
         {"Metric": "TAC",                   "Value": round(capex_annual + opex_annual, 2),       "Unit": "USD/yr"},
         {"Metric": "H₂ Production",         "Value": round(h2_kg_s, 6),                          "Unit": "kg/s"},
         {"Metric": "Power Output",          "Value": round(power_kw, 4),                         "Unit": "kW"},
         {"Metric": "LCOH",                  "Value": round(lcoh, 6) if not math.isnan(lcoh) else float("nan"), "Unit": "USD/kg H₂"},
         {"Metric": "LCOE",                  "Value": round(lcoe, 6) if not math.isnan(lcoe) else float("nan"), "Unit": "USD/kWh"},
-        {"Metric": "NPV",                   "Value": round(npv, 2),                              "Unit": "USD"},
-        {"Metric": "IRR",                   "Value": _fmt_irr(irr),                              "Unit": "%"},
+        {"Metric": "NPV",                   "Value": round(npv, 2) if has_revenue else _na,      "Unit": "USD"},
+        {"Metric": "IRR",                   "Value": _fmt_irr(irr) if has_revenue else _na,      "Unit": "%"},
         {"Metric": "Objective Mode",        "Value": oc.get("mode", "—"),                        "Unit": "—"},
     ]
 
@@ -738,49 +903,74 @@ any plotly figure.
 
 def build_sankey_data(flowsheet: "BaseFlowsheet",
                        solution_x: Dict[str, float]) -> Dict[str, List]:
-    """Construct node + link arrays for a Plotly Sankey diagram of flows.
+    """Construct node + link arrays for a Plotly Sankey diagram of molar flows.
+
+    Only ``F_*`` (molar/mass flow) variables are included.  Temperature and
+    pressure variables are intensive quantities whose numerical magnitude
+    (300–1200 K, 1e4–5e6 Pa) would swamp the actual flow values and make
+    the diagram quantitatively meaningless.
+
+    Multiple connections between the same unit pair (one per species) are
+    aggregated into a single Sankey link showing the total molar flow and
+    listing the components in the hover label.
 
     Returns a dict with keys:
-        ``labels``  : node names (one per unit)
-        ``sources`` : source-node indices for each link
-        ``targets`` : target-node indices for each link
-        ``values``  : link magnitudes (sum of all flow vars on the connection)
-        ``link_labels`` : hover-text per link describing components
+        ``labels``     : node names (one per unit)
+        ``sources``    : source-node index per link
+        ``targets``    : target-node index per link
+        ``values``     : total molar/mass flow per link [mol/s or kg/s]
+        ``link_labels``: hover-text per link (component breakdown)
 
     v1.5.0.dev-AUDIT3 UI-1: quantitative topology view supplementing the
     static Mermaid box-and-arrow diagram.
     """
-    # Build node table: one per unit.
     unit_ids = [u.unit_id for u in flowsheet.units]
     name_to_idx = {uid: i for i, uid in enumerate(unit_ids)}
+
+    # Aggregate by (src_uid, tgt_uid) to collapse per-species connections.
+    pair_flow:   Dict[Tuple[int, int], float] = {}
+    pair_comps:  Dict[Tuple[int, int], List[str]] = {}
+
+    for conn in getattr(flowsheet, "connections", []):
+        var_a = getattr(conn, "var_a", None)
+        var_b = getattr(conn, "var_b", None)
+        if not var_a or not var_b:
+            continue
+
+        # Skip intensive (T, P) variables — only molar/mass flows begin with F_
+        var_leaf = var_a.split(".")[-1]
+        if not var_leaf.upper().startswith("F_"):
+            continue
+
+        src_uid = var_a.split(".", 1)[0]
+        tgt_uid = var_b.split(".", 1)[0]
+        if src_uid == tgt_uid:
+            continue  # self-loops (shared variables within one unit)
+        if src_uid not in name_to_idx or tgt_uid not in name_to_idx:
+            continue
+
+        key = (name_to_idx[src_uid], name_to_idx[tgt_uid])
+        flow_val = abs(float(solution_x.get(var_a, 0.0)))
+        pair_flow[key] = pair_flow.get(key, 0.0) + flow_val
+        comp_name = var_leaf[2:] if var_leaf.upper().startswith("F_") else var_leaf
+        pair_comps.setdefault(key, []).append(f"{comp_name}={flow_val:.3g}")
 
     sources: List[int] = []
     targets: List[int] = []
     values:  List[float] = []
     link_labels: List[str] = []
 
-    for conn in getattr(flowsheet, "connections", []):
-        # Connection holds two variable names (var_a, var_b). Parse unit_id
-        # prefix (first dotted segment) to find source and target nodes.
-        var_a = getattr(conn, "var_a", None)
-        var_b = getattr(conn, "var_b", None)
-        if not var_a or not var_b:
-            continue
-        src_uid = var_a.split(".", 1)[0]
-        tgt_uid = var_b.split(".", 1)[0]
-        if src_uid not in name_to_idx or tgt_uid not in name_to_idx:
-            continue
-        flow_val = abs(float(solution_x.get(var_a, 0.0)))
-        sources.append(name_to_idx[src_uid])
-        targets.append(name_to_idx[tgt_uid])
-        values.append(max(flow_val, 1e-12))   # plotly hates exact zeros
-        link_labels.append(f"{var_a.split('.')[-1]} = {flow_val:.4g}")
+    for (src_idx, tgt_idx), total_flow in pair_flow.items():
+        sources.append(src_idx)
+        targets.append(tgt_idx)
+        values.append(max(total_flow, 1e-12))  # Plotly requires > 0
+        link_labels.append(", ".join(pair_comps.get((src_idx, tgt_idx), [])))
 
     return {
-        "labels":     unit_ids,
-        "sources":    sources,
-        "targets":    targets,
-        "values":     values,
+        "labels":      unit_ids,
+        "sources":     sources,
+        "targets":     targets,
+        "values":      values,
         "link_labels": link_labels,
     }
 
@@ -876,11 +1066,20 @@ def record_solve_in_history(session_state, result, mode_label: str,
     if len(history) > max_entries:
         del history[: len(history) - max_entries]
     # Disk persistence — best-effort, never block the solve flow.
+    # The file is capped at _HISTORY_MAX_DISK_ENTRIES lines to prevent unbounded
+    # growth on long-running installations.
+    _HISTORY_MAX_DISK_ENTRIES = 200
     path = _get_history_path()
     if path and path is not False:
         try:
             with open(path, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry) + "\n")
+            # Rotate: keep only the last _HISTORY_MAX_DISK_ENTRIES lines.
+            with open(path, "r", encoding="utf-8") as fh:
+                lines = fh.readlines()
+            if len(lines) > _HISTORY_MAX_DISK_ENTRIES:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.writelines(lines[-_HISTORY_MAX_DISK_ENTRIES:])
         except OSError:
             pass
 
@@ -953,6 +1152,11 @@ class TemplateSpec:
     default_params: Dict[str, Any] = field(default_factory=dict)
     supports_milp: bool = False
     connections_human: List[Tuple[str, str, str]] = field(default_factory=list)
+    recommends_trust_region: bool = False
+    """When True, the UI should suggest enabling SLPConfig.use_trust_region for
+    this template.  Set on templates whose non-linear units (e.g.
+    BiomassGasifierHF, GibbsReactor) benefit from trust-region step control.
+    """
 
 
 # ── Unit catalogue for the custom flowsheet assembler ─────────────────────────
@@ -1294,6 +1498,7 @@ _REGISTRY: List[TemplateSpec] = [
             "target_year": 2024,
         },
         supports_milp=False,
+        recommends_trust_region=True,
         connections_human=[
             ("Biomass Storage dry out", "Gasifier biomass in", "Dry biomass feed"),
             ("Gasifier syngas out", "WGS syngas in", "Raw syngas"),
@@ -1351,6 +1556,7 @@ _REGISTRY: List[TemplateSpec] = [
             "target_year": 2024,
         },
         supports_milp=False,
+        recommends_trust_region=True,
         connections_human=[
             ("Storage dry out", "Gasifier biomass in", "Dry biomass feed"),
             ("Gasifier syngas out", "Cyclone inlet", "Raw syngas with char"),
@@ -2563,12 +2769,21 @@ _validate_registry_loader_sync()
 # Units considered pressure vessels for ASME sizing (by Python class name).
 # Extend this set when adding new vessel-type units to Layer 3.
 _ASME_VESSEL_UNIT_TYPES: frozenset = frozenset({
+    # Original set (v1.5.x)
     "Compressor",
     "FlashVLHF",
     "CSTRHF",
     "EquilibriumReactor",
     "GibbsReactor",
     "BiomassGasifierHF",
+    # Extended (v1.5.3): additional pressure-bearing units
+    "PFRHF",
+    "TVSAContactor",
+    "DistillationHF",
+    "ShellTubeHX",
+    "Pump",
+    "MethanationReactor",
+    "FlashSL",
 })
 
 # ASME minimum wall thickness below which a WARNING is raised [m]

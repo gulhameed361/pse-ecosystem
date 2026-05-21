@@ -305,7 +305,7 @@ def extract_solution(model: pyo.ConcreteModel) -> Dict[str, float]:
 
 def select_lp_solver(preferred: Optional[str] = None) -> pyo.SolverFactory:
     """Pick the first available LP solver (override with ``preferred``)."""
-    candidates = [preferred] if preferred else ["glpk", "cbc", "appsi_highs", "highs"]
+    candidates = [preferred] if preferred else ["appsi_highs", "highs", "cbc", "glpk"]
     for name in candidates:
         if not name:
             continue

@@ -94,6 +94,11 @@ class NLPDriver:
 
         x0_vec = np.array([x0_dict.get(v, 0.0) for v in var_names], dtype=float)
 
+        # Defined once here (not inside each attempt loop) so the class
+        # identity is stable across attempts and stack traces are clean.
+        class _StepNormStop(Exception):
+            """Raised by the scipy callback when ‖Δx‖∞ < eps_x."""
+
         def objective(x_vec: np.ndarray) -> float:
             r = f_func(x_vec)
             return 0.5 * float(np.dot(r, r))
@@ -127,12 +132,10 @@ class NLPDriver:
                         x_init[j] = ub
 
             # Step-norm convergence (L2-3): scipy has no first-class step-norm
-            # criterion, so we install a callback that raises when ‖Δx‖∞ <
-            # eps_x. The exception is caught below and treated as convergence.
+            # criterion, so we install a callback that raises _StepNormStop
+            # when ‖Δx‖∞ < eps_x. The exception is caught below and treated
+            # as convergence. (_StepNormStop is defined once above the loop.)
             _last_x = [x_init.copy()]
-
-            class _StepNormStop(Exception):
-                pass
 
             def _callback(xk):
                 step = float(np.max(np.abs(xk - _last_x[0])))

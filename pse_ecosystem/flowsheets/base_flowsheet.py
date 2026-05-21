@@ -14,8 +14,11 @@ flowsheet decides whether they share a feed via an explicit connection.
 from __future__ import annotations
 
 import copy
+import warnings
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+
+__all__ = ["Connection", "BaseFlowsheet", "CompositeUnit"]
 
 import numpy as np
 
@@ -48,10 +51,22 @@ class BaseFlowsheet:
     """Linear equality constraints ``Σ a_i x_i == b`` that don't belong to any
     single unit (e.g. a hydrogen-demand balance summed across producers)."""
 
+    initial_x0: Optional[Dict[str, float]] = field(default=None)
+    """Optional warm-start point for the initial guess.
+
+    When set, values in this dict override the bound-midpoint heuristic for
+    the named variables.  Template loaders use this to seed physically
+    meaningful starting points; the solver reads it via :meth:`initial_guess`.
+    """
+
     recycle_streams: List[str] = field(default_factory=list)
-    """Variable names that participate in recycle loops.  Metadata only —
-    the solver never reads this field.  Declare recycle tear streams in
-    :class:`~pse_ecosystem.solvers.slp.TearStreamConfig` instead."""
+    """Informational list of variable names that participate in recycle loops.
+
+    The solver does NOT read this field.  To activate Wegstein acceleration
+    for a recycle, add a :class:`~pse_ecosystem.solvers.slp.TearStreamConfig`
+    entry to :class:`~pse_ecosystem.solvers.slp.SLPConfig.tear_streams` instead.
+    This field exists solely for documentation and future tooling integration.
+    """
 
     objective_extra: Dict[str, float] = field(default_factory=dict)
     """Flowsheet-level LP objective overrides, merged with per-unit
@@ -275,7 +290,7 @@ class BaseFlowsheet:
                 guess[v] = 0.0
         for v in self.all_variables():
             guess.setdefault(v, 0.0)
-        if hasattr(self, "initial_x0"):
+        if self.initial_x0 is not None:
             for v, val in self.initial_x0.items():
                 if v in guess:
                     guess[v] = float(val)
@@ -292,15 +307,22 @@ class BaseFlowsheet:
         Keys that appear in multiple units accumulate by summation. Unit
         authors should uid-prefix any per-unit KPI they want kept separate
         (see ``H2_production_kg_s`` convention in L3-2).
+
+        A failed ``kpis()`` call on one unit emits a ``RuntimeWarning`` and
+        is skipped so the remaining units' KPIs are still returned.
         """
         kpis: Dict[str, float] = {}
         for unit in self.units:
             try:
                 for k, v in unit.kpis(x).items():
                     kpis[k] = kpis.get(k, 0.0) + float(v)
-            except Exception:
-                # A single unit's bad KPI must not zero the rest of the report.
-                continue
+            except Exception as _exc:
+                warnings.warn(
+                    f"KPI evaluation failed for unit '{unit.unit_id}' "
+                    f"({type(unit).__name__}): {_exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
         return kpis
 
 
@@ -360,6 +382,7 @@ class CompositeUnit(BaseUnit):
         self.exposed_inputs = list(exposed_inputs)
         self.exposed_outputs = list(exposed_outputs)
         self._slp_config = slp_config
+        self._last_inner_x: Optional[Dict[str, float]] = None
 
         # v1.4.0 audit N33 — validate exposed variable names against the
         # inner flowsheet's actual variable set. A typo here would silently
@@ -406,8 +429,10 @@ class CompositeUnit(BaseUnit):
         result = driver.run(x0=x0)
         if not result.converged:
             # Return a large residual so the outer SLP sees infeasibility.
+            self._last_inner_x = None
             return np.full(len(self.exposed_outputs), 1e6, dtype=float)
 
+        self._last_inner_x = dict(result.x)
         return np.array(
             [float(x.get(v, 0.0)) - float(result.x.get(v, 0.0))
              for v in self.exposed_outputs],
@@ -418,4 +443,26 @@ class CompositeUnit(BaseUnit):
         return {}
 
     def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
-        return {}
+        """Return aggregated KPIs from the last successful inner-flowsheet solve.
+
+        Uses the cached solution from the most recent ``residual()`` call so
+        the inner SLP is not re-run.  Returns an empty dict if ``residual()``
+        has not yet been called or the last inner solve did not converge
+        (economics and LCOH/LCOE will show as zero/NaN until the first
+        successful solve).
+        """
+        if self._last_inner_x is None:
+            return {}
+        return self.inner_flowsheet.aggregate_kpis(self._last_inner_x)
+
+    def capex(self, x: Dict[str, float]) -> float:
+        """Sum CAPEX across all inner-flowsheet units using the cached solution."""
+        if self._last_inner_x is None:
+            return 0.0
+        total = 0.0
+        for unit in self.inner_flowsheet.units:
+            try:
+                total += float(unit.capex(self._last_inner_x))
+            except Exception:
+                pass
+        return total

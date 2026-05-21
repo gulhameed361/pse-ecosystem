@@ -1,0 +1,20 @@
+{
+  "_comment": "CEPCI historical values (Chemical Engineering Plant Cost Index). CE=500 at year 2001 is the SSLW costing basis. Years after the last data point are projected at cepci_escalation_rate per annum.",
+  "cepci": {
+    "_source": "Chemical Engineering magazine + ICIS; years 2025+ projected",
+    "2001": 394.3,
+    "2005": 468.2,
+    "2010": 550.8,
+    "2015": 556.8,
+    "2016": 541.7,
+    "2017": 567.5,
+    "2018": 603.1,
+    "2019": 607.5,
+    "2020": 596.2,
+    "2021": 708.8,
+    "2022": 816.0,
+    "2023": 797.6,
+    "2024": 802.3
+  },
+  "cepci_escalation_rate": 0.025
+}

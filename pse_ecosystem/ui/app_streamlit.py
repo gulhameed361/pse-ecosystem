@@ -481,7 +481,7 @@ def _page_flowsheet_builder():
 
         _fb_tabs = st.tabs([
             "1D Sensitivity Sweep",
-            "2D Pareto Sweep",
+            "2D Parameter Sensitivity Sweep",
             "Objective Function",
         ])
 
@@ -553,6 +553,13 @@ def _page_flowsheet_builder():
                     "variables; reward coefficient on net-power output variables.",
             }
             st.info(_OBJ_HELP.get(_obj_mode, ""))
+
+            # Banner for objectives whose LP proxy differs from the labelled metric.
+            from pse_ecosystem.ui.flowsheet_service import OBJECTIVE_LP_PROXY_NOTE
+            if _obj_mode in OBJECTIVE_LP_PROXY_NOTE:
+                st.warning(
+                    f"**LP proxy note:** {OBJECTIVE_LP_PROXY_NOTE[_obj_mode]}"
+                )
 
             # ── Context-dependent parameter expanders ────────────────────────
             _elec_price = 0.05
@@ -831,12 +838,13 @@ def _section_sensitivity_sweep(st, chosen_key: str, spec) -> None:
             st.error(f"Sweep failed: {exc}")
 
 
-# ── 2D Pareto sweep (v1.5.0.dev-AUDIT3 UI-5) ─────────────────────────────────
+# ── 2D Parameter Sensitivity Sweep (v1.5.0.dev-AUDIT3 UI-5) ──────────────────
 
 def _section_pareto_sweep(st, chosen_key: str, spec) -> None:
-    """Vary two parameters across a small grid and scatter two KPIs against
-    each other. Visualises a trade-off frontier — the Pareto-style envelope
-    is the lower-left convex hull when both KPIs are 'minimise'."""
+    """Vary two parameters across a small grid and scatter two KPIs against each
+    other.  This is a **parameter sensitivity sweep** — not a multi-objective
+    Pareto optimisation.  The lower-left cloud boundary approximates the
+    trade-off frontier when both KPIs are 'lower is better'."""
     from pse_ecosystem.ui.flowsheet_service import load_template
 
     defaults = dict(spec.default_params)
@@ -848,11 +856,12 @@ def _section_pareto_sweep(st, chosen_key: str, spec) -> None:
         st.info("Need at least 2 numeric parameters to run a 2D sweep.")
         return
 
-    st.subheader("2D Pareto-style Trade-off")
+    st.subheader("2D Parameter Sensitivity Sweep")
     st.caption(
         "Sweeps two parameters across a small grid (≤ 6 × 6) and scatters two "
-        "KPIs against each other.  Each marker is one solved flowsheet — the "
-        "lower-left envelope is the Pareto frontier when both KPIs are 'lower is better'."
+        "KPIs against each other.  Each marker is one solved flowsheet. "
+        "Note: this is a sensitivity sweep, not a rigorous multi-objective "
+        "Pareto front — use it to identify trade-off regions, not optimum points."
     )
 
     cA, cB = st.columns(2)
@@ -1887,6 +1896,10 @@ def _page_solver_monitor():
                     fig_.update_yaxes(title_text="Residual norm", secondary_y=True)
                     live_chart.plotly_chart(fig_, use_container_width=True)
 
+            # If the template recommends trust regions (non-linear physics),
+            # enable them automatically unless the user has explicitly disabled
+            # them via advanced settings.
+            _use_tr = getattr(spec, "recommends_trust_region", False)
             slp_cfg = SLPConfig(
                 max_iter=int(max_iter),
                 eps_x=float(eps_x),
@@ -1894,6 +1907,7 @@ def _page_solver_monitor():
                 iteration_callback=_on_iter,
                 progressive_tightening=bool(prog_tighten),
                 trust_region_min=float(tr_min_radius),
+                use_trust_region=_use_tr,
             )
 
             with st.spinner(f"Solving {spec.display_name}…"):

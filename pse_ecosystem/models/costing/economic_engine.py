@@ -76,6 +76,12 @@ CEPCI: dict[int, float] = _json_cepci or {
 }
 
 CEPCI_ESCALATION_RATE: float = _json_rate   # 2.5%/yr beyond last data year
+"""Annual CEPCI escalation rate used to project costs beyond the last data year.
+
+Override at module level when a more current projection is available:
+    import pse_ecosystem.models.costing.economic_engine as ee
+    ee.CEPCI_ESCALATION_RATE = 0.030  # 3% from 2025 onward
+"""
 
 _CEPCI_BASE_YEAR: int = 2001           # matches sslw_costing.py (CE=500 at 394.3)
 _CEPCI_SSLW_INDEX: float = 500.0      # legacy SSLW normalisation base
