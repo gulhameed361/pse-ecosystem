@@ -1,4 +1,4 @@
-# PSE Ecosystem (v1.5.2)
+# PSE Ecosystem (v1.5.3)
 
 **Industrial-grade process simulation with transparent, auditable physics.**  
 *Private — University of Surrey.*
@@ -30,23 +30,74 @@
 
 ---
 
+## What's new in v1.5.3 — Comprehensive Bug-Fix & Quality Release
+
+36 issues resolved, 73 new regression tests, **507 tests total, 0 failures**.
+
+### Three critical corrections
+
+| Issue | What was wrong | What's fixed |
+|---|---|---|
+| **NPV/IRR wrong** | Cash flow = −OPEX (no revenue) → always negative; IRR always NaN | New `ProductionConfig` with product prices; NPV/IRR show *N/A* until prices are set |
+| **Sankey misleading** | Temperature (1000 K) and pressure (100 000 Pa) plotted as molar flows | Filtered to `F_*` flow variables only; species aggregated per unit pair |
+| **LCOE denominator wrong** | `max()` across power generators instead of `sum()` | `_extract_power_out_kW` now sums across all generators |
+
+### Revenue model — ProductionConfig
+
+```python
+from pse_ecosystem.ui.flowsheet_service import (
+    ProductionConfig, compute_project_economics, ProjectEconomicsConfig,
+)
+
+pc = ProductionConfig(h2_price_USD_per_kg=3.5)       # IRENA 2030 target
+rows = compute_project_economics(fs, result.x, result.kpis,
+                                  econ_config=ProjectEconomicsConfig(),
+                                  prod_config=pc)
+# NPV and IRR are now meaningful floats, not "N/A"
+```
+
+### Other high-priority fixes
+
+- **H₂ yield objective** now uses topological sort (`_topological_unit_order`)
+  to pick the correct downstream H₂ outlet — not lexicographic ordering.
+  PSA output is targeted correctly even when `wgs` comes after `psa` alphabetically.
+- **Electrolyser CAPEX** sourced from `ProjectEconomicsConfig.pem_capex_USD_per_kW`
+  (default **1 200 USD/kW**, NREL 2024 — was hardcoded $700).
+- **LP solver preference** reordered: HiGHS → CBC → GLPK (faster, more robust).
+- **ASME safety whitelist** expanded to cover `PFRHF`, `TVSAContactor`,
+  `DistillationHF`, `ShellTubeHX`, `Pump`, `MethanationReactor`, `FlashSL`.
+- **ADAPTIVE solver** now only silently swallows `ImportError`/`RuntimeError`;
+  physics bugs (e.g. `ZeroDivisionError` in a residual) propagate correctly.
+- **KPI failures** now emit `RuntimeWarning` naming the offending unit instead
+  of silently producing NaN results.
+
+### API additions
+
+- `ProductionConfig` — product price model (H₂, power, heat, SNG).
+- `OBJECTIVE_LP_PROXY_NOTE` — dict mapping NPV/IRR modes to their LP-proxy
+  warning text (displayed as `st.warning` banners in the UI).
+- `TemplateSpec.recommends_trust_region` — advisory field; biomass and
+  grand-challenge templates set to `True` (auto-enables trust regions).
+- `pse_ecosystem/data/economics.json` — CEPCI 2001–2024 + escalation rate,
+  now loaded at startup; update without touching Python.
+- `OPEXConvention` str Enum — replaces bare string class attribute.
+- `initial_x0` — proper `Optional[Dict]` dataclass field on `BaseFlowsheet`.
+
+### Behaviour changes
+
+- Energy variable detection in `build_objective_extra()` uses suffix matching
+  (`.endswith`), not substring search — eliminates false positives.
+- `ElectrolyserHF` capex injection uses `isinstance()` not `type().__name__`.
+- `history.jsonl` rotated at 200 lines (was unbounded).
+- "Pareto Sweep" renamed to "Parameter Sensitivity Sweep".
+- `HeatExchangerNTU` effectiveness clamped to `[0, 1]`.
+
+---
+
 ## What's new in v1.5.2 — Dual-Persona Stabilisation + Scenario Analysis Enhancement
 
-- **Pandas 2.0 Styler fixed.** `df.style.applymap()` → `df.style.map()` in the Industrial
-  ASME safety table; resolves `AttributeError` on Pandas ≥ 2.0.
-- **Plotly keyword collision fixed.** Scenario Manager dual-bar chart now strips colliding
-  template keys (`yaxis`, `barmode`) before `update_layout()` unpack; resolves `TypeError`.
-- **Zero-fill port padder.** Custom Flowsheet Builder no longer skips connections between
-  ports with different component counts. Unmatched inlet species are zero-filled; a
-  non-fatal warning is displayed. Enables exploration of topologically incomplete chains.
-- **Exact equality count confirmed: 33.** The 7-unit workshop chain produces exactly 33
-  port-variable equalities in both Academic and Industrial personas (corrects stale 31
-  in prior docs). Locked by new regression test.
-- **Custom flowsheet crash fixed.** `BaseFlowsheet` object no longer serialised directly;
-  `custom_flowsheet_cfg` session-state key holds the JSON-safe spec dict.
-- **Scenario Manager & Analysis.** Renamed page gains a new **Sensitivity Analysis**
-  section for economic and engineering sweeps.
-- **434 tests, 20/20 UI audit checks** — all green.
+- Pandas 2.0 Styler fix, Plotly keyword collision fix, zero-fill port padder,
+  Scenario Manager & Analysis page, 434 tests.
 
 ## What's new in v1.5.1 — Industrial Decision Support
 

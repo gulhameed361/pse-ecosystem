@@ -1,12 +1,76 @@
 # PSE Ecosystem — User Manual
 
-**Version:** 1.5.2 | **Date:** 2026-05-20 | **Status:** Bug-fix + Scenario Analysis Enhancement
+**Version:** 1.5.3 | **Date:** 2026-05-21 | **Status:** Comprehensive Bug-Fix & Quality Release
 
 > Single source of truth for PSE Ecosystem users. Replaces `UI_GUIDE.md` (merged here in Phase 6)
 > and `SHOWCASE_WALKTHROUGH.md` (merged in Phase 5). For architecture details see `ARCHITECTURE.md`;
 > for equation derivations see `THEORY_REFERENCE.md`; for code extensions see `DEVELOPER_GUIDE.md`.
 > For a step-by-step build of the 7-unit biomass → H₂ workshop with full answer key,
 > see [`WORKSHOP_7UNIT.md`](WORKSHOP_7UNIT.md).
+
+---
+
+## What's new in v1.5.3
+
+### NPV and IRR are now meaningful — but require product prices
+
+Previous versions computed NPV and IRR using `annual_cash_flow = −OPEX` (a
+pure-cost model with no revenue), which always produced a large negative NPV
+and an undefined (NaN) IRR.  From v1.5.3 the cells show **"N/A (no revenue
+model)"** when no product prices are configured — an honest label rather than
+a misleading large-negative number.
+
+To enable revenue-side economics, expand the **Financial Parameters** section
+on the Objective Function tab and enter product sale prices (H₂ price, power
+export price). Once at least one price is non-zero the NPV and IRR cells will
+show real values.
+
+> **Tip:** the IRENA 2030 green hydrogen cost target is 2–4 USD/kg.  Entering
+> 3.5 USD/kg H₂ gives a representative profitability picture for a
+> biomass-to-hydrogen flowsheet at current capital costs.
+
+### Sankey diagram shows actual molar flows
+
+The Material Flow Sankey on the Solver Monitor results page previously
+included temperature (T ≈ 1 000 K) and pressure (P ≈ 1 × 10⁵ Pa) variables
+as "flows", making every stream appear to carry 100 000× its actual molar
+flow.  From v1.5.3 only `F_*` (molar/mass flow) variables are included, and
+multiple species on the same stream are aggregated into a single arrow.
+
+### Objective mode labels clarified
+
+When you select **Maximize NPV** or **Maximize IRR** on the Objective
+Function tab, a yellow info banner now explains that the LP optimiser uses a
+TAC proxy (CAPEX annualisation + OPEX) rather than directly maximising the
+labelled metric.  The true NPV/IRR is computed post-solve from the converged
+KPIs and reported in the Project Economics Excel sheet.
+
+### Electrolyser capital cost updated
+
+The PEM electrolyser capital cost coefficient used in the TAC and LCOH
+objectives has been updated from $700/kW (2020 estimate) to **$1 200/kW**
+(NREL 2024 system cost reference).  You can override this in the Financial
+Parameters expander.
+
+### Faster LP solver
+
+If HiGHS is installed (`pip install highspy`), the LP solver now selects it
+first (was GLPK).  HiGHS is typically 2–10× faster on industrial-scale LPs.
+No configuration change is needed — the preference is automatic.
+
+### Parameter Sensitivity Sweep renamed
+
+The "2D Pareto Sweep" tab on the Flowsheet Builder has been renamed **"2D
+Parameter Sensitivity Sweep"** to accurately describe the grid-search
+operation.  It is a sensitivity analysis, not a multi-objective Pareto front.
+
+### Trust region recommended automatically
+
+The Solver Monitor now automatically enables trust-region step control for
+flowsheet templates that contain highly non-linear units (biomass gasification,
+10-unit grand challenge).  This reduces the risk of the SLP linearisation
+taking steps far outside its validity region, improving convergence on
+difficult problems.  You can still toggle it in Advanced Solver Settings.
 
 ---
 

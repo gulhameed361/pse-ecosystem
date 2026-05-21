@@ -7,6 +7,152 @@
 
 ---
 
+## 0b. v1.5.3 — Patterns introduced in the comprehensive bug-fix release
+
+### 0b.0 Revenue model and NPV/IRR correctness
+
+**Before v1.5.3** `compute_project_economics()` computed cash flow as
+`−opex_annual`, making NPV always negative and IRR always NaN.
+
+**From v1.5.3** pass a `ProductionConfig` to get real economics:
+
+```python
+from pse_ecosystem.ui.flowsheet_service import (
+    ProductionConfig, compute_project_economics, ProjectEconomicsConfig,
+)
+pc = ProductionConfig(h2_price_USD_per_kg=3.5)
+rows = compute_project_economics(
+    flowsheet, result.x, result.kpis,
+    econ_config=ProjectEconomicsConfig(),
+    prod_config=pc,
+)
+```
+
+When `prod_config` is `None` (default) the NPV/IRR cells show
+`"N/A (no revenue model)"` — an honest label rather than a misleading
+number.
+
+### 0b.1 OPEXConvention Enum
+
+`BaseUnit._OPEX_CONVENTION` is now a `str` Enum (`OPEXConvention`).
+String literal comparisons (`== "USD_per_year"`) still work because the
+Enum inherits `str`.  New units should use the enum members:
+
+```python
+from pse_ecosystem.models.base_unit import OPEXConvention
+
+class MyUnit(BaseUnit):
+    _OPEX_CONVENTION = OPEXConvention.USD_PER_SECOND
+    ...
+```
+
+### 0b.2 initial_x0 — proper dataclass field
+
+`BaseFlowsheet.initial_x0` is now a declared `Optional[Dict[str, float]]`
+field (was duck-typed via `hasattr`).  Template loaders should set it via
+the constructor or direct assignment before the solve:
+
+```python
+fs = BaseFlowsheet(name="demo", units=[...])
+fs.initial_x0 = {"pem.electricity_kW": 8_000.0}
+```
+
+A typo in the key name now silently falls back to the midpoint (the
+value is simply not in the dict) rather than being accepted silently.
+
+### 0b.3 Energy variable detection — suffix not substring
+
+`build_objective_extra()` detects power-draw variables via `.endswith()`
+on the lowercase variable name:
+
+```python
+_energy_suffixes = (".w_shaft", ".w_elec_kw", ".electricity_kw",
+                    ".w_net_kw", ".power_kw")
+```
+
+Unit authors must end their power-draw variable names with one of these
+exact suffixes to appear in energy-cost objectives.  Variables like
+`unit.net_electricity_kw_limit` (capacity bound) no longer accidentally
+receive an energy coefficient.
+
+### 0b.4 Topology helpers for objective wiring
+
+Two new public helpers in `flowsheet_service.py`:
+
+```python
+_topological_unit_order(flowsheet) -> List[str]
+```
+Returns unit IDs in feed-forward order using Kahn's algorithm.  Handles
+cycles by appending remaining units in declaration order.
+
+```python
+_most_downstream_h2_outlet(flowsheet, all_vars) -> Optional[str]
+```
+Finds the `F_H2` outlet variable of the most-downstream H₂-producing unit.
+Used by `build_objective_extra()` for "Maximize H₂ Yield" and LCOH modes.
+
+**Note:** these are module-private (single leading `_`) — access them via
+`build_objective_extra()`, not directly.
+
+### 0b.5 CompositeUnit KPI / CAPEX propagation
+
+`CompositeUnit` now caches the last inner-solve solution as `_last_inner_x`.
+After the first successful `residual()` call, `kpis()` and `capex()` return
+aggregated results from the inner flowsheet:
+
+```python
+comp = CompositeUnit(uid, inner_fs, exposed_inputs, exposed_outputs)
+outer_result = outer_slp.run()
+# comp.kpis(outer_result.x) now returns inner flowsheet KPIs
+```
+
+Before the first `residual()` call, both methods return their zero/empty
+defaults.
+
+### 0b.6 CEPCI data file
+
+`pse_ecosystem/data/economics.json` ships with the package:
+
+```json
+{
+  "cepci": {"2001": 394.3, ..., "2024": 802.3},
+  "cepci_escalation_rate": 0.025
+}
+```
+
+To update without a code change: edit the JSON, increment the version, and
+redeploy.  The `EconomicEngine` prefers the file over its internal fallback.
+
+To override the projection rate at runtime (e.g. for sensitivity runs):
+
+```python
+import pse_ecosystem.models.costing.economic_engine as ee
+ee.CEPCI_ESCALATION_RATE = 0.03   # 3% from 2025 onward
+```
+
+### 0b.7 TemplateSpec.recommends_trust_region
+
+New advisory field on `TemplateSpec`.  The Solver Monitor reads it and
+sets `SLPConfig.use_trust_region = True` automatically for templates that
+contain highly non-linear units:
+
+```python
+spec = get_template("biomass.gasification_to_hydrogen")
+spec.recommends_trust_region  # → True
+```
+
+When adding a new template with non-linear units, set this field:
+
+```python
+TemplateSpec(
+    key="my_template",
+    ...
+    recommends_trust_region=True,   # BiomassGasifierHF / GibbsReactor present
+)
+```
+
+---
+
 ## 0. v1.4.1 — Conventions you must know before extending
 
 ### 0.0 v1.4.1 developer notes

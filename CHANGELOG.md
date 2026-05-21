@@ -7,6 +7,127 @@ pre-release iterations on a single minor version.
 
 ## [Unreleased]
 
+## [1.5.3] — 2026-05-21
+
+Comprehensive bug-fix and quality release: 36 issues across 3 severity tiers
+resolved and locked by 73 new regression tests (507 total, 0 failures).
+
+### Critical fixes
+
+- **C-1 NPV/IRR cash flow sign error** (`flowsheet_service.py`).  
+  `compute_project_economics()` was computing `annual_net_cashflow = −opex`
+  (always negative — no revenue term), making NPV always a large negative and
+  IRR always NaN.  
+  *Fix:* Added `ProductionConfig` dataclass with `h2_price_USD_per_kg`,
+  `electricity_sale_price_USD_per_kWh`, `heat_sale_price_USD_per_GJ`,
+  `methane_price_USD_per_GJ`.  Annual revenue is now computed and subtracted
+  from OPEX to form the true cash flow.  When no `ProductionConfig` is
+  provided, NPV/IRR cells display `"N/A (no revenue model)"` instead of
+  silently wrong numbers.
+
+- **C-2 Sankey diagram plots T and P as "flows"** (`flowsheet_service.py`).  
+  Every connection variable — including intensive T (300–1200 K) and P
+  (1e4–5e6 Pa) — was being added as a Sankey link.  The massive magnitudes
+  made every link look like it carried 100 000× the real molar flow.  
+  *Fix:* `build_sankey_data()` now filters to `F_*` variables only and
+  aggregates multiple species connections into one link per unit pair
+  (correct total molar/mass flow shown).
+
+- **C-3 `_extract_power_out_kW` returns max, not sum** (`flowsheet_service.py`).  
+  For a flowsheet with two CHP units the LCOE denominator was the larger unit's
+  output rather than the combined output.  
+  *Fix:* `max(vals)` → `sum(vals)`.
+
+### Added
+
+- **`ProductionConfig` dataclass** (`flowsheet_service.py`) — product price
+  model enabling meaningful NPV and IRR computation.  Default values of 0
+  preserve the pre-v1.5.3 no-revenue behaviour.
+- **`OBJECTIVE_LP_PROXY_NOTE` dict** (`flowsheet_service.py`) — maps
+  "Maximize NPV" and "Maximize IRR" to a human-readable string explaining
+  that the LP optimises a TAC proxy; the UI renders this as a `st.warning`
+  banner when those modes are selected.
+- **`TemplateSpec.recommends_trust_region: bool`** field — advisory flag
+  set `True` on biomass and grand-challenge templates (both contain
+  non-linear units benefiting from trust-region step control).  The
+  Solver Monitor reads it to set `SLPConfig.use_trust_region` automatically.
+- **`pse_ecosystem/data/economics.json`** — ships CEPCI historical data
+  (2001–2024) and the escalation rate; `EconomicEngine` now loads from this
+  file instead of a hardcoded dict.  Add or update entries without touching
+  Python.
+- **`OPEXConvention` string Enum** (`models/base_unit.py`) — replaces the
+  bare `str` class attribute.  Members `USD_PER_YEAR`, `USD_PER_SECOND`,
+  `YIELD_COEFFICIENT` equal their string literals so existing comparisons
+  continue to work.
+- **`__all__`** exported from `core/contracts.py`, `flowsheets/base_flowsheet.py`,
+  and `models/base_unit.py`.
+- **`initial_x0`** declared as a proper `Optional[Dict[str, float]]` dataclass
+  field on `BaseFlowsheet` (was duck-typed via `hasattr`).  Typos in warm-start
+  keys now raise instead of silently falling back to the bound midpoint.
+- **`CompositeUnit._last_inner_x`** cache — `kpis()` and `capex()` now
+  propagate inner-flowsheet results via the cached solution from the most recent
+  `residual()` call.
+- **73 new regression tests** in `tests/test_v153.py` locking every fix.
+
+### Changed
+
+- **H-2 H₂ yield objective** — `build_objective_extra()` now uses
+  `_topological_unit_order()` and `_most_downstream_h2_outlet()` to identify
+  the correct target variable instead of lexicographic sorting.  Fixes the case
+  where the unit with the alphabetically "last" ID (e.g. `wgs`) was wrongly
+  chosen over the true downstream unit (e.g. `psa`).
+- **H-3 Electrolyser CAPEX** — the $700/kW hardcoded coefficient is replaced
+  by `ProjectEconomicsConfig.pem_capex_USD_per_kW` (default **1 200 USD/kW**,
+  NREL 2024 estimate).
+- **H-4 LP/MILP solver preference** — `select_lp_solver` and
+  `select_milp_solver` candidates list reordered to
+  `[appsi_highs, highs, cbc, glpk]`.
+- **H-5 ADAPTIVE exception narrowing** — the NLP-stage `except Exception`
+  is narrowed to `(ImportError, ModuleNotFoundError, RuntimeError, AttributeError)`;
+  physics errors (e.g. `ZeroDivisionError` in a unit residual) now propagate
+  instead of silently falling through to the TRF stage.
+- **H-6 ASME vessel whitelist** expanded:
+  `PFRHF`, `TVSAContactor`, `DistillationHF`, `ShellTubeHX`, `Pump`,
+  `MethanationReactor`, `FlashSL`.
+- **H-7 `aggregate_kpis()` warnings** — a failed `kpis()` call now emits a
+  `RuntimeWarning` naming the unit instead of silently being skipped.
+- **H-10 `scale_rows` docstring** — clarified as an explicit opt-in (not
+  default) with guidance on when to enable it.
+- **M-3/M-13 Variable matching in `build_objective_extra()`** — energy
+  variable detection uses `.endswith()` suffix matching rather than substring
+  search (eliminates false positives on capacity-bound variables like
+  `unit.net_electricity_kw_limit`).  `ElectrolyserHF` identification uses
+  `isinstance()` instead of `type().__name__` string comparison.
+- **M-6 NLP mode naming** — `SolveMode.NLP_IPOPT` and `NLP_SCIPY` docstrings
+  clarified: the implementation is scipy L-BFGS-B, not IPOPT.
+- **M-7 `history.jsonl` disk cap** — `record_solve_in_history()` rotates the
+  file to ≤ 200 lines after each append (was unbounded).
+- **M-8 Backward-compat opex shim removed** — the `except TypeError` fallback
+  for v1.4-style `opex_per_year(x)` signature is gone; the two-argument form
+  is now mandatory.
+- **M-12 `_most_downstream_h2_outlet()`** — port-tag detection broadened to
+  include "product", "h2", and "vapor" tags in addition to "out".
+- **L-6 "Pareto Sweep" renamed** to "Parameter Sensitivity Sweep" in the UI to
+  correctly describe the grid search operation.
+- **L-8 `HeatExchangerNTU._eps_from_NTU()`** — effectiveness clamped to `[0, 1]`
+  to prevent numerical noise near balanced-flow (C_star ≈ 1) from producing
+  values slightly above 1, which would propagate to negative Q.
+- **L-9 `_StepNormStop` moved outside attempt loop** in `NLPDriver.run()`.
+  The class is now defined once per `run()` call, before the restart loop,
+  so the class identity is stable across attempts.
+
+### Tests
+
+| Milestone | Pass | Warn | Fail |
+|---|---|---|---|
+| v1.5.2 baseline | 434 | 0 | 0 |
+| **v1.5.3** | **507** | **1** | **0** |
+
+The single warning (`RuntimeWarning` from the KPI-poison test) is intentional —
+it proves the new H-7 warning fires correctly.
+
+## [1.5.2] — 2026-05-20
+
 ## [1.5.0-rc1] — 2026-05-19
 
 First release candidate of v1.5.0, the **Multi-Tier Optimization Engine**
