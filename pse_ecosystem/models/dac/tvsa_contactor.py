@@ -153,6 +153,14 @@ class TVSAContactor(BaseUnit):
 
         self._capture_rate = eta_cap * self.y_co2_atm  # mol CO2 captured per mol air
 
+    @property
+    def _primary_inlet_port(self):
+        return self.air_in_port
+
+    @property
+    def _primary_outlet_port(self):
+        return self.co2_out_port
+
     # ── Abstract interface ────────────────────────────────────────────────
 
     def variables(self) -> List[str]:

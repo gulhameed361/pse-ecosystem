@@ -38,6 +38,56 @@ class ParamSpec:
     options: List[str] = field(default_factory=list)   # for dtype="select"
     unit: str = ""      # physical unit string shown in brackets, e.g. "°C"
     help: str = ""      # tooltip shown in the UI
+    group: str = ""     # "bounds" → rendered in collapsed Advanced Bounds expander
+
+
+def _bounds_specs(
+    feed_max: float = 1e4,
+    T_min: float = 200.0,
+    T_max: float = 2000.0,
+    P_min: float = 1e3,
+    P_max: float = 1e8,
+    W_max: Optional[float] = None,
+    Q_max: Optional[float] = None,
+    include_tp: bool = True,
+) -> List[ParamSpec]:
+    """Return standard Advanced Bounds ParamSpec entries for a unit.
+
+    These are rendered in a collapsed "Advanced Bounds" expander in the
+    Custom Flowsheet Builder so casual users don't see them but power users
+    can scale up or constrain the unit.
+    """
+    specs = [
+        ParamSpec("feed_max", "Max Flow (all species)", "float", feed_max,
+                  unit="mol/s",
+                  help="Upper bound on every molar flow variable in this unit. "
+                       "Increase for high-throughput industrial scale.",
+                  group="bounds"),
+    ]
+    if include_tp:
+        specs += [
+            ParamSpec("T_min", "Min Temperature", "float", T_min,
+                      unit="K", help="Lower temperature bound.", group="bounds"),
+            ParamSpec("T_max", "Max Temperature", "float", T_max,
+                      unit="K", help="Upper temperature bound.", group="bounds"),
+            ParamSpec("P_min", "Min Pressure", "float", P_min,
+                      unit="Pa", help="Lower pressure bound.", group="bounds"),
+            ParamSpec("P_max", "Max Pressure", "float", P_max,
+                      unit="Pa", help="Upper pressure bound.", group="bounds"),
+        ]
+    if W_max is not None:
+        specs.append(
+            ParamSpec("W_max", "Max Work/Power", "float", W_max,
+                      unit="W", help="Upper bound on shaft work or electrical power.",
+                      group="bounds")
+        )
+    if Q_max is not None:
+        specs.append(
+            ParamSpec("Q_max_kW", "Max Heat Duty", "float", Q_max,
+                      unit="kW", help="Upper bound on heat duty (cooling or heating).",
+                      group="bounds")
+        )
+    return specs
 
 
 UNIT_PARAM_SPECS: Dict[str, List[ParamSpec]] = {
@@ -46,7 +96,8 @@ UNIT_PARAM_SPECS: Dict[str, List[ParamSpec]] = {
                   ["Pine Wood", "Miscanthus", "Wheat Straw"]),
         ParamSpec("T_preheat_C", "Preheat Temperature", "float", 200.0,
                   unit="°C", help="Target preheat temperature for dry biomass"),
-    ],
+    ] + _bounds_specs(feed_max=1000.0, include_tp=False),
+
     "BiomassGasifierHF": [
         ParamSpec("T_gasifier_C", "Gasifier Temperature", "float", 800.0,
                   unit="°C", help="Thermochemical equilibrium temperature"),
@@ -54,74 +105,110 @@ UNIT_PARAM_SPECS: Dict[str, List[ParamSpec]] = {
                   ["Steam", "Air"], help="Steam gives higher H₂ yield; Air is cheaper"),
         ParamSpec("P_atm", "Pressure", "float", 1.0,
                   unit="atm", help="Operating pressure"),
-    ],
+    ] + _bounds_specs(feed_max=1000.0, include_tp=False),
+
     "WGSReactorHF": [
         ParamSpec("T_wgs_C", "WGS Temperature", "float", 400.0,
                   unit="°C", help="400 °C = High-Temperature Shift; 220 °C = Low-Temperature Shift"),
-    ],
+    ] + _bounds_specs(feed_max=1e4, include_tp=False),
+
     "CoolerHF": [
         ParamSpec("T_out_K", "Outlet Temperature", "float", 310.0,
-                  unit="K", help="Fixed outlet temperature (parameter, not solver variable)"),
-    ],
+                  unit="K", help="Fixed cooling target temperature"),
+        ParamSpec("cooling_water_price_USD_per_GJ", "Cooling Water Price", "float", 0.35,
+                  unit="USD/GJ", help="Utility cost for cooling water; affects OPEX"),
+    ] + _bounds_specs(feed_max=1_000.0, T_min=200.0, T_max=2000.0,
+                      P_min=1e3, P_max=1e8, Q_max=1e7),
+
     "SeparatorHF": [
         ParamSpec("n_outlets", "Number of Outlets", "int", 2,
                   help="Typically 2 for binary split; up to 4 supported"),
-    ],
+    ] + _bounds_specs(),
+
     "Compressor": [
         ParamSpec("eta_isentropic", "Isentropic Efficiency", "float", 0.78,
                   unit="—", help="0–1; typical industrial range 0.70–0.85"),
         ParamSpec("P_out_Pa", "Outlet Pressure", "float", 500_000.0,
                   unit="Pa", help="5e5 Pa = 5 bar; 5e6 Pa = 50 bar"),
-    ],
+        ParamSpec("electricity_price_USD_per_kWh", "Electricity Price", "float", 0.05,
+                  unit="USD/kWh", help="Used to compute compressor electricity OPEX"),
+    ] + _bounds_specs(W_max=1e9),
+
     "HeatExchangerNTU": [
         ParamSpec("UA_W_per_K", "UA Product", "float", 5000.0,
                   unit="W/K", help="Overall heat transfer coefficient × area"),
-    ],
+    ] + _bounds_specs(),
+
     "MixerHF": [
         ParamSpec("n_inlets", "Number of Inlets", "int", 2,
                   help="Number of feed streams entering the mixer"),
-    ],
+    ] + _bounds_specs(),
+
     "FlashVLHF": [
         ParamSpec("T_min", "T min", "float", 250.0, unit="K"),
         ParamSpec("T_max", "T max", "float", 550.0, unit="K"),
         ParamSpec("P_min", "P min", "float", 1e3,  unit="Pa"),
         ParamSpec("P_max", "P max", "float", 1e7,  unit="Pa"),
-    ],
+    ] + _bounds_specs(include_tp=False),
+
     "StoichiometricReactor": [
         ParamSpec("feed_max", "Max Feed Flow", "float", 50.0,
                   unit="mol/s", help="Upper bound on inlet flow variables"),
     ],
+
     "MethanationReactor": [
         ParamSpec("T_rx_K", "Reactor Temperature", "float", 673.0,
                   unit="K", help="Sabatier reaction temperature (400 °C default)"),
-    ],
+    ] + _bounds_specs(),
+
     "TVSAContactor": [
         ParamSpec("eta_cap", "CO₂ Capture Efficiency", "float", 0.85,
                   unit="—", help="Fraction of inlet CO₂ captured (0–1)"),
         ParamSpec("T_des_K", "Desorption Temperature", "float", 393.0,
                   unit="K", help="120 °C default; higher = more regen energy"),
+        ParamSpec("dH_des_kJ_per_mol", "Desorption Enthalpy", "float", 70.0,
+                  unit="kJ/mol", help="Sorbent regeneration enthalpy per mol CO₂"),
+        ParamSpec("y_co2_atm", "Ambient CO₂ (ppm)", "float", 415.0,
+                  unit="ppm", help="Atmospheric CO₂ concentration (default 415 ppm 2024)"),
     ],
+
     "ElectrolyserHF": [
         ParamSpec("eta_elec", "Electrolyser Efficiency", "float", 0.70,
                   unit="—", help="HHV basis; typical PEM 0.65–0.75"),
-    ],
+        ParamSpec("capex_USD_per_kW", "Stack CAPEX", "float", 1_200.0,
+                  unit="USD/kW", help="Purchase cost per kW installed (NREL 2024: 1200 USD/kW)"),
+    ] + _bounds_specs(feed_max=1e5, include_tp=False, W_max=1e7),
+
     "CHPUnit": [
         ParamSpec("eta_comb", "Combustion Efficiency", "float", 0.95, unit="—"),
         ParamSpec("eta_isentropic", "Turbine Isentropic Efficiency", "float", 0.85, unit="—"),
-    ],
+        ParamSpec("eta_hrec", "Heat Recovery Efficiency", "float", 0.85, unit="—",
+                  help="HRSG efficiency — fraction of turbine exhaust heat recovered"),
+        ParamSpec("lambda_air", "Excess Air Ratio", "float", 1.1, unit="—",
+                  help="1.0 = stoichiometric; >1.0 = excess air (1.1 typical for stable combustion)"),
+    ] + _bounds_specs(T_min=273.0, T_max=1500.0, P_min=1e4, P_max=5e6, W_max=1e9),
+
     # ── v1.4.0 audit H11: extra UI-selectable types ──────────────────────────
     "Pump": [
         ParamSpec("eta_pump", "Pump Efficiency", "float", 0.75,
                   unit="—", help="Mechanical efficiency, 0–1; typical 0.65–0.85"),
         ParamSpec("P_out_Pa", "Outlet Pressure", "float", 1_000_000.0,
                   unit="Pa", help="Set to 0 to leave P_out free"),
-    ],
+        ParamSpec("density_kg_m3", "Liquid Density", "float", 1000.0,
+                  unit="kg/m³", help="Water=1000, methanol=791, glycol=1113 kg/m³"),
+        ParamSpec("molar_mass_kg_mol", "Molar Mass", "float", 0.018,
+                  unit="kg/mol", help="Water=0.018, methanol=0.032, ethanol=0.046 kg/mol"),
+        ParamSpec("electricity_price_USD_per_kWh", "Electricity Price", "float", 0.05,
+                  unit="USD/kWh", help="Used to compute pump electricity OPEX"),
+    ] + _bounds_specs(W_max=1e9),
+
     "Valve": [
         ParamSpec("Cv", "Valve Coefficient (Cv)", "float", 1.0,
                   unit="—", help="Flow coefficient; sets the throttle resistance"),
         ParamSpec("P_out_Pa", "Outlet Pressure", "float", 200_000.0,
                   unit="Pa", help="Throttle target pressure"),
-    ],
+    ] + _bounds_specs(),
+
     "ShellTubeHX": [
         ParamSpec("U_W_per_m2_K", "Overall U", "float", 500.0,
                   unit="W/m²/K", help="Heat-transfer coefficient"),
@@ -131,22 +218,27 @@ UNIT_PARAM_SPECS: Dict[str, List[ParamSpec]] = {
                   help="LMTD F-factor depends on the shell/tube pass combination"),
         ParamSpec("n_tube_passes", "Tube Passes", "int", 2,
                   help="LMTD F-factor depends on the shell/tube pass combination"),
-    ],
+    ] + _bounds_specs(),
+
     "H2SeparatorPSA": [
         ParamSpec("H2_recovery", "H₂ Recovery", "float", 0.85,
                   unit="—", help="Fraction of feed H₂ recovered to product, 0–1"),
-    ],
+        ParamSpec("electricity_price_USD_per_kWh", "Electricity Price", "float", 0.05,
+                  unit="USD/kWh", help="PSA electricity OPEX cost rate"),
+    ] + _bounds_specs(include_tp=False),
+
     "GibbsReactor": [
-        # No tunable params; T is a solver variable inside the reactor.
         ParamSpec("T_max", "Max Temperature", "float", 2000.0,
                   unit="K", help="Upper bound used by the inner Gibbs minimiser"),
-    ],
+    ] + _bounds_specs(),
+
     "EquilibriumReactor": [
         ParamSpec("T_ref_K", "Reference Temperature", "float", 673.0,
                   unit="K", help="van't Hoff reference for Keq(T) scaling"),
         ParamSpec("Keq_ref", "Reference Keq", "float", 8.9,
                   unit="—", help="Equilibrium constant at T_ref. Default reaction = WGS"),
-    ],
+    ] + _bounds_specs(),
+
     "DistillationHF": [
         ParamSpec("hk", "Heavy Key Species", "select", "toluene",
                   ["toluene", "benzene", "methanol", "water"],
@@ -158,7 +250,7 @@ UNIT_PARAM_SPECS: Dict[str, List[ParamSpec]] = {
                   unit="—", help="Operating reflux as a multiple of minimum reflux"),
         ParamSpec("T_op_K", "Operating Temperature", "float", 350.0,
                   unit="K", help="T used to evaluate K-values"),
-    ],
+    ] + _bounds_specs(T_min=250.0, T_max=600.0, P_min=1e3, P_max=5e6),
     # Toy units and units with no tunable params default to empty list (components-only)
 }
 
@@ -166,6 +258,16 @@ UNIT_PARAM_SPECS: Dict[str, List[ParamSpec]] = {
 def get_unit_param_specs(utype: str) -> List[ParamSpec]:
     """Return the list of ParamSpec descriptors for *utype*, or [] if none defined."""
     return UNIT_PARAM_SPECS.get(utype, [])
+
+
+def get_unit_bounds_specs(utype: str) -> List[ParamSpec]:
+    """Return only the 'bounds' group ParamSpec entries for *utype*."""
+    return [s for s in UNIT_PARAM_SPECS.get(utype, []) if s.group == "bounds"]
+
+
+def get_unit_main_specs(utype: str) -> List[ParamSpec]:
+    """Return non-bounds ParamSpec entries (the main parameter form)."""
+    return [s for s in UNIT_PARAM_SPECS.get(utype, []) if s.group != "bounds"]
 
 
 # ── Unit Management System (UMS) — Layer-1 display↔native conversion ─────────
@@ -1684,7 +1786,15 @@ _INLET_LISTS: tuple = ("inlet_ports",)     # MixerHF
 
 
 def _primary_outlet(unit: Any):
-    """Return the unit's primary outlet StreamPort, or None for flat-variable units."""
+    """Return the unit's primary outlet StreamPort, or None for flat-variable units.
+
+    Checks the canonical ``_primary_outlet_port`` property first (set on all
+    units with non-standard port names), then falls back to the legacy name list.
+    """
+    # Canonical property (preferred — units define this explicitly)
+    p = getattr(unit, "_primary_outlet_port", None)
+    if p is not None:
+        return p
     for name in _OUTLET_NAMED:
         p = getattr(unit, name, None)
         if p is not None:
@@ -1697,7 +1807,14 @@ def _primary_outlet(unit: Any):
 
 
 def _primary_inlet(unit: Any):
-    """Return the unit's primary inlet StreamPort, or None for flat-variable units."""
+    """Return the unit's primary inlet StreamPort, or None for flat-variable units.
+
+    Checks the canonical ``_primary_inlet_port`` property first (set on all
+    units with non-standard port names), then falls back to the legacy name list.
+    """
+    p = getattr(unit, "_primary_inlet_port", None)
+    if p is not None:
+        return p
     for name in _INLET_NAMED:
         p = getattr(unit, name, None)
         if p is not None:
@@ -1875,7 +1992,19 @@ def _instantiate_unit(utype: str, uid: str, params: dict) -> Any:
     if utype == "SeparatorHF":
         from pse_ecosystem.models.separators.separator_hf import SeparatorHF, SeparatorHFParams
         components = params.get("components", ["H2", "CO2"])
-        sp = SeparatorHFParams(n_outlets=int(params.get("n_outlets", 2)))
+        n_out = int(params.get("n_outlets", 2))
+        # Allow per-component split fractions via "split_fractions" key.
+        # Format: [[f_comp0_out0, f_comp0_out1, ...], [f_comp1_out0, ...], ...]
+        sf = params.get("split_fractions", None)
+        sp = SeparatorHFParams(
+            n_outlets=n_out,
+            split_fractions=sf,
+            feed_max=float(params.get("feed_max", 1e4)),
+            T_min=float(params.get("T_min", 200.0)),
+            T_max=float(params.get("T_max", 2000.0)),
+            P_min=float(params.get("P_min", 1e3)),
+            P_max=float(params.get("P_max", 1e7)),
+        )
         return SeparatorHF(uid, components, sp)
 
     if utype == "FlashVLHF":
@@ -1903,6 +2032,13 @@ def _instantiate_unit(utype: str, uid: str, params: dict) -> Any:
         cp = CompressorParams(
             eta_isentropic=float(params.get("eta_isentropic", 0.78)),
             P_out_Pa=float(params.get("P_out_Pa", 500_000.0)),
+            feed_max=float(params.get("feed_max", 1e4)),
+            T_min=float(params.get("T_min", 250.0)),
+            T_max=float(params.get("T_max", 1500.0)),
+            P_min=float(params.get("P_min", 1e4)),
+            P_max=float(params.get("P_max", 1e8)),
+            W_max=float(params.get("W_max", 1e9)),
+            electricity_price_USD_per_kWh=float(params.get("electricity_price_USD_per_kWh", 0.05)),
         )
         return Compressor(uid, components, cp)
 
@@ -1920,6 +2056,9 @@ def _instantiate_unit(utype: str, uid: str, params: dict) -> Any:
 
     if utype == "TVSAContactor":
         from pse_ecosystem.models.dac.tvsa_contactor import TVSAContactor
+        # y_co2_atm stored as ppm in UI, convert to mol fraction
+        y_ppm = float(params.get("y_co2_atm", 415.0))
+        y_frac = y_ppm * 1e-6 if y_ppm > 1.0 else y_ppm
         return TVSAContactor(
             uid,
             eta_cap=float(params.get("eta_cap", 0.85)),
@@ -1930,11 +2069,16 @@ def _instantiate_unit(utype: str, uid: str, params: dict) -> Any:
             P_ads_kPa=float(params.get("P_ads_kPa", 101.325)),
             P_des_kPa=float(params.get("P_des_kPa", 5.0)),
             eta_vac=float(params.get("eta_vac", 0.70)),
+            y_co2_atm=y_frac,
         )
 
     if utype == "ElectrolyserHF":
         from pse_ecosystem.models.dac.electrolyser_hf import ElectrolyserHF
-        return ElectrolyserHF(uid, eta_elec=float(params.get("eta_elec", 0.70)))
+        return ElectrolyserHF(
+            uid,
+            eta_elec=float(params.get("eta_elec", 0.70)),
+            capex_USD_per_kW=float(params.get("capex_USD_per_kW", 1_200.0)),
+        )
 
     if utype == "MethanationReactor":
         from pse_ecosystem.models.dac.methanation_reactor import MethanationReactor
@@ -1951,6 +2095,12 @@ def _instantiate_unit(utype: str, uid: str, params: dict) -> Any:
             eta_mechanical=float(params.get("eta_mechanical", 0.98)),
             eta_hrec=float(params.get("eta_hrec", 0.85)),
             lambda_air=float(params.get("lambda_air", 1.1)),
+            fuel_feed_max=float(params.get("feed_max", 1e4)),
+            T_fuel_min=float(params.get("T_min", 273.0)),
+            T_fuel_max=float(params.get("T_max", 1500.0)),
+            P_fuel_min=float(params.get("P_min", 1e4)),
+            P_fuel_max=float(params.get("P_max", 5e6)),
+            W_max=float(params.get("W_max", 1e9)),
         )
 
     if utype == "BiomassStorageHF":
@@ -1978,6 +2128,7 @@ def _instantiate_unit(utype: str, uid: str, params: dict) -> Any:
         return WGSReactorHF(
             uid,
             T_wgs_C=float(params.get("T_wgs_C", 400.0)),
+            feed_max=float(params.get("feed_max", 1e4)),
         )
 
     if utype == "CoolerHF":
@@ -1986,6 +2137,14 @@ def _instantiate_unit(utype: str, uid: str, params: dict) -> Any:
         cp = CoolerHFParams(
             T_out_K=float(params.get("T_out_K", 400.0)),
             feed_max=float(params.get("feed_max", 1_000.0)),
+            T_min=float(params.get("T_min", 200.0)),
+            T_max=float(params.get("T_max", 2000.0)),
+            P_min=float(params.get("P_min", 1e3)),
+            P_max=float(params.get("P_max", 1e8)),
+            Q_max_kW=float(params.get("Q_max_kW", 1e7)),
+            cooling_water_price_USD_per_GJ=float(
+                params.get("cooling_water_price_USD_per_GJ", 0.35)
+            ),
         )
         return CoolerHF(uid, components, cp)
 
@@ -1996,7 +2155,16 @@ def _instantiate_unit(utype: str, uid: str, params: dict) -> Any:
         p_out = params.get("P_out_Pa", 1_000_000.0)
         pp = PumpParams(
             eta_pump=float(params.get("eta_pump", 0.75)),
+            density_kg_m3=float(params.get("density_kg_m3", 1000.0)),
+            molar_mass_kg_mol=float(params.get("molar_mass_kg_mol", 0.018)),
             P_out_Pa=float(p_out) if p_out else None,
+            feed_max=float(params.get("feed_max", 1e4)),
+            T_min=float(params.get("T_min", 250.0)),
+            T_max=float(params.get("T_max", 600.0)),
+            P_min=float(params.get("P_min", 1e3)),
+            P_max=float(params.get("P_max", 1e8)),
+            W_max=float(params.get("W_max", 1e9)),
+            electricity_price_USD_per_kWh=float(params.get("electricity_price_USD_per_kWh", 0.05)),
         )
         return Pump(uid, components, pp)
 
@@ -2026,7 +2194,12 @@ def _instantiate_unit(utype: str, uid: str, params: dict) -> Any:
 
     if utype == "H2SeparatorPSA":
         from pse_ecosystem.models.biomass.h2_separator import H2SeparatorPSA
-        return H2SeparatorPSA(uid, H2_recovery=float(params.get("H2_recovery", 0.85)))
+        return H2SeparatorPSA(
+            uid,
+            H2_recovery=float(params.get("H2_recovery", 0.85)),
+            electricity_price_USD_per_kWh=float(params.get("electricity_price_USD_per_kWh", 0.05)),
+            feed_max=float(params.get("feed_max", 1e4)),
+        )
 
     if utype == "GibbsReactor":
         from pse_ecosystem.models.reactors.gibbs_reactor import GibbsReactor, GibbsReactorParams

@@ -65,9 +65,15 @@ class H2SeparatorPSA(BaseUnit):
         self,
         unit_id: str,
         H2_recovery: float = 0.85,
+        electricity_price_USD_per_kWh: float = 0.05,
+        operating_hours_per_year: float = 8_000.0,
+        feed_max: float = 1e4,
     ) -> None:
         self.unit_id = unit_id
         self.H2_recovery = float(H2_recovery)
+        self._elec_price = electricity_price_USD_per_kWh
+        self._op_hours = operating_hours_per_year
+        self._feed_max = feed_max
 
         self.feed_in_port = StreamPort(
             unit_id=unit_id, tag="feed_in",
@@ -84,6 +90,14 @@ class H2SeparatorPSA(BaseUnit):
             components=_TAIL_COMPS, has_T=False, has_P=False,
             phase="gas", species=_TAIL_SPECIES,
         )
+
+    @property
+    def _primary_inlet_port(self):
+        return self.feed_in_port
+
+    @property
+    def _primary_outlet_port(self):
+        return self.h2_out_port
 
     # ── Variable helpers ──────────────────────────────────────────────────────
 
@@ -102,10 +116,10 @@ class H2SeparatorPSA(BaseUnit):
     def bounds(self) -> Dict[str, Tuple[float, float]]:
         b: Dict[str, Tuple[float, float]] = {}
         for v in self._feed_vars():
-            b[v] = (0.0, 1e4)
-        b[self._h2_var()] = (0.0, 1e4)
+            b[v] = (0.0, self._feed_max)
+        b[self._h2_var()] = (0.0, self._feed_max)
         for v in self._tail_vars():
-            b[v] = (0.0, 1e4)
+            b[v] = (0.0, self._feed_max)
         return b
 
     # ── Residuals ─────────────────────────────────────────────────────────────
@@ -126,27 +140,57 @@ class H2SeparatorPSA(BaseUnit):
         return f
 
     def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
-        # Maximise H2 product (negative coefficient → minimise −H2)
+        # Maximise H2 product (negative coefficient → minimise −H2).
+        # Electricity cost is computed in opex_per_year() below.
         return {self._h2_var(): -1.0}
+
+    def opex_per_year(self, x: Dict[str, float],
+                      operating_hours: float = 8_000.0) -> float:
+        """PSA electricity cost [USD/yr].
+
+        _OPEX_CONVENTION = "yield_coefficient" suppresses the objective_contribution
+        from the BaseUnit default.  This override adds the real electricity cost
+        (W_PSA_kW × price × hours) so it appears in the Project Economics report.
+        """
+        kpis = self.kpis(x)
+        uid = self.unit_id
+        W_kW = kpis.get(f"{uid}.W_PSA_kW", 0.0)
+        hours = operating_hours or self._op_hours
+        return W_kW * self._elec_price * hours
 
     # ── KPIs ──────────────────────────────────────────────────────────────────
 
-    def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
+    def capex(self, x: Dict[str, float]) -> float:
+        """PSA vessel + compressor CAPEX [USD, CE500 basis].
+
+        Sized on H₂ production rate: ~$1 500/kg-H₂/day purchase cost
+        (literature mid-point for 10–10 000 kg/day PSA units).
+        """
+        from pse_ecosystem.models.costing.sslw_costing import vessel_purchase_cost_USD
         uid = self.unit_id
         n_H2_out = max(x.get(self._h2_var(), 0.0), 0.0)
+        h2_kg_day = n_H2_out * _MW_H2 / 1000.0 * 3600.0 * 24.0
+        # Use vessel_purchase_cost_USD as a proxy (PSA vessel sized by throughput)
+        V_m3 = max(h2_kg_day / 50.0, 0.1)   # rough: 50 kg H2/day per m³
+        return vessel_purchase_cost_USD(V_m3)
+
+    def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
+        uid = self.unit_id
+        n_H2_out  = max(x.get(self._h2_var(), 0.0), 0.0)
         n_H2_feed = max(x.get(f"{uid}.feed_in.F_H2", 1e-12), 1e-12)
 
         h2_kg_s = n_H2_out * _MW_H2 / 1000.0   # mol/s → kg/s
         h2_kg_h = h2_kg_s * 3600.0
         recovery_pct = 100.0 * n_H2_out / n_H2_feed
 
-        # PSA electricity: ~1.5 kWh/kg H2 (literature average)
-        W_psa_kW = h2_kg_s * 1.5 * 3600.0 / 3600.0   # = h2_kg_s × 1.5 kW·h/kg × ... simplifies to:
-        W_psa_kW = h2_kg_s * 1.5   # kW (since 1 kWh/kg × kg/s = kW)
+        # PSA electricity: 1.5 kWh/kg H₂ (literature average).
+        # Correct conversion: 1.5 kWh/kg × h2_kg_s kg/s = 1.5 × 3600 kW
+        # (1 kWh = 3600 kJ; 1 kJ/s = 1 kW → multiply by 3600 not divide)
+        W_psa_kW = h2_kg_s * 1.5 * 3600.0   # kW
 
         return {
             f"{uid}.H2_production_kg_h": h2_kg_h,
             f"{uid}.H2_production_kg_s": h2_kg_s,
-            f"{uid}.H2_recovery_pct": recovery_pct,
-            f"{uid}.W_PSA_kW": W_psa_kW,
+            f"{uid}.H2_recovery_pct":    recovery_pct,
+            f"{uid}.W_PSA_kW":           W_psa_kW,
         }

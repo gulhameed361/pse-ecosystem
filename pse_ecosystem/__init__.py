@@ -46,4 +46,4 @@ Low-severity fixes
 - OBJECTIVE_LP_PROXY_NOTE dict exposes proxy warning for UI display.
 """
 
-__version__ = "1.5.3"
+__version__ = "1.5.3"  # model-compatibility patch applied

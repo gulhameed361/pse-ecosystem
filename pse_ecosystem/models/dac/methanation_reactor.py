@@ -115,6 +115,15 @@ class MethanationReactor(BaseUnit):
         self._v_h2o    = f"{unit_id}.product_out.F_H2O"
         self._v_X      = f"{unit_id}.X_CO2"
         self._v_T      = f"{unit_id}.T_rx_K"
+        self._v_Q      = f"{unit_id}.Q_duty_kW"  # cooling duty [kW] ≥ 0
+
+    @property
+    def _primary_inlet_port(self):
+        return self.co2_in_port
+
+    @property
+    def _primary_outlet_port(self):
+        return self.product_out_port
 
     # ── Helper: equilibrium ───────────────────────────────────────────────
 
@@ -133,7 +142,7 @@ class MethanationReactor(BaseUnit):
         return [
             self._v_co2_in, self._v_h2_in,
             self._v_ch4, self._v_h2o,
-            self._v_X, self._v_T,
+            self._v_X, self._v_T, self._v_Q,
         ]
 
     def bounds(self) -> Dict[str, Tuple[float, float]]:
@@ -142,8 +151,9 @@ class MethanationReactor(BaseUnit):
             self._v_h2_in:  (0.0, 4e4),
             self._v_ch4:    (0.0, 1e4),
             self._v_h2o:    (0.0, 2e4),
-            self._v_X:      (0.01, 0.9999),  # conversion [fraction]
-            self._v_T:      (373.0, 1073.0),  # K — 100 to 800 °C
+            self._v_X:      (0.01, 0.9999),
+            self._v_T:      (373.0, 1073.0),
+            self._v_Q:      (0.0, 1e7),      # cooling duty ≥ 0 [kW]
         }
 
     def residual(self, x: Dict[str, float]) -> np.ndarray:
@@ -153,14 +163,18 @@ class MethanationReactor(BaseUnit):
         X = x.get(self._v_X, 0.5)
         T = x.get(self._v_T, self._T_default)
         K = self._K_sab(T)
+        Q = x.get(self._v_Q, 0.0)
 
         return np.array([
             # r0: CH4 yield balance
             F_ch4 - X * F_co2,
             # r1: H2O yield balance
             F_h2o - 2.0 * X * F_co2,
-            # r2: equilibrium K*(1-X) = X  (from X = K/(1+K))
+            # r2: equilibrium K*(1-X) = X
             K * (1.0 - X) - X,
+            # r3: energy balance — cooling duty equals exothermic heat released
+            # Q_duty = |ΔH_Sab| × F_CH4  (Sabatier: ΔH = -165 kJ/mol, exothermic)
+            Q - abs(_DH_SAB) * F_ch4,
         ], dtype=float)
 
     def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
@@ -177,15 +191,19 @@ class MethanationReactor(BaseUnit):
         T = x.get(self._v_T, self._T_default)
         Q_rx = abs(_DH_SAB) * F_ch4  # kW heat released
         sng_Nm3_h = F_ch4 * 22.414 * 3600.0 / 1000.0  # Nm³/h (22.414 L/mol)
+        uid = self.unit_id
+        Q_duty = x.get(self._v_Q, Q_rx)
         kpis = {
-            "CH4_yield_pct": X * 100.0,
-            "CH4_production_mol_s": F_ch4,
-            "SNG_production_Nm3_h": sng_Nm3_h,
-            "heat_released_kW": Q_rx,
-            "T_rx_C": T - 273.15,
+            f"{uid}.CH4_yield_pct":          X * 100.0,
+            f"{uid}.CH4_production_mol_s":   F_ch4,
+            f"{uid}.SNG_production_Nm3_h":   sng_Nm3_h,
+            f"{uid}.Q_duty_kW":              Q_duty,
+            f"{uid}.heat_released_kW":       Q_rx,
+            f"{uid}.T_rx_K":                 T,
+            f"{uid}.T_rx_C":                 T - 273.15,
         }
         if F_co2 <= _FLOOR * 1.001:
-            kpis["_warning_low_feed"] = 1.0  # flagged for downstream display
+            kpis[f"{uid}._warning_low_feed"] = 1.0
         return kpis
 
     def capex(self, x: Dict[str, float]) -> float:
@@ -211,28 +229,32 @@ class MethanationReactor(BaseUnit):
         F_co2 = x0_dict.get(self._v_co2_in, 0.0)
         K = self._K_sab(T)
 
-        J = np.zeros((3, n), dtype=float)
+        J = np.zeros((4, n), dtype=float)
         i_co2 = idx[self._v_co2_in]
         i_ch4 = idx[self._v_ch4]
         i_h2o = idx[self._v_h2o]
         i_X   = idx[self._v_X]
         i_T   = idx[self._v_T]
+        i_Q   = idx[self._v_Q]
 
         # r0: F_CH4 - X*F_CO2 = 0
-        J[0, i_ch4] = 1.0
+        J[0, i_ch4] =  1.0
         J[0, i_co2] = -X
         J[0, i_X]   = -F_co2
 
         # r1: F_H2O - 2X*F_CO2 = 0
-        J[1, i_h2o] = 1.0
+        J[1, i_h2o] =  1.0
         J[1, i_co2] = -2.0 * X
         J[1, i_X]   = -2.0 * F_co2
 
         # r2: K*(1-X) - X = 0
-        # dK/dT = K * (-A/T^2)
         dK_dT = K * (-_A_KSAB / (T * T))
-        J[2, i_X] = -(K + 1.0)          # ∂r2/∂X = -K - 1
-        J[2, i_T] = (1.0 - X) * dK_dT   # ∂r2/∂T = (1-X)*dK/dT
+        J[2, i_X] = -(K + 1.0)
+        J[2, i_T] = (1.0 - X) * dK_dT
+
+        # r3: Q_duty - |ΔH_Sab| * F_CH4 = 0  (energy balance, linear in Q and F_CH4)
+        J[3, i_Q]   =  1.0
+        J[3, i_ch4] = -abs(_DH_SAB)
 
         return LinearizedModel(
             unit_id=self.unit_id,

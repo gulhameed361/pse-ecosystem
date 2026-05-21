@@ -203,3 +203,25 @@ class PFRHF(BaseUnit):
 
     def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
         return {}
+
+    def capex(self, x: Dict[str, float]) -> float:
+        """Vessel purchase cost [USD, CE500 basis] from reactor volume."""
+        from pse_ecosystem.models.costing.sslw_costing import vessel_purchase_cost_USD
+        p = self.params
+        volume_m3 = max(p.length_m * p.cross_section_m2, 0.05)
+        return vessel_purchase_cost_USD(volume_m3)
+
+    def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
+        uid = self.unit_id
+        comps = self.components
+        F_in  = {c: max(x.get(self._v_F_in(c), 0.0), 1e-12) for c in comps}
+        F_out = {c: max(x.get(self._v_F_out(c), 0.0), 0.0) for c in comps}
+        result: Dict[str, float] = {
+            f"{uid}.T_out_K": x.get(self._v_T_out(), 0.0),
+            f"{uid}.volume_m3": self.params.length_m * self.params.cross_section_m2,
+        }
+        for c in comps:
+            result[f"{uid}.conversion_{c}_pct"] = (
+                100.0 * max(F_in[c] - F_out[c], 0.0) / F_in[c]
+            )
+        return result

@@ -59,6 +59,8 @@ class CompressorParams:
     P_max: float = 1e8
     W_max: float = 1e9             # W
     gamma_fixed: Optional[float] = None  # if None, computed from species
+    electricity_price_USD_per_kWh: float = 0.05   # for OPEX calculation
+    operating_hours_per_year: float = 8_000.0
 
 
 class Compressor(BaseUnit):
@@ -170,15 +172,29 @@ class Compressor(BaseUnit):
         return res
 
     def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
-        return {}
+        """Electricity cost contribution [USD/yr] for the shaft work draw."""
+        p = self.params
+        # W_shaft is in W; convert to kW: divide by 1000.
+        # Annual electricity cost = (W_shaft / 1000) × price × hours
+        coeff_USD_per_W_yr = p.electricity_price_USD_per_kWh * p.operating_hours_per_year / 1000.0
+        return {self._v_W(): coeff_USD_per_W_yr}
 
     def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
+        uid = self.unit_id
         W = x.get(self._v_W(), 0.0)
+        T_in  = x.get(self._v_T_in(), 298.0)
+        T_out = x.get(self._v_T_out(), 400.0)
+        P_in  = max(x.get(self._v_P_in(), 101325.0), 1.0)
+        P_out = max(x.get(self._v_P_out(), 500000.0), 1.0)
         from pse_ecosystem.models.costing.sslw_costing import compressor_purchase_cost_USD
         return {
-            "W_shaft_W": W,
-            "capex_USD": compressor_purchase_cost_USD(W),
-            "opex_USD_per_yr": self.opex_per_year(x),
+            f"{uid}.W_shaft_W":               W,
+            f"{uid}.W_shaft_kW":              W / 1000.0,
+            f"{uid}.T_out_K":                 T_out,
+            f"{uid}.compression_ratio":       P_out / P_in,
+            f"{uid}.isentropic_efficiency_pct": self.params.eta_isentropic * 100.0,
+            f"{uid}.capex_USD":               compressor_purchase_cost_USD(W),
+            f"{uid}.opex_USD_per_yr":         self.opex_per_year(x),
         }
 
     def capex(self, x: Dict[str, float]) -> float:

@@ -38,6 +38,8 @@ class PumpParams:
     P_min: float = 1e3
     P_max: float = 1e8
     W_max: float = 1e9       # W
+    electricity_price_USD_per_kWh: float = 0.05
+    operating_hours_per_year: float = 8_000.0
 
 
 class Pump(BaseUnit):
@@ -119,7 +121,23 @@ class Pump(BaseUnit):
         return res
 
     def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
-        return {}
+        """Electricity cost [USD/yr] for shaft work."""
+        p = self.params
+        coeff_USD_per_W_yr = p.electricity_price_USD_per_kWh * p.operating_hours_per_year / 1000.0
+        return {self._v_W(): coeff_USD_per_W_yr}
+
+    def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
+        uid = self.unit_id
+        W = x.get(self._v_W(), 0.0)
+        P_in  = max(x.get(self._v_P_in(), 101325.0), 1.0)
+        P_out = max(x.get(self._v_P_out(), 500000.0), 1.0)
+        return {
+            f"{uid}.W_shaft_W":           W,
+            f"{uid}.W_shaft_kW":          W / 1000.0,
+            f"{uid}.compression_ratio":   P_out / P_in,
+            f"{uid}.pump_efficiency_pct": self.params.eta_pump * 100.0,
+            f"{uid}.opex_USD_per_yr":     self.opex_per_year(x),
+        }
 
     def capex(self, x: Dict[str, float]) -> float:
         from pse_ecosystem.models.costing.sslw_costing import pump_purchase_cost_USD

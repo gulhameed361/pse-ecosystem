@@ -1095,7 +1095,9 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
             # flow, mass, power, energy) get an inline display-unit dropdown
             # — see the Unit Management System in flowsheet_service.py.
             unit_params: dict = {}
-            _specs = get_unit_param_specs(utype)
+            from pse_ecosystem.ui.flowsheet_service import get_unit_main_specs, get_unit_bounds_specs
+            _specs = get_unit_main_specs(utype)
+            _bounds_spec_list = get_unit_bounds_specs(utype)
             if _specs:
                 st.caption(
                     "Specification Sheet (pre-filled with engineering defaults). "
@@ -1183,6 +1185,33 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
                                     index=_ps.options.index(_ps.default) if _ps.default in _ps.options else 0,
                                     help=_ps.help, key=_key,
                                 )
+
+            # ── Advanced Bounds expander ──────────────────────────────────
+            if _bounds_spec_list:
+                with st.expander("Advanced Bounds", expanded=False):
+                    st.caption(
+                        "Override the default variable bounds for scale-up or "
+                        "constraint tightening. Changes here propagate directly "
+                        "into the LP — wide bounds allow the solver more freedom; "
+                        "narrow bounds enforce design constraints."
+                    )
+                    _NCOL_B = 3
+                    for _brow_start in range(0, len(_bounds_spec_list), _NCOL_B):
+                        _brow = _bounds_spec_list[_brow_start:_brow_start + _NCOL_B]
+                        _bcols = st.columns(_NCOL_B)
+                        for _bcol, _bps in zip(_bcols, _brow):
+                            _bkey = f"bound_{i}_{_bps.name}"
+                            _blabel = f"{_bps.label} [{_bps.unit}]" if _bps.unit else _bps.label
+                            if _bps.dtype == "float":
+                                unit_params[_bps.name] = _bcol.number_input(
+                                    _blabel, value=float(_bps.default),
+                                    help=_bps.help, key=_bkey,
+                                )
+                            elif _bps.dtype == "int":
+                                unit_params[_bps.name] = int(_bcol.number_input(
+                                    _blabel, value=int(_bps.default),
+                                    step=1, help=_bps.help, key=_bkey,
+                                ))
 
             unit_configs.append({
                 "type": utype,

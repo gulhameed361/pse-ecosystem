@@ -63,9 +63,11 @@ class WGSReactorHF(BaseUnit):
         self,
         unit_id: str,
         T_wgs_C: float = 400.0,
+        feed_max: float = 1e4,
     ) -> None:
         self.unit_id = unit_id
         self.T_K = T_wgs_C + 273.15
+        self._feed_max = feed_max
 
         self.syngas_in_port = StreamPort(
             unit_id=unit_id, tag="syngas_in",
@@ -77,6 +79,14 @@ class WGSReactorHF(BaseUnit):
             components=_SYNGAS_COMPS, has_T=False, has_P=False,
             phase="gas", species=_SYNGAS_SPECIES,
         )
+
+    @property
+    def _primary_inlet_port(self):
+        return self.syngas_in_port
+
+    @property
+    def _primary_outlet_port(self):
+        return self.shifted_out_port
 
     # ── Variable helpers ──────────────────────────────────────────────────────
 
@@ -95,9 +105,9 @@ class WGSReactorHF(BaseUnit):
     def bounds(self) -> Dict[str, Tuple[float, float]]:
         b: Dict[str, Tuple[float, float]] = {}
         for v in self._in_vars():
-            b[v] = (0.0, 1e4)
+            b[v] = (0.0, self._feed_max)
         for v in self._out_vars():
-            b[v] = (0.0, 1e4)
+            b[v] = (0.0, self._feed_max)
         b[self._xco_var()] = (0.01, 0.999)   # CO conversion 1–99.9%
         return b
 
@@ -142,6 +152,26 @@ class WGSReactorHF(BaseUnit):
     def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
         return {}
 
+    def capex(self, x: Dict[str, float]) -> float:
+        """SSLW vessel purchase cost [USD, CE500 basis].
+
+        Vessel volume estimated from total molar flow + ideal-gas residence
+        time (τ = 5 s at 400°C, 2 bar → ~0.1–2 m³ for 0.1–20 mol/s flows).
+        """
+        from pse_ecosystem.models.costing.sslw_costing import vessel_purchase_cost_USD
+        uid = self.unit_id
+        F_total = sum(
+            max(x.get(f"{uid}.syngas_in.F_{c}", 0.0), 0.0) for c in _SYNGAS_COMPS
+        )
+        # Ideal gas volumetric flow at operating conditions
+        T_K = self.T_K
+        P_Pa = 2e5      # assume 2 bar default operating pressure
+        R = 8.314
+        tau_s = 5.0     # 5 s residence time (typical WGS packed bed)
+        Q_vol = max(F_total, 0.01) * R * T_K / P_Pa
+        volume_m3 = max(Q_vol * tau_s, 0.05)
+        return vessel_purchase_cost_USD(volume_m3)
+
     # ── KPIs ──────────────────────────────────────────────────────────────────
 
     def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
@@ -156,4 +186,5 @@ class WGSReactorHF(BaseUnit):
         return {
             f"{uid}.CO_conversion_pct": X_CO * 100.0,
             f"{uid}.H2_pct_vol_out": h2_pct,
+            f"{uid}.T_wgs_K": self.T_K,
         }

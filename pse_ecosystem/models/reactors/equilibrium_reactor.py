@@ -193,3 +193,33 @@ class EquilibriumReactor(BaseUnit):
 
     def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
         return {}
+
+    def capex(self, x: Dict[str, float]) -> float:
+        """Vessel purchase cost [USD, CE500 basis]."""
+        from pse_ecosystem.models.costing.sslw_costing import vessel_purchase_cost_USD
+        F_total = sum(
+            max(x.get(self._v_F_in(c), 0.0), 0.0) for c in self.components
+        )
+        T = max(x.get(self._v_T_in(), 500.0), 273.0)
+        P = max(x.get(self._v_P_in(), 101325.0), 1.0)
+        R = 8.314
+        tau_s = 10.0   # 10 s residence time
+        Q_vol = max(F_total, 0.01) * R * T / P
+        volume_m3 = max(Q_vol * tau_s, 0.05)
+        return vessel_purchase_cost_USD(volume_m3)
+
+    def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
+        uid = self.unit_id
+        Q = x.get(self._v_Q(), 0.0)
+        comps = self.components
+        F_in  = {c: max(x.get(self._v_F_in(c), 0.0), 1e-12) for c in comps}
+        F_out = {c: max(x.get(self._v_F_out(c), 0.0), 0.0) for c in comps}
+        result: Dict[str, float] = {
+            f"{uid}.Q_duty_W": Q,
+            f"{uid}.T_out_K": x.get(self._v_T_out(), 0.0),
+        }
+        for c in comps:
+            result[f"{uid}.conversion_{c}_pct"] = (
+                100.0 * max(F_in[c] - F_out[c], 0.0) / F_in[c]
+            )
+        return result

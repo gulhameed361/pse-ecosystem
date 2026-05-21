@@ -87,6 +87,14 @@ class BiomassStorageHF(BaseUnit):
             phase="solid_dry", species=_dry_species,
         )
 
+    @property
+    def _primary_inlet_port(self):
+        return self.wet_in_port
+
+    @property
+    def _primary_outlet_port(self):
+        return self.dry_out_port
+
     # ── Variable names ────────────────────────────────────────────────────────
 
     def _v_wet(self) -> str:

@@ -62,39 +62,95 @@ SEVEN_UNIT_CONFIG = {
 # ── CoolerHF unit tests ───────────────────────────────────────────────────────
 
 class TestCoolerHF:
+    """v1.5.3: CoolerHF now has T/P ports, Q_duty energy balance, is non-linear."""
+
     def _make(self, comps=None) -> CoolerHF:
         comps = comps or SYNGAS_6
         return CoolerHF("cooler", comps, CoolerHFParams(T_out_K=310.0))
 
+    def _full_x(self, unit, T_in=600.0, T_out=310.0, P=101325.0, F=2.5):
+        """Build a physically consistent state dict."""
+        x = {}
+        for c in unit.components:
+            x[f"cooler.inlet.F_{c}"] = F
+            x[f"cooler.outlet.F_{c}"] = F
+        x["cooler.inlet.T"] = T_in
+        x["cooler.outlet.T"] = T_out
+        x["cooler.inlet.P"] = P
+        x["cooler.outlet.P"] = P
+        # Q_duty set to something; residual will show how far off we are
+        x["cooler.Q_duty_kW"] = 0.0
+        return x
+
     def test_residual_shape(self):
+        """v1.5.3: residual shape is N+3 (mass×N + T_out pin + P pass + energy)."""
         unit = self._make()
-        x = {f"cooler.inlet.F_{c}": 1.0 for c in SYNGAS_6}
-        x.update({f"cooler.outlet.F_{c}": 1.0 for c in SYNGAS_6})
+        x = self._full_x(unit)
         res = unit.residual(x)
-        assert res.shape == (len(SYNGAS_6),)
+        assert res.shape == (len(SYNGAS_6) + 3,)
 
-    def test_residual_zero_at_steady_state(self):
+    def test_residual_mass_conservation(self):
+        """First N residuals are the mass conservation rows (inlet = outlet)."""
         unit = self._make()
-        x = {f"cooler.inlet.F_{c}": 2.5 for c in SYNGAS_6}
-        x.update({f"cooler.outlet.F_{c}": 2.5 for c in SYNGAS_6})
-        np.testing.assert_allclose(unit.residual(x), 0.0, atol=1e-12)
+        x = self._full_x(unit)
+        res = unit.residual(x)
+        N = len(SYNGAS_6)
+        np.testing.assert_allclose(res[:N], 0.0, atol=1e-10)
 
-    def test_is_linear(self):
-        assert CoolerHF.is_linear is True
+    def test_residual_t_out_pin(self):
+        """Row N: T_out pinned at T_out_K=310."""
+        unit = self._make()
+        x = self._full_x(unit, T_out=310.0)
+        res = unit.residual(x)
+        N = len(SYNGAS_6)
+        assert res[N] == pytest.approx(0.0, abs=1e-10)
 
-    def test_linearize_exact(self):
+    def test_residual_t_out_pin_violation(self):
+        """Row N non-zero when T_out ≠ T_out_K."""
+        unit = self._make()
+        x = self._full_x(unit, T_out=400.0)
+        res = unit.residual(x)
+        N = len(SYNGAS_6)
+        assert abs(res[N]) > 0.1  # 400 - 310 = 90 K off
+
+    def test_is_nonlinear(self):
+        """v1.5.3: CoolerHF is now non-linear due to energy balance."""
+        assert CoolerHF.is_linear is False
+
+    def test_linearize_not_exact(self):
+        """Semi-analytical linearize; is_exact=False because T_in is non-linear."""
         unit = self._make()
         vals = {v: 1.0 for v in unit.variables()}
+        vals["cooler.inlet.T"] = 600.0
+        vals["cooler.outlet.T"] = 310.0
         guess = PrimalGuess(values=vals)
         lin = unit.linearize(guess)
-        assert lin.is_exact is True
-        assert lin.J.shape == (len(SYNGAS_6), 2 * len(SYNGAS_6))
+        assert lin.is_exact is False
+        N = len(SYNGAS_6)
+        assert lin.J.shape == (N + 3, len(unit.variables()))
 
-    def test_kpis_return_t_out(self):
+    def test_kpis_return_t_out_from_solution(self):
+        """v1.5.3: T_out_K KPI reads from solution variable, not params."""
         unit = self._make()
-        x = {v: 1.0 for v in unit.variables()}
+        x = self._full_x(unit, T_out=310.0)
         kpis = unit.kpis(x)
-        assert kpis["cooler.T_out_K"] == pytest.approx(310.0)
+        assert "cooler.T_out_K" in kpis
+        assert kpis["cooler.T_out_K"] == pytest.approx(310.0, abs=1.0)
+
+    def test_kpis_include_q_duty(self):
+        """v1.5.3: Q_duty_kW must appear in KPIs."""
+        unit = self._make()
+        x = self._full_x(unit)
+        kpis = unit.kpis(x)
+        assert "cooler.Q_duty_kW" in kpis
+
+    def test_ports_have_t_and_p(self):
+        """v1.5.3: CoolerHF now has T and P on both ports."""
+        unit = self._make()
+        assert unit.inlet_port.has_T is True
+        assert unit.inlet_port.has_P is True
+        assert unit.outlet_port.has_T is True
+        assert unit.outlet_port.has_P is True
 
     def test_ports_named_inlet_outlet(self):
         unit = self._make()
@@ -189,9 +245,24 @@ def test_7_unit_chain_connection_count(seven_unit_fs):
 
 
 def test_7_unit_chain_exact_equality_count(seven_unit_fs):
-    """Both Academic and Industrial persona share the same physical core: 33 equalities."""
-    assert len(seven_unit_fs.connections) == 33, (
-        f"Expected 33 port-variable equalities, got {len(seven_unit_fs.connections)}. "
+    """v1.5.3: 35 port-variable equalities (was 33).
+
+    The +2 come from CoolerHF gaining T/P ports: the cooler → psa (SeparatorHF)
+    connection is now a full-port match (8 equalities vs 6 before). The
+    wgs → cooler connection is still flow-only (WGS has no T/P) so the
+    count there stays at 6.
+
+    Breakdown:
+      storage→gasifier :  1 (biomass flow)
+      gasifier→cyclone :  6 (syngas flows, padded — gasifier no T/P)
+      cyclone→wgs      :  6 (syngas flows, padded — WGS no T/P)
+      wgs→cooler       :  6 (syngas flows, padded — WGS no T/P)
+      cooler→psa       :  8 (6 flows + T + P — both have T/P now)
+      psa→comp         :  8 (6 flows + T + P — both have T/P)
+      Total            : 35
+    """
+    assert len(seven_unit_fs.connections) == 35, (
+        f"Expected 35 port-variable equalities, got {len(seven_unit_fs.connections)}. "
         f"Warnings: {seven_unit_fs._conn_warnings}"
     )
 

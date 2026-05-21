@@ -46,12 +46,11 @@ class ElectrolyserHF(BaseUnit):
 
     is_linear: bool = True
 
-    def __init__(self, unit_id: str, *, eta_elec: float = 0.70):
+    def __init__(self, unit_id: str, *, eta_elec: float = 0.70,
+                 capex_USD_per_kW: float = 1_200.0):
         # v1.4.0 audit N4 — clamp eta_elec to the physically realistic range
         # for PEM / AEL electrolysers (about 0.55 to 0.85 HHV-basis on the
-        # stack alone; system-level can be lower). The pre-v1.4.0 model
-        # accepted any positive value, so a typo or aggressive optimiser
-        # could push it to 0.05 (→ 2858 kW/(mol/s) H₂, clearly unphysical).
+        # stack alone; system-level can be lower).
         if not (0.30 <= eta_elec <= 0.95):
             raise ValueError(
                 f"ElectrolyserHF eta_elec must be in [0.30, 0.95]; got "
@@ -60,6 +59,7 @@ class ElectrolyserHF(BaseUnit):
             )
         self.unit_id = unit_id
         self.eta_elec = float(eta_elec)
+        self._capex_USD_per_kW = float(capex_USD_per_kW)
 
         # Derived coefficient
         self._k_elec = _HHV_H2 / self.eta_elec  # kW per (mol/s) H2
@@ -92,6 +92,14 @@ class ElectrolyserHF(BaseUnit):
         self._v_o2 = f"{unit_id}.o2_out.F_O2"
         self._v_w = f"{unit_id}.W_elec_kW"
 
+    @property
+    def _primary_inlet_port(self):
+        return self.water_in_port
+
+    @property
+    def _primary_outlet_port(self):
+        return self.h2_out_port
+
     def variables(self) -> List[str]:
         return [self._v_h2o, self._v_h2, self._v_o2, self._v_w]
 
@@ -115,33 +123,30 @@ class ElectrolyserHF(BaseUnit):
         return {}
 
     def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
-        # v1.4.0 audit N15 — match the residual's floor convention and
-        # report eta_elec as a *parameter* (the unit's nameplate stack
-        # efficiency, fixed at construction) rather than as a per-iteration
-        # KPI. The pre-v1.4.0 dict put eta_elec * 100 in here verbatim,
-        # which looked like a KPI but was actually a constant.
         _FLOOR = 1.0e-3
         F_h2 = max(x.get(self._v_h2, 0.0), _FLOOR)
         W = x.get(self._v_w, 0.0)
         h2_kg_h = F_h2 * _M_H2 * 3600.0
+        h2_kg_s = h2_kg_h / 3600.0
         specific_kWh_kg = W / (F_h2 * _M_H2 * 3600.0) if F_h2 > 0 else 0.0
-        # v1.5.0.dev-AUDIT2 L3-2: canonical uid-prefixed H₂ production KPIs.
-        # Bare keys retained for v1.4.x backwards compatibility — deprecated.
         uid = self.unit_id
         return {
-            "H2_production_kg_h": h2_kg_h,
-            "efficiency_pct": self.eta_elec * 100.0,
-            "specific_power_kWh_per_kgH2": specific_kWh_kg,
-            "W_elec_kW": W,
-            f"{uid}.H2_production_kg_h": h2_kg_h,
-            f"{uid}.H2_production_kg_s": h2_kg_h / 3600.0,
-            f"{uid}.W_elec_kW": W,
+            f"{uid}.H2_production_kg_h":         h2_kg_h,
+            f"{uid}.H2_production_kg_s":         h2_kg_s,
+            f"{uid}.W_elec_kW":                  W,
+            f"{uid}.efficiency_pct":             self.eta_elec * 100.0,
+            f"{uid}.specific_power_kWh_per_kgH2": specific_kWh_kg,
         }
 
     def capex(self, x: Dict[str, float]) -> float:
-        # Stack CAPEX: ~700 USD/kW installed capacity (2024, declining)
+        """Stack CAPEX [USD, CE500 basis].
+
+        Uses ``capex_USD_per_kW`` set at construction (default 1 200 USD/kW,
+        NREL 2024 system cost reference).  Pass a different value to explore
+        cost-reduction trajectories (e.g. 700 USD/kW for optimistic 2030).
+        """
         W_kW = max(x.get(self._v_w, 0.0), 0.1)
-        return 700.0 * W_kW  # USD, approximate 2024 PEM stack cost
+        return self._capex_USD_per_kW * W_kW
 
     # ── Analytical linearise ──────────────────────────────────────────────
 

@@ -555,12 +555,23 @@ class TestOpexConventions:
         # Sanity: 1 kg/s × 0.05 USD/kg × 3600 × 8000 = 1.44e6 USD/yr
         assert opex_8000 == pytest.approx(1.44e6, rel=1e-6)
 
-    def test_psa_opex_is_zero(self):
-        """PSA's −1 yield coefficient must NOT be summed as a cost."""
+    def test_psa_opex_includes_electricity(self):
+        """v1.5.3: PSA now has electricity OPEX from the opex_per_year() override.
+        The −1 yield coefficient is NOT a cost, but the PSA electricity (1.5 kWh/kg H₂)
+        IS a real operating cost and must appear in the annual OPEX.
+        """
         from pse_ecosystem.models.biomass.h2_separator import H2SeparatorPSA
-        u = H2SeparatorPSA(unit_id="psa")
-        x = {u._h2_var(): 100.0}
-        assert u.opex_per_year(x, operating_hours=8000.0) == 0.0
+        u = H2SeparatorPSA(unit_id="psa", electricity_price_USD_per_kWh=0.05)
+        x = {u._h2_var(): 1.0}   # 1 mol/s H₂ production
+        opex = u.opex_per_year(x, operating_hours=8000.0)
+        # 1 mol/s × 0.002016 kg/mol = 2.016e-3 kg/s
+        # W_psa = 2.016e-3 × 1.5 × 3600 = ~10.9 kW
+        # OPEX = 10.9 kW × 0.05 USD/kWh × 8000 h = ~4340 USD/yr
+        assert opex > 0.0, "PSA electricity OPEX must be positive"
+        assert opex == pytest.approx(
+            (1.0 * 2.016e-3 / 1000.0 * 1000.0) * 1.5 * 3600.0 * 0.05 * 8000.0,
+            rel=0.05
+        )
 
     def test_pem_opex_independent_of_passed_hours(self):
         """PEMToy embeds hours in objective_contribution coefficient already
@@ -591,14 +602,18 @@ class TestH2KpiNaming:
         assert kpis["pem01.H2_production_kg_s"] == pytest.approx(5.0 / 3600.0)
 
     def test_electrolyser_hf_emits_uid_prefixed_h2_kpis(self):
+        """v1.5.3: deprecated bare keys removed; only uid-prefixed keys emitted."""
         from pse_ecosystem.models.dac.electrolyser_hf import ElectrolyserHF
         u = ElectrolyserHF(unit_id="elec01")
         x = {v: 1.0 for v in u.variables()}
         kpis = u.kpis(x)
         assert "elec01.H2_production_kg_h" in kpis
         assert "elec01.H2_production_kg_s" in kpis
-        # Bare keys retained for v1.4.x backwards compatibility
-        assert "H2_production_kg_h" in kpis
+        # v1.5.3: bare keys removed (were deprecated since v1.5.0.dev-AUDIT2)
+        assert "H2_production_kg_h" not in kpis, (
+            "Deprecated bare key 'H2_production_kg_h' must no longer be emitted "
+            "to prevent accumulation errors in multi-ElectrolyserHF flowsheets"
+        )
 
     def test_biomass_gasifier_emits_h2_production_kpis(self):
         from pse_ecosystem.models.biomass.biomass_gasifier import BiomassGasifierHF

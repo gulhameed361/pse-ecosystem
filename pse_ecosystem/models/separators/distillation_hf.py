@@ -251,5 +251,32 @@ class DistillationHF(BaseUnit):
         D_total = sum(x.get(self._v_F("distillate", c), 0.0) for c in self.components)
         B_total = sum(x.get(self._v_F("bottoms", c), 0.0) for c in self.components)
         F_total = max(D_total + B_total, _SMALL)
-        V_est = N * 0.5 * F_total / 1000.0  # rough volume estimate
+        V_est = N * 0.5 * F_total / 1000.0
         return vessel_purchase_cost_USD(max(V_est, 0.01))
+
+    def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
+        uid = self.unit_id
+        N     = x.get(self._v_N(), 0.0)
+        R     = x.get(self._v_R(), 0.0)
+        Q_cond = x.get(self._v_Qc(), 0.0)
+        Q_reb  = x.get(self._v_Qr(), 0.0)
+        lk = self.params.lk
+        hk = self.params.hk
+        D_total = max(sum(x.get(self._v_F("distillate", c), 0.0) for c in self.components), _SMALL)
+        B_total = max(sum(x.get(self._v_F("bottoms", c), 0.0) for c in self.components), _SMALL)
+        F_total = max(sum(x.get(self._v_F("feed", c), 0.0) for c in self.components), _SMALL)
+        result = {
+            f"{uid}.N_stages":           N,
+            f"{uid}.R_ratio":            R,
+            f"{uid}.Q_cond_W":           Q_cond,
+            f"{uid}.Q_reb_W":            Q_reb,
+            f"{uid}.distillate_flow":    D_total,
+            f"{uid}.bottoms_flow":       B_total,
+        }
+        for c in self.components:
+            F_d = x.get(self._v_F("distillate", c), 0.0)
+            F_b = x.get(self._v_F("bottoms", c), 0.0)
+            F_f = max(x.get(self._v_F("feed", c), 0.0), _SMALL)
+            result[f"{uid}.recovery_{c}_distillate_pct"] = 100.0 * max(F_d, 0.0) / F_f
+            result[f"{uid}.recovery_{c}_bottoms_pct"]    = 100.0 * max(F_b, 0.0) / F_f
+        return result

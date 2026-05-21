@@ -113,8 +113,20 @@ class TestMethanationReactor:
         x = {v: 0.0 for v in u.variables()}
         x[f"meth.co2_in.F_CO2"] = 1e-11  # trace, below floor
         kpis = u.kpis(x)
-        # _warning_low_feed should be flagged
-        assert "_warning_low_feed" in kpis
+        # _warning_low_feed should be flagged (now uid-prefixed)
+        assert "meth._warning_low_feed" in kpis
+
+    def test_kpis_have_q_duty(self):
+        """v1.5.3: MethanationReactor now exposes Q_duty_kW in kpis."""
+        u = MethanationReactor("meth")
+        x = {v: 0.0 for v in u.variables()}
+        x["meth.co2_in.F_CO2"] = 1.0
+        x["meth.h2_in.F_H2"] = 4.0
+        x["meth.X_CO2"] = 0.9
+        x["meth.T_rx_K"] = 673.0
+        kpis = u.kpis(x)
+        assert "meth.Q_duty_kW" in kpis
+        assert kpis["meth.Q_duty_kW"] >= 0.0, "Cooling duty must be non-negative"
 
     def test_residual_runs_at_low_temperature(self):
         u = MethanationReactor("meth")

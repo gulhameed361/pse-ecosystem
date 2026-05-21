@@ -137,6 +137,31 @@ class SeparatorHF(BaseUnit):
     def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
         return {}
 
+    def capex(self, x: Dict[str, float]) -> float:
+        """Vessel purchase cost [USD, CE500 basis] sized on total feed flow."""
+        from pse_ecosystem.models.costing.sslw_costing import vessel_purchase_cost_USD
+        F_total = sum(
+            max(x.get(self._v_F_in(c), 0.0), 0.0) for c in self.components
+        )
+        T = max(x.get(self._v_T_in(), 400.0), 273.0)
+        P = max(x.get(self._v_P_in(), 101325.0), 1.0)
+        R = 8.314
+        tau_s = 3.0    # 3 s residence time in separator vessel
+        Q_vol = max(F_total, 0.01) * R * T / P
+        volume_m3 = max(Q_vol * tau_s, 0.05)
+        return vessel_purchase_cost_USD(volume_m3)
+
+    def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
+        uid = self.unit_id
+        M = self.params.n_outlets
+        result: Dict[str, float] = {}
+        for i, c in enumerate(self.components):
+            F_in = max(x.get(self._v_F_in(c), 0.0), 1e-12)
+            for k in range(M):
+                F_out_k = max(x.get(self._v_F_out(k, c), 0.0), 0.0)
+                result[f"{uid}.recovery_{c}_outlet{k}_pct"] = 100.0 * F_out_k / F_in
+        return result
+
     def linearize(self, guess: PrimalGuess) -> LinearizedModel:
         """Exact analytical Jacobian — linear when split fractions are fixed."""
         variables = self.variables()

@@ -133,6 +133,14 @@ class BiomassGasifierHF(BaseUnit):
             phase="gas", species=_SYNGAS_SPECIES,
         )
 
+    @property
+    def _primary_inlet_port(self):
+        return self.biomass_in_port
+
+    @property
+    def _primary_outlet_port(self):
+        return self.syngas_out_port
+
     # ── Variable helpers ──────────────────────────────────────────────────────
 
     def _v_biomass(self) -> str:
