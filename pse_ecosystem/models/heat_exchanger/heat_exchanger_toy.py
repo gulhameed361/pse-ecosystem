@@ -34,7 +34,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-from pse_ecosystem.models.base_unit import BaseUnit
+from pse_ecosystem.models.base_unit import BaseUnit, UnitCategory
 
 
 @dataclass
@@ -52,6 +52,7 @@ class HeatExchangerToy(BaseUnit):
 
     is_linear = False
     trust_region = 20.0  # K — keep SLP steps local around current temperatures
+    category = UnitCategory.DIDACTIC
 
     def __init__(
         self,

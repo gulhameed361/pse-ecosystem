@@ -16,13 +16,19 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 from pse_ecosystem.models._blackbox.hda_distillation_bb import HDA_Distillation_sim
-from pse_ecosystem.models.base_unit import BaseUnit
+from pse_ecosystem.models.base_unit import BaseUnit, UnitCategory
 
 
 class HDADistillationUnit(BaseUnit):
-    """HDA two-column distillation train wrapped as a BaseUnit. FD Jacobian."""
+    """HDA two-column distillation train wrapped as a BaseUnit. FD Jacobian.
+
+    Tagged ``LEGACY`` — superseded by the native ``DistillationHF`` (FUG
+    shortcut, screening) plus the forthcoming ``TrayColumnHF`` (rigorous
+    MESH). Kept for existing flowsheet compatibility.
+    """
 
     is_linear = False
+    category = UnitCategory.LEGACY
 
     def __init__(self, unit_id: str = "hda_dist"):
         self.unit_id = unit_id

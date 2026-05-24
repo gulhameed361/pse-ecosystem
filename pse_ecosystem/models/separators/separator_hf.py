@@ -58,16 +58,54 @@ class SeparatorHF(BaseUnit):
         M = self.params.n_outlets
         N = len(components)
 
-        # Build split fraction matrix [N × M]
+        # Build split fraction matrix [N × M] with v1.6 A.3 validation.
         if self.params.split_fractions is not None:
             self._sf = np.array(self.params.split_fractions, dtype=float)
         else:
             self._sf = np.full((N, M), 1.0 / M)
+        self._validate_split_fractions()
 
         self.inlet_port = StreamPort(unit_id, "inlet", components)
         self.outlet_ports = [
             StreamPort(unit_id, f"outlet_{k}", components) for k in range(M)
         ]
+
+    def _validate_split_fractions(self, tol: float = 1e-9) -> None:
+        """Sum-to-one + non-negativity guard for split_fractions.
+
+        Pre-v1.6 the unit silently accepted invalid splits (rows summing to
+        anything other than 1, or negative values), which caused the closure
+        residual to be inconsistent with the split residuals and made the LP
+        infeasible at solve time. The audit (A.3) moves the check to
+        construction so the user gets a clear error early.
+        """
+        sf = self._sf
+        N, M = len(self.components), self.params.n_outlets
+        if sf.shape != (N, M):
+            raise ValueError(
+                f"SeparatorHF {self.unit_id!r}: split_fractions must be "
+                f"shape ({N}, {M}), got {sf.shape}. Rows = components, "
+                f"columns = outlets."
+            )
+        if np.any(sf < -tol):
+            offenders = [
+                (self.components[i], int(k), float(sf[i, k]))
+                for i in range(N) for k in range(M) if sf[i, k] < -tol
+            ]
+            raise ValueError(
+                f"SeparatorHF {self.unit_id!r}: split_fractions contain "
+                f"negative values: {offenders}. All splits must be ≥ 0."
+            )
+        row_sums = sf.sum(axis=1)
+        bad_rows = [
+            (self.components[i], float(row_sums[i]))
+            for i in range(N) if abs(row_sums[i] - 1.0) > tol
+        ]
+        if bad_rows:
+            raise ValueError(
+                f"SeparatorHF {self.unit_id!r}: split_fractions rows must "
+                f"sum to 1; offending (component, sum) entries: {bad_rows}."
+            )
 
     def _v_F_in(self, c: str) -> str: return f"{self.unit_id}.inlet.F_{c}"
     def _v_T_in(self) -> str: return f"{self.unit_id}.inlet.T"

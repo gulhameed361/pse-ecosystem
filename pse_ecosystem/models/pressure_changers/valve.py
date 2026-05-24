@@ -126,3 +126,29 @@ class Valve(BaseUnit):
 
     def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
         return {}
+
+    def capex(self, x: Dict[str, float]) -> float:
+        """Control-valve purchase cost [USD, CE500 basis].
+
+        v1.6 audit A.4: pre-audit the unit returned base-class 0.0.
+        Sized via a Cv-proportional fit (Couper & Penney, 2010 Ch. 8):
+        cost ≈ 4000 USD + 200 USD per unit of Cv [mol/s/Pa^0.5], floored at
+        4000 USD for a hand-control-station baseline. Tiny in plant cost
+        relative to vessels but non-zero so TEA reports show the line item.
+        """
+        Cv = x.get(self._v_Cv(), self.params.Cv or 1.0)
+        return 4000.0 + 200.0 * max(Cv, 0.0)
+
+    def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
+        uid = self.unit_id
+        P_in = max(x.get(self._v_P_in(), 101325.0), 1.0)
+        P_out = max(x.get(self._v_P_out(), 101325.0), 1.0)
+        dP = P_in - P_out
+        F_out = sum(x.get(self._v_F_out(c), 0.0) for c in self.components)
+        return {
+            f"{uid}.dP_Pa": dP,
+            f"{uid}.pressure_ratio": P_in / P_out,
+            f"{uid}.Cv": x.get(self._v_Cv(), self.params.Cv or 0.0),
+            f"{uid}.outlet_flow_mol_s": F_out,
+            f"{uid}.capex_USD": self.capex(x),
+        }

@@ -64,6 +64,11 @@ class GibbsReactorParams:
     P_max: float = 1e7
     max_inner_iter: int = 500
     inner_tol: float = 1e-8
+    tau_s: float = 10.0
+    """Notional residence time [s] used to back-out a vessel volume for the
+    SSLW CAPEX correlation. Gibbs reactors are conceptual zero-time units in
+    Aspen, but charging zero CAPEX is misleading for techno-economic
+    comparisons — so we size the vessel from feed × τ at the inlet state."""
 
 
 class GibbsReactor(BaseUnit):
@@ -192,3 +197,49 @@ class GibbsReactor(BaseUnit):
 
     def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
         return {}
+
+    def capex(self, x: Dict[str, float]) -> float:
+        """Vessel purchase cost [USD, CE500 basis] from feed × τ vessel sizing."""
+        from pse_ecosystem.models.costing.sslw_costing import vessel_purchase_cost_USD
+
+        F_total = sum(
+            max(x.get(self._v_F_in(c), 0.0), 0.0) for c in self.components
+        )
+        T = max(x.get(self._v_T_in(), 800.0), 273.0)
+        P = max(x.get(self._v_P_in(), 101325.0), 1.0)
+        Q_vol = max(F_total, 0.01) * _R_GAS * T / P
+        volume_m3 = max(Q_vol * self.params.tau_s, 0.05)
+        return vessel_purchase_cost_USD(volume_m3)
+
+    def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
+        uid = self.unit_id
+        comps = self.components
+        F_in = {c: max(x.get(self._v_F_in(c), 0.0), 1e-12) for c in comps}
+        F_out = {c: max(x.get(self._v_F_out(c), 0.0), 0.0) for c in comps}
+        result: Dict[str, float] = {
+            f"{uid}.T_out_K": x.get(self._v_T_out(), 0.0),
+        }
+        for c in comps:
+            result[f"{uid}.conversion_{c}_pct"] = (
+                100.0 * max(F_in[c] - F_out[c], 0.0) / F_in[c]
+            )
+        return result
+
+    def design_sizing(self, x: Dict[str, float]) -> Dict[str, float]:
+        """Required vessel volume + L/D from feed × τ at inlet state."""
+        F_total = sum(
+            max(x.get(self._v_F_in(c), 0.0), 0.0) for c in self.components
+        )
+        T = max(x.get(self._v_T_in(), 800.0), 273.0)
+        P = max(x.get(self._v_P_in(), 101325.0), 1.0)
+        tau_s = self.params.tau_s
+        Q_vol = max(F_total, 0.01) * _R_GAS * T / P
+        V_req = max(Q_vol * tau_s, 0.05)
+        D = (2.0 * V_req / math.pi) ** (1.0 / 3.0)
+        return {
+            "V_required_m3": V_req,
+            "residence_time_s": tau_s,
+            "L_over_D": 2.0,
+            "diameter_m": D,
+            "length_m": 2.0 * D,
+        }

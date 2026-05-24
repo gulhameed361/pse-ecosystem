@@ -34,16 +34,29 @@ _KNOWN = set(SHOMATE.keys())
 
 @dataclass
 class HeatExchanger1DParams:
-    U_W_per_m2_K: float = 500.0
+    U_W_per_m2_K: float = 500.0   # CLEAN overall U [W/m²/K] before fouling
     A_m2: float = 10.0
     n_elements: int = 5
     flow_arrangement: str = "counter"  # 'counter' or 'parallel'
+    R_f_tube_m2K_per_W: float = 0.0
+    """Tube-side fouling resistance [m²·K/W]. Default 0 preserves v1.5.3
+    numerics; set per TEMA / Perry's for industrial fidelity."""
+    R_f_shell_m2K_per_W: float = 0.0
+    """Shell-side fouling resistance [m²·K/W]."""
     feed_max: float = 1e4
     T_min: float = 200.0
     T_max: float = 2000.0
     P_min: float = 1e3
     P_max: float = 1e7
     Q_max: float = 1e10
+
+    def U_effective_W_per_m2_K(self) -> float:
+        denom = (
+            1.0 / max(self.U_W_per_m2_K, 1e-9)
+            + self.R_f_tube_m2K_per_W
+            + self.R_f_shell_m2K_per_W
+        )
+        return 1.0 / denom
 
 
 class HeatExchanger1D(BaseUnit):
@@ -103,7 +116,7 @@ class HeatExchanger1D(BaseUnit):
         p = self.params
         N = p.n_elements
         dA = p.A_m2 / N
-        U = p.U_W_per_m2_K
+        U = p.U_effective_W_per_m2_K()
 
         if p.flow_arrangement == "counter":
             # Counter-flow: hot enters at element N, cold enters at element 1
@@ -168,3 +181,36 @@ class HeatExchanger1D(BaseUnit):
     def capex(self, x: Dict[str, float]) -> float:
         from pse_ecosystem.models.costing.sslw_costing import hx_purchase_cost_USD
         return hx_purchase_cost_USD(self.params.A_m2)
+
+    def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
+        return {
+            "Q_W": x.get(self._v_Q(), 0.0),
+            "U_effective_W_per_m2_K": self.params.U_effective_W_per_m2_K(),
+            "area_m2": self.params.A_m2,
+            "capex_USD": self.capex(x),
+            "opex_USD_per_yr": 0.0,
+        }
+
+    def design_sizing(self, x: Dict[str, float]) -> Dict[str, float]:
+        """Required area from Q / (U_eff · LMTD). Counter-flow LMTD."""
+        import math as _math
+        T_hi = x.get(self._vT("hot_in"), 500.0)
+        T_ho = x.get(self._vT("hot_out"), 400.0)
+        T_ci = x.get(self._vT("cold_in"), 300.0)
+        T_co = x.get(self._vT("cold_out"), 380.0)
+        Q = max(x.get(self._v_Q(), 0.0), 1.0)
+        dT1, dT2 = T_hi - T_co, T_ho - T_ci
+        if abs(dT1 - dT2) < 1e-6:
+            lmtd = 0.5 * (dT1 + dT2)
+        elif dT1 <= 0 or dT2 <= 0:
+            lmtd = max(dT1, dT2, 1.0)
+        else:
+            lmtd = (dT1 - dT2) / _math.log(dT1 / dT2)
+        U_eff = self.params.U_effective_W_per_m2_K()
+        A_req = Q / max(U_eff * lmtd, 1e-6)
+        return {
+            "A_required_m2": A_req,
+            "U_effective_W_per_m2_K": U_eff,
+            "LMTD_K": lmtd,
+            "dT_min_K": min(dT1, dT2),
+        }

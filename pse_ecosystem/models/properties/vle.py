@@ -7,7 +7,16 @@ scipy.  Bubble and dew point calculations use Newton-Raphson.
 Antoine constants: Perry's Chemical Engineers' Handbook, 8th Ed., Table 2-8.
     log₁₀(P_sat / mmHg) = A - B / (T_°C + C)
 
-Non-ideal VLE (NRTL, Wilson activity coefficients) is deferred to v0.3.
+v1.6 update
+-----------
+``ANTOINE`` is now rebuilt at import time from the unified component
+registry in ``components.py``. v1.5.3 keys and numerics are preserved
+byte-for-byte; v1.6 adds entries for ~20 additional industrial species
+(light hydrocarbons, alcohols, amines, sour-gas components).
+
+Non-ideal VLE (NRTL, Wilson, UNIQUAC activity coefficients and PR/SRK
+fugacity coefficients) lives in ``activity_models.py``, ``cubic_eos.py``,
+and the property-package framework (``property_package.py``).
 """
 
 from __future__ import annotations
@@ -17,23 +26,12 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
+from pse_ecosystem.models.properties.components import _build_antoine_dict
+
 # ── Antoine constants ─────────────────────────────────────────────────────────
 # Format: {species: {"A": ..., "B": ..., "C": ..., "T_min": K, "T_max": K}}
 # Temperature range in K (converted from °C in sources).
-
-ANTOINE: Dict[str, Dict[str, float]] = {
-    "benzene":   {"A": 6.90565, "B": 1211.033, "C": 220.790, "T_min": 278, "T_max": 377},
-    "toluene":   {"A": 6.95334, "B": 1343.943, "C": 219.377, "T_min": 280, "T_max": 410},
-    "n-hexane":  {"A": 6.87601, "B": 1171.170, "C": 224.408, "T_min": 286, "T_max": 342},
-    "n-heptane": {"A": 6.89385, "B": 1264.370, "C": 216.636, "T_min": 270, "T_max": 400},
-    "methanol":  {"A": 7.89750, "B": 1474.080, "C": 217.840, "T_min": 288, "T_max": 357},
-    "ethanol":   {"A": 8.11220, "B": 1592.864, "C": 226.184, "T_min": 290, "T_max": 369},
-    "water":     {"A": 8.07131, "B": 1730.630, "C": 233.426, "T_min": 273, "T_max": 373},
-    # Light gases — pseudo-Antoine valid in narrow sub-critical range
-    "H2":        {"A": 6.23400, "B": 99.395,   "C": 307.180, "T_min":  15, "T_max":  33},
-    "CO2":       {"A": 6.81228, "B": 975.700,  "C": 270.580, "T_min": 194, "T_max": 304},
-    "methane":   {"A": 6.69561, "B": 405.420,  "C": 267.780, "T_min": 111, "T_max": 190},
-}
+ANTOINE: Dict[str, Dict[str, float]] = _build_antoine_dict()
 
 _MMHG_TO_PA = 133.322  # 1 mmHg in Pascal
 

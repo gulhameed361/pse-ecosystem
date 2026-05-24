@@ -208,6 +208,25 @@ class EquilibriumReactor(BaseUnit):
         volume_m3 = max(Q_vol * tau_s, 0.05)
         return vessel_purchase_cost_USD(volume_m3)
 
+    def design_sizing(self, x: Dict[str, float]) -> Dict[str, float]:
+        """Required vessel volume + L/D from feed × τ at inlet state."""
+        F_total = sum(
+            max(x.get(self._v_F_in(c), 0.0), 0.0) for c in self.components
+        )
+        T = max(x.get(self._v_T_in(), 500.0), 273.0)
+        P = max(x.get(self._v_P_in(), 101325.0), 1.0)
+        tau_s = 10.0
+        Q_vol = max(F_total, 0.01) * 8.314462 * T / P
+        V_req = max(Q_vol * tau_s, 0.05)
+        D = (2.0 * V_req / math.pi) ** (1.0 / 3.0)
+        return {
+            "V_required_m3": V_req,
+            "residence_time_s": tau_s,
+            "L_over_D": 2.0,
+            "diameter_m": D,
+            "length_m": 2.0 * D,
+        }
+
     def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
         uid = self.unit_id
         Q = x.get(self._v_Q(), 0.0)

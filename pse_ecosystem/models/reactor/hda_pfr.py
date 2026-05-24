@@ -25,13 +25,19 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 from pse_ecosystem.models._blackbox.hda_reactor_bb import HDA_Reactor_sim
-from pse_ecosystem.models.base_unit import BaseUnit
+from pse_ecosystem.models.base_unit import BaseUnit, UnitCategory
 
 
 class HDAPFRUnit(BaseUnit):
-    """HDA adiabatic PFR wrapped as a BaseUnit. FD Jacobian (ODE black-box)."""
+    """HDA adiabatic PFR wrapped as a BaseUnit. FD Jacobian (ODE black-box).
+
+    Tagged ``LEGACY`` — superseded by the native equation-oriented HDA
+    tutorial built from PFRHF + new TrayColumnHF (Workstream B). Kept for
+    existing flowsheet compatibility.
+    """
 
     is_linear = False
+    category = UnitCategory.LEGACY
 
     def __init__(self, unit_id: str = "hda_pfr"):
         self.unit_id = unit_id

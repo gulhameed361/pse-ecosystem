@@ -201,3 +201,29 @@ class CSTRHF(BaseUnit):
     def capex(self, x: Dict[str, float]) -> float:
         from pse_ecosystem.models.costing.sslw_costing import cstr_purchase_cost_USD
         return cstr_purchase_cost_USD(self.params.volume_m3)
+
+    def design_sizing(self, x: Dict[str, float]) -> Dict[str, float]:
+        """Required CSTR volume + diameter for the current operating state.
+
+        Uses V_required = F_out × τ × R · T / P, where τ is the residence
+        time implied by the actual conversion at the supplied state (a
+        rough proxy: τ = V_user / V_volumetric_at_state). L/D = 2 heuristic
+        for stirred-tank vessels (Walas Ch.4).
+        """
+        F_total = sum(
+            x.get(self._v_F_out(c), 0.0) for c in self.components
+        )
+        T = max(x.get(self._v_T_out(), 500.0), 273.0)
+        P = max(x.get(self._v_P_out(), 101325.0), 1.0)
+        Q_vol_m3_s = max(F_total, 0.01) * _R_GAS * T / P
+        tau_s = self.params.volume_m3 / max(Q_vol_m3_s, 1e-9)
+        V_req = max(Q_vol_m3_s * tau_s, 0.05)
+        # L/D = 2 ⇒ V = π·D²·L/4 = π·D³/2  ⇒  D = (2·V/π)^(1/3)
+        D = (2.0 * V_req / math.pi) ** (1.0 / 3.0)
+        return {
+            "V_required_m3": V_req,
+            "residence_time_s": tau_s,
+            "L_over_D": 2.0,
+            "diameter_m": D,
+            "length_m": 2.0 * D,
+        }

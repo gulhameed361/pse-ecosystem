@@ -82,6 +82,29 @@ class BaseFlowsheet:
     finds any feasible point satisfying all residuals without cost pressure.
     Useful for debugging port connectivity and checking mass-balance closure."""
 
+    property_method: str = "ideal_gas"
+    """Thermo property method for VLE-aware units (Flash, future TrayColumn,
+    PackedColumn, etc.). Default ``"ideal_gas"`` preserves v1.5.3 numerics.
+    Other valid values: ``"peng_robinson"``, ``"srk"``, ``"nrtl"``,
+    ``"wilson"``, ``"uniquac"``. Resolve to a concrete package via
+    :meth:`build_property_package`. Units that ignore this field continue to
+    behave exactly as in v1.5.3."""
+
+    # ── Property-package factory ─────────────────────────────────────────────
+
+    def build_property_package(self, species):
+        """Instantiate a :class:`PropertyPackage` for the given species list.
+
+        Wraps :func:`pse_ecosystem.models.properties.get_property_package` so
+        callers (template loaders, the UI Industrial Mode dialog) can obtain
+        a ready-to-use package without importing the lower-level factory
+        themselves. The species list typically comes from a unit's VLE
+        component list, not the full flowsheet component set.
+        """
+        from pse_ecosystem.models.properties import get_property_package
+
+        return get_property_package(self.property_method, species)
+
     # ── Validation ───────────────────────────────────────────────────────────
 
     def validate(self) -> None:

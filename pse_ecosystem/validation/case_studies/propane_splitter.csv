@@ -1,0 +1,4 @@
+Stream,T_K,P_Pa,F_total_mol_s,y_propylene,y_propane
+feed,293.15,1800000,100.0,0.50,0.50
+distillate,317.15,1800000,49.75,0.995,0.005
+bottoms,326.15,1800000,50.25,0.005,0.995

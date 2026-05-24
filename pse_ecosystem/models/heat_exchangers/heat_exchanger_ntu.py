@@ -39,16 +39,34 @@ _KNOWN = set(SHOMATE.keys())
 
 @dataclass
 class HeatExchangerNTUParams:
-    UA_W_per_K: float = 1000.0        # overall UA [W/K] (UA = U*A)
+    UA_W_per_K: float = 1000.0        # operating UA [W/K] (already includes fouling)
     flow_arrangement: str = "counter" # 'counter' or 'parallel'
     hot_species: Optional[List[str]] = None    # subset of hot components for Cp
     cold_species: Optional[List[str]] = None
+    U_clean_W_per_m2_K: float = 500.0
+    """Clean-condition overall HT coefficient [W/m²/K] used to back out the
+    physical area required to deliver ``UA_W_per_K`` once fouling is included.
+    Affects CAPEX only; the residual still uses ``UA_W_per_K`` as the
+    operating value."""
+    R_f_tube_m2K_per_W: float = 0.0
+    """Tube-side fouling resistance [m²·K/W] used in the area back-out."""
+    R_f_shell_m2K_per_W: float = 0.0
     feed_max: float = 1e4
     T_min: float = 200.0
     T_max: float = 2000.0
     P_min: float = 1e3
     P_max: float = 1e7
     Q_max: float = 1e10
+
+    def heat_transfer_area_m2(self) -> float:
+        """Physical area [m²] needed to deliver ``UA_W_per_K`` once fouling
+        is included: A = UA · (1/U_clean + R_f_tube + R_f_shell). With both
+        ``R_f``'s zero this reduces to UA / U_clean, matching v1.5.3."""
+        return self.UA_W_per_K * (
+            1.0 / max(self.U_clean_W_per_m2_K, 1e-9)
+            + self.R_f_tube_m2K_per_W
+            + self.R_f_shell_m2K_per_W
+        )
 
 
 class HeatExchangerNTU(BaseUnit):
@@ -171,15 +189,34 @@ class HeatExchangerNTU(BaseUnit):
         Q = x.get(self._v_Q(), 0.0)
         eps = x.get(self._v_eps(), 0.0)
         from pse_ecosystem.models.costing.sslw_costing import hx_purchase_cost_USD
-        A_m2 = self.params.UA_W_per_K / 500.0  # assume U=500 W/m²/K
+        A_m2 = self.params.heat_transfer_area_m2()
         return {
             "Q_W": Q,
             "effectiveness": eps,
+            "area_m2": A_m2,
             "capex_USD": hx_purchase_cost_USD(A_m2),
             "opex_USD_per_yr": 0.0,
         }
 
     def capex(self, x: Dict[str, float]) -> float:
         from pse_ecosystem.models.costing.sslw_costing import hx_purchase_cost_USD
-        A_m2 = self.params.UA_W_per_K / 500.0
-        return hx_purchase_cost_USD(A_m2)
+        return hx_purchase_cost_USD(self.params.heat_transfer_area_m2())
+
+    def design_sizing(self, x: Dict[str, float]) -> Dict[str, float]:
+        """Required area + minimum approach ΔT from current operating state.
+
+        The NTU model carries UA directly, so the area implied at the
+        clean-condition U_clean (with fouling) comes from
+        ``heat_transfer_area_m2()`` — exposed here as a sizing KPI for
+        Design / Performance-Check workflows.
+        """
+        T_hi = x.get(self._vT("hot_in"), 500.0)
+        T_co = x.get(self._vT("cold_out"), 380.0)
+        T_ho = x.get(self._vT("hot_out"), 400.0)
+        T_ci = x.get(self._vT("cold_in"), 300.0)
+        return {
+            "A_required_m2": self.params.heat_transfer_area_m2(),
+            "UA_W_per_K": self.params.UA_W_per_K,
+            "U_clean_W_per_m2_K": self.params.U_clean_W_per_m2_K,
+            "dT_min_K": min(T_hi - T_co, T_ho - T_ci),
+        }

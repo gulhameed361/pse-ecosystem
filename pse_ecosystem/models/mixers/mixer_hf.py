@@ -137,8 +137,24 @@ class MixerHF(BaseUnit):
         return {}
 
     def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
+        uid = self.unit_id
         F_out = {c: x.get(self._v_F_out(c), 0.0) for c in self.components}
-        return {"outlet_total_flow_mol_s": sum(F_out.values())}
+        F_total = sum(F_out.values())
+        T_out = x.get(self._v_T_out(), 0.0)
+        P_out = x.get(self._v_P_out(), 0.0)
+        result: Dict[str, float] = {
+            f"{uid}.outlet_total_flow_mol_s": F_total,
+            f"{uid}.T_out_K": T_out,
+            f"{uid}.P_out_Pa": P_out,
+        }
+        # Per-inlet flow contribution — useful for diagnosing mass-balance
+        # closure when wiring multiple mixer feeds. v1.6 audit A.4.
+        for k in range(self.params.n_inlets):
+            F_in_k = sum(
+                x.get(self._v_F_in(k, c), 0.0) for c in self.components
+            )
+            result[f"{uid}.inlet_{k}_total_flow_mol_s"] = F_in_k
+        return result
 
 
 # Species present in ideal_gas database

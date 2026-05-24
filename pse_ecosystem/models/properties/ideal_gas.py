@@ -11,6 +11,16 @@ Chemistry WebBook (https://webbook.nist.gov) — the same source used by the
 IDAES generic property framework, enabling direct cross-validation.
 
 Valid range: 298 K – 1200 K for most species listed.
+
+v1.6 update
+-----------
+The ``SHOMATE``, ``MW``, and ``H_REF_298`` dictionaries are now rebuilt from
+the unified component registry in ``components.py``. The public interface,
+keys, and numeric values are byte-identical to v1.5.3 — only the data source
+has moved. New v1.6 species (cubic-EOS-only) do **not** appear in these
+dictionaries because they lack Shomate coefficients; the ``if species in
+SHOMATE`` guards used throughout the unit models therefore behave exactly
+as before.
 """
 
 from __future__ import annotations
@@ -18,66 +28,23 @@ from __future__ import annotations
 import math
 from typing import Dict, List
 
+from pse_ecosystem.models.properties.components import (
+    _build_hf_298_dict,
+    _build_mw_dict,
+    _build_shomate_dict,
+)
+
 # ── Shomate coefficients ──────────────────────────────────────────────────────
 # Keys: A, B, C, D, E, F, H  (all in kJ/mol or J/mol/K as per NIST convention)
 # H° - H°(298.15 K) = A*t + B*t²/2 + C*t³/3 + D*t⁴/4 - E/t + F - H  [kJ/mol]
 # Cp°(T) = A + B*t + C*t² + D*t³ + E/t²                                [J/mol/K]
-
-SHOMATE: Dict[str, Dict[str, float]] = {
-    # H2: 298–1000 K (NIST)
-    "H2": {
-        "A": 33.066178, "B": -11.363417, "C": 11.432816, "D": -2.772874,
-        "E": -0.158558, "F": -9.980797, "H": 0.0,
-        "T_min": 298, "T_max": 1000,
-    },
-    # O2: 100–700 K range from NIST — gives correct Cp at 300 K (~29.4 J/mol/K)
-    "O2": {
-        "A": 31.32234, "B": -20.23531, "C": 57.86644, "D": -36.50624,
-        "E": -0.007374, "F": -8.903471, "H": 0.0,
-        "T_min": 100, "T_max": 700,
-    },
-    # N2: 298–1000 K range from NIST — gives correct Cp at 300 K (~29.1 J/mol/K)
-    "N2": {
-        "A": 28.98641, "B": 1.853978, "C": -9.647574, "D": 16.63537,
-        "E": 0.000117, "F": -8.671914, "H": 0.0,
-        "T_min": 298, "T_max": 1000,
-    },
-    # CO: 298–1300 K (NIST)
-    "CO": {
-        "A": 25.567959, "B": 6.096130, "C": 4.054656, "D": -2.671301,
-        "E": 0.131021, "F": -118.009590, "H": -110.527,
-        "T_min": 298, "T_max": 1300,
-    },
-    # CO2: 298–1200 K (NIST)
-    "CO2": {
-        "A": 24.997557, "B": 55.187022, "C": -33.691572, "D": 7.948387,
-        "E": -0.136638, "F": -403.608069, "H": -393.510,
-        "T_min": 298, "T_max": 1200,
-    },
-    # CH4: 298–1300 K (NIST)
-    "CH4": {
-        "A": -0.703029, "B": 108.477300, "C": -42.521800, "D": 5.862640,
-        "E": 0.678565, "F": -76.843500, "H": -74.873,
-        "T_min": 298, "T_max": 1300,
-    },
-    # H2O: 500–1700 K (NIST) — valid from 298 K in practice for gas-phase
-    "H2O": {
-        "A": 30.092000, "B": 6.832514, "C": 6.793435, "D": -2.534480,
-        "E": 0.082139, "F": -250.881100, "H": -241.826,
-        "T_min": 298, "T_max": 1700,
-    },
-}
+SHOMATE: Dict[str, Dict[str, float]] = _build_shomate_dict()
 
 # Molecular weights [g/mol]
-MW: Dict[str, float] = {
-    "H2": 2.016, "O2": 31.999, "N2": 28.014,
-    "CO": 28.010, "CO2": 44.010, "CH4": 16.043, "H2O": 18.015,
-}
+MW: Dict[str, float] = _build_mw_dict()
 
 # Standard enthalpy of formation at 298.15 K [J/mol]  (= H field × 1000)
-H_REF_298: Dict[str, float] = {
-    sp: d["H"] * 1000.0 for sp, d in SHOMATE.items()
-}
+H_REF_298: Dict[str, float] = _build_hf_298_dict()
 
 _R_GAS = 8.314462  # J/mol/K
 

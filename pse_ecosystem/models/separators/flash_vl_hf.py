@@ -1,13 +1,18 @@
 """High-fidelity vapour-liquid flash (V/L).
 
-Uses Antoine K-values (temperature- and pressure-dependent) with Rachford-Rice
-phase equilibrium. Supports isothermal (T specified) and adiabatic (Q=0) modes.
+K-values come from a :class:`PropertyPackage` (default ``IdealGasPackage``,
+which preserves the v1.5.3 Antoine/Raoult behaviour byte-for-byte). Setting
+``params.property_package`` to a PR/SRK or NRTL/Wilson/UNIQUAC instance
+swaps the K-value formulation transparently — the residual equations and
+energy balance reuse the package's :meth:`K_iteration` and :meth:`enthalpy`
+hooks, so the unit topology is property-agnostic.
 
 Physics correction vs. FlashToy
 ---------------------------------
 FlashToy uses constant K-values independent of T and P.  This unit uses
-K_i(T, P) = P_sat_i(T) / P  (Raoult's Law + Antoine), which is the correct
-formulation for ideal VLE and is the first step toward rigorous VLE.
+K_i(T, P, x) from the property package, which is the correct formulation
+for VLE and supports the full ladder of ideal-gas / cubic-EOS / activity
+models added in the v1.6 thermo workstream.
 
 Ports
 -----
@@ -23,7 +28,7 @@ Q       : heat duty [W]  (positive = heat added)
 Residuals (2N + 4 equations)
 ------------------------------
   Material  :  F_i_feed - F_i_vap - F_i_liq = 0         [N]
-  VLE       :  y_i - K_i(T_vap, P_vap) * x_i = 0        [N]
+  VLE       :  y_i - K_i(T_vap, P_vap, x) * x_i = 0     [N]
                where y_i = F_i_vap / Σ_j F_j_vap
                      x_i = F_i_liq / Σ_j F_j_liq
   Energy    :  Q + H_feed - H_vap - H_liq = 0            [1]
@@ -33,7 +38,7 @@ Residuals (2N + 4 equations)
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -41,7 +46,11 @@ import numpy as np
 from pse_ecosystem.core.contracts import StreamPort
 from pse_ecosystem.models.base_unit import BaseUnit
 from pse_ecosystem.models.properties.ideal_gas import enthalpy_J_mol, SHOMATE
-from pse_ecosystem.models.properties.vle import K_value, rachford_rice
+from pse_ecosystem.models.properties.property_package import (
+    IdealGasPackage,
+    PropertyPackage,
+)
+from pse_ecosystem.models.properties.vle import ANTOINE, K_value, rachford_rice
 
 _KNOWN = set(SHOMATE.keys())
 _SMALL = 1e-12  # floor to avoid division by zero
@@ -56,10 +65,17 @@ class FlashVLHFParams:
     P_min: float = 1e3
     P_max: float = 1e7
     Q_max: float = 1e9      # W
+    property_package: Optional[PropertyPackage] = None
+    """Optional property package supplying K-values via
+    :meth:`PropertyPackage.K_iteration`. When ``None`` the unit auto-builds an
+    :class:`IdealGasPackage` over ``species_vle`` to preserve the v1.5.3
+    Antoine/Raoult numerics. Pass an instance of ``PengRobinsonPackage`` /
+    ``NRTLPackage`` / ``UNIQUACPackage`` / etc. to upgrade the K-value model
+    transparently — no other code in the unit changes."""
 
 
 class FlashVLHF(BaseUnit):
-    """Rigorous V/L flash with Antoine K-values and Rachford-Rice."""
+    """V/L flash with property-package K-values and Rachford-Rice."""
 
     is_linear = False
 
@@ -70,6 +86,23 @@ class FlashVLHF(BaseUnit):
         self.inlet_port = StreamPort(unit_id, "inlet", components)
         self.vapor_port = StreamPort(unit_id, "vapor", components)
         self.liquid_port = StreamPort(unit_id, "liquid", components)
+        # Resolve the property package once at construction. The ideal-gas
+        # auto-build is filtered to species that have Antoine coefficients so
+        # the package's own validation doesn't reject the call (non-VLE
+        # species — e.g. permanent gases — are handled via the K = 1 fallback
+        # below).
+        if params.property_package is None:
+            vle_species = [c for c in params.species_vle if c in ANTOINE]
+            self._package: Optional[PropertyPackage] = (
+                IdealGasPackage(vle_species) if vle_species else None
+            )
+        else:
+            self._package = params.property_package
+        self._package_index = (
+            {sp: i for i, sp in enumerate(self._package.species)}
+            if self._package is not None
+            else {}
+        )
 
     def _v_F(self, tag: str, c: str) -> str: return f"{self.unit_id}.{tag}.F_{c}"
     def _v_T(self, tag: str) -> str: return f"{self.unit_id}.{tag}.T"
@@ -133,13 +166,59 @@ class FlashVLHF(BaseUnit):
         # Material balances [N]
         res[:N] = F_feed - F_vap - F_liq
 
-        # VLE: y_i = K_i(T_vap, P_vap) * x_i  [N]
-        for i, c in enumerate(comps):
-            if c in self.params.species_vle:
-                K_i = K_value(c, T_vap, P_vap)
-            else:
-                K_i = 1.0  # non-VLE species: equal distribution
-            res[N + i] = y[i] - K_i * xi[i]
+        # VLE: y_i = K_i(T_vap, P_vap, x) * x_i  [N]
+        # When a property package is configured, the K-vector for its species
+        # comes from package.K_iteration. Species outside the package — e.g.
+        # permanent gases that don't participate in VLE — default to K = 1
+        # (equal split), matching v1.5.3 behaviour.
+        K_vec = np.ones(N, dtype=float)
+        if self._package is not None:
+            pkg_species = self._package.species
+            # Build liquid mole fractions in package order.
+            pkg_idx = self._package_index
+            pkg_xi = np.array(
+                [
+                    xi[comps.index(sp)] if sp in comps else 0.0
+                    for sp in pkg_species
+                ]
+            )
+            pkg_y = np.array(
+                [
+                    y[comps.index(sp)] if sp in comps else 0.0
+                    for sp in pkg_species
+                ]
+            )
+            # Normalise inside the package's species set so K_iteration sees
+            # consistent compositions (Σ x_i = 1 over package species).
+            sx = pkg_xi.sum()
+            sy = pkg_y.sum()
+            if sx > 0:
+                pkg_xi = pkg_xi / sx
+            if sy > 0:
+                pkg_y = pkg_y / sy
+            try:
+                K_pkg = self._package.K_iteration(T_vap, P_vap, pkg_xi, pkg_y)
+            except Exception:
+                # Fall back to legacy Antoine K to avoid hard-failure inside
+                # the solver loop on a transient out-of-range evaluation.
+                K_pkg = np.array(
+                    [
+                        K_value(sp, T_vap, P_vap) if sp in ANTOINE else 1.0
+                        for sp in pkg_species
+                    ]
+                )
+            for i, c in enumerate(comps):
+                if c in pkg_idx:
+                    K_vec[i] = float(K_pkg[pkg_idx[c]])
+                # else: K_vec[i] stays at 1.0 (non-VLE species)
+        else:
+            # No package available (no Antoine-eligible species). Preserve
+            # legacy fallback: K = 1 for everything → unit is essentially a
+            # tee. Tested via the existing v1.5.3 regression suite.
+            pass
+
+        for i in range(N):
+            res[N + i] = y[i] - K_vec[i] * xi[i]
 
         # Energy balance [1]
         H_feed = sum(F_feed[i] * enthalpy_J_mol(c, T_feed) for i, c in enumerate(comps) if c in _KNOWN)
@@ -159,6 +238,27 @@ class FlashVLHF(BaseUnit):
     def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
         return {}
 
+    def capex(self, x: Dict[str, float]) -> float:
+        """Flash drum purchase cost [USD, CE500 basis].
+
+        v1.6 audit A.3: pre-audit the unit returned the base-class 0.0,
+        which silently zero-rated flash drums in TEA. Sized from feed flow
+        × τ = 30 s (typical flash drum holdup) at the feed state.
+        """
+        from pse_ecosystem.models.costing.sslw_costing import vessel_purchase_cost_USD
+
+        F_total = sum(
+            max(x.get(self._v_F("inlet", c), 0.0), 0.0)
+            for c in self.components
+        )
+        T = max(x.get(self._v_T("inlet"), 350.0), 273.0)
+        P = max(x.get(self._v_P("inlet"), 101325.0), 1.0)
+        Q_vol = max(F_total, 0.01) * 8.314462 * T / P
+        # 30 s holdup is a standard flash-drum heuristic (Towler & Sinnott
+        # Ch. 17). The 0.1 m³ floor avoids zero-cost on toy / unused units.
+        volume_m3 = max(Q_vol * 30.0, 0.1)
+        return vessel_purchase_cost_USD(volume_m3)
+
     def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
         V_frac = x.get(self._v_Vfrac(), float("nan"))
         F_vap_total = sum(x.get(self._v_F("vapor", c), 0.0) for c in self.components)
@@ -168,4 +268,29 @@ class FlashVLHF(BaseUnit):
             "vapor_flow_mol_s": F_vap_total,
             "liquid_flow_mol_s": F_liq_total,
             "Q_W": x.get(self._v_Q(), 0.0),
+        }
+
+    def design_sizing(self, x: Dict[str, float]) -> Dict[str, float]:
+        """Required flash-drum volume + L/D from 30 s vapor-holdup heuristic
+        (Towler-Sinnott Ch.17). L/D = 3 for vertical flash drums."""
+        import math as _math
+
+        F_total = sum(
+            max(x.get(self._v_F("inlet", c), 0.0), 0.0)
+            for c in self.components
+        )
+        T = max(x.get(self._v_T("inlet"), 350.0), 273.0)
+        P = max(x.get(self._v_P("inlet"), 101325.0), 1.0)
+        Q_vol = max(F_total, 0.01) * 8.314462 * T / P
+        tau_s = 30.0
+        V_req = max(Q_vol * tau_s, 0.1)
+        L_over_D = 3.0
+        # V = π·D²·L/4 = π·D³·(L/D)/4  ⇒  D = (4V/(π·L/D))^(1/3)
+        D = (4.0 * V_req / (_math.pi * L_over_D)) ** (1.0 / 3.0)
+        return {
+            "V_required_m3": V_req,
+            "residence_time_s": tau_s,
+            "L_over_D": L_over_D,
+            "diameter_m": D,
+            "length_m": L_over_D * D,
         }

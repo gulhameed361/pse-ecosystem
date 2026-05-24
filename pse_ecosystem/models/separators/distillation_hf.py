@@ -40,7 +40,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from pse_ecosystem.core.contracts import StreamPort
-from pse_ecosystem.models.base_unit import BaseUnit
+from pse_ecosystem.models.base_unit import BaseUnit, UnitCategory
 from pse_ecosystem.models.properties.ideal_gas import enthalpy_J_mol, SHOMATE
 from pse_ecosystem.models.properties.vle import K_value
 
@@ -66,9 +66,16 @@ class DistillationHFParams:
 
 
 class DistillationHF(BaseUnit):
-    """FUG shortcut distillation column with energy balance."""
+    """FUG shortcut distillation column with energy balance.
+
+    Tagged ``SCREENING`` because the Fenske-Underwood-Gilliland equations are
+    a screening-grade representation — stage-by-stage MESH solvers (the
+    forthcoming ``TrayColumnHF`` in Workstream B) supersede this for
+    industrial-fidelity design.
+    """
 
     is_linear = False
+    category = UnitCategory.SCREENING
 
     def __init__(self, unit_id: str, components: List[str], params: DistillationHFParams):
         self.unit_id = unit_id

@@ -28,7 +28,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 from pse_ecosystem.core.contracts import LinearizedModel, PrimalGuess
-from pse_ecosystem.models.base_unit import BaseUnit
+from pse_ecosystem.models.base_unit import BaseUnit, UnitCategory
 
 
 class CSTRToy(BaseUnit):
@@ -36,6 +36,7 @@ class CSTRToy(BaseUnit):
 
     is_linear = False
     trust_region = 50.0  # m3 — keep reactor volume steps bounded
+    category = UnitCategory.DIDACTIC
 
     def __init__(
         self,

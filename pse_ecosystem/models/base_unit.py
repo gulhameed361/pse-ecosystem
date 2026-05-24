@@ -27,7 +27,62 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Dict, List, Tuple
 
-__all__ = ["BaseUnit", "OPEXConvention"]
+__all__ = ["BaseUnit", "OPEXConvention", "UnitCategory", "SizingMode"]
+
+
+class SizingMode(str, Enum):
+    """Equipment-sizing workflow mode (v1.6 Workstream D).
+
+    Three workflows familiar to industrial users:
+
+    * ``RATING``  — Given the equipment size (volume, area, n_stages, ...)
+      the unit computes performance. This is the v1.5.3 default and the
+      mode every unit operates in unless explicitly switched. Use when
+      auditing an existing plant or scrutinising a vendor-quoted unit.
+    * ``DESIGN``  — Given a performance specification (conversion, ΔT,
+      separation factor) the unit reports the size required to deliver it.
+      The user reads ``design_sizing()`` outputs (V_required_m3,
+      A_required_m2, N_stages_required, ...) and feeds them to a vendor.
+    * ``PERFORMANCE_CHECK`` — Both size *and* spec are given; the unit
+      reports the margin between actual and required size. Use for
+      retrofit / debottlenecking studies.
+
+    The mode is informational — it does not change the residual equations;
+    those always express the unit's physics. It changes which derived
+    quantities are surfaced in KPIs and which colour code the UI uses for
+    the "Sizing" expander.
+    """
+
+    RATING = "rating"
+    DESIGN = "design"
+    PERFORMANCE_CHECK = "check"
+
+
+class UnitCategory(str, Enum):
+    """Industrial-fidelity classification of unit models.
+
+    v1.6 introduces this enum so the UI Industrial Mode can hide
+    didactic/legacy units from EPC and consultancy users. The classification
+    is intentionally coarse — four buckets, not a maturity grade — so unit
+    authors can pick one in a few seconds.
+
+    * ``INDUSTRIAL`` — Production-ready model with analytical Jacobian where
+      tractable, CAPEX/OPEX hookup, and validated against literature data.
+      Shown to all personas including Industrial Mode.
+    * ``SCREENING``  — Useful for rapid screening (shortcut FUG, simplified
+      kinetics) but not intended for detailed design. Industrial Mode shows
+      these with a "screening only" badge.
+    * ``DIDACTIC``   — Toy models for teaching the solver / framework. Hidden
+      from Industrial Mode by default.
+    * ``LEGACY``     — Superseded by a native equation-oriented replacement.
+      Kept available for existing flowsheets but not shown in the Custom
+      Builder's unit picker.
+    """
+
+    INDUSTRIAL = "industrial"
+    SCREENING = "screening"
+    DIDACTIC = "didactic"
+    LEGACY = "legacy"
 
 import numpy as np
 
@@ -88,6 +143,17 @@ class BaseUnit(ABC):
     #: String literals ("USD_per_year" etc.) remain accepted for
     #: backwards-compatibility because ``OPEXConvention`` inherits ``str``.
     _OPEX_CONVENTION: OPEXConvention = OPEXConvention.USD_PER_YEAR
+
+    #: Industrial-fidelity classification. Default ``INDUSTRIAL``; toy /
+    #: shortcut / legacy units override at class level. The UI Industrial
+    #: Mode filters the unit picker by this attribute.
+    category: UnitCategory = UnitCategory.INDUSTRIAL
+
+    #: Equipment-sizing workflow mode (v1.6 Workstream D). Default
+    #: ``RATING`` preserves v1.5.3 behaviour. Switch to ``DESIGN`` to have
+    #: the unit report size-required-to-deliver-spec, or
+    #: ``PERFORMANCE_CHECK`` to surface margin-vs-spec in KPIs.
+    sizing_mode: SizingMode = SizingMode.RATING
 
     # ── Abstract interface ────────────────────────────────────────────────
 
@@ -150,6 +216,55 @@ class BaseUnit(ABC):
         if self._OPEX_CONVENTION == "USD_per_second":
             return raw * 3600.0 * operating_hours
         return raw
+
+    def dynamic_residuals(
+        self,
+        t: float,
+        y: Dict[str, float],
+        x_state: Dict[str, float],
+    ) -> Dict[str, float]:
+        """Time-derivatives of the unit's dynamic state variables.
+
+        Returns ``{var_name: dy/dt}`` for every state variable the unit
+        owns (typical: vessel holdups M_i, internal energy U, jacket
+        temperature). The default returns an empty dict — the unit is
+        modelled as purely steady-state, with all variables determined by
+        algebraic residuals only. This preserves v1.5.3 back-compat.
+
+        v1.6 Workstream E framework: only units with non-trivial dynamics
+        (CSTR holdup, flash drum level, column tray inventories) override
+        this. The :class:`DynamicSimulator` integrates the returned
+        derivatives with ``scipy.solve_ivp``.
+
+        Parameters
+        ----------
+        t       : Simulation time [s].
+        y       : Current values of the unit's dynamic state variables.
+        x_state : Frozen algebraic state (compositions, T, P, ...) at this
+                  time-step. The unit may read but should not mutate it;
+                  the simulator regenerates ``x_state`` between steps.
+        """
+        return {}
+
+    def design_sizing(self, x: Dict[str, float]) -> Dict[str, float]:
+        """Return the *required* size of the equipment to deliver state ``x``.
+
+        Default returns an empty dict (unit has no design heuristic).
+        Subclasses implementing this method return key sizing variables —
+        ``V_required_m3``, ``A_required_m2``, ``N_stages_required``,
+        ``W_shaft_required_kW``, ``NPSH_margin_m``, ``column_diameter_m``,
+        and so on — derived from the current operating point.
+
+        The returned values are *suggested*, not enforced; the residual
+        still uses whatever size the user supplied in ``params``. KPIs
+        merge the design suggestions when ``sizing_mode != RATING`` so the
+        operator can see both side-by-side.
+
+        v1.6 Workstream D framework. Per-unit implementations live in the
+        D.2–D.5 sub-tasks; this default keeps every existing unit (incl.
+        DIDACTIC / LEGACY) silently no-op.
+        """
+        return {}
 
     def control_hooks(self) -> Dict[str, str]:
         """Optional control pairing: {controlled_var: manipulated_var}.

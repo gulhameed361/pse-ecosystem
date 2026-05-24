@@ -144,4 +144,20 @@ class BiomassStorageHF(BaseUnit):
             f"{self.unit_id}.Q_drying_kW": Q_dry,
             f"{self.unit_id}.Q_preheating_kW": Q_preheat,
             f"{self.unit_id}.dry_feed_kg_s": F_dry,
+            f"{self.unit_id}.capex_USD": self.capex(x),
         }
+
+    # ── CAPEX ─────────────────────────────────────────────────────────────────
+
+    def capex(self, x: Dict[str, float]) -> float:
+        """Storage + rotary dryer purchase cost [USD, CE500 basis].
+
+        v1.6 audit A.5: pre-audit the unit returned base-class 0.0, silently
+        zero-rating biomass-handling capex (typically 5–15 % of plant cost
+        for biomass-fired plants). Cost scales with wet-feed rate via the
+        Towler-Sinnott Ch.7 six-tenths rule:
+            C = 100_000 USD × (F_wet_kg_s / 1.0)^0.6
+        for a rotary dryer + steel silo + screw conveyor train (CE500 basis).
+        """
+        F_wet = max(x.get(self._v_wet(), 0.1), 0.1)  # kg/s, floor 0.1
+        return 100_000.0 * (F_wet / 1.0) ** 0.6

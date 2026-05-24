@@ -23,13 +23,14 @@ from typing import Dict, List, Sequence, Tuple
 import numpy as np
 
 from pse_ecosystem.core.contracts import LinearizedModel, PrimalGuess
-from pse_ecosystem.models.base_unit import BaseUnit
+from pse_ecosystem.models.base_unit import BaseUnit, UnitCategory
 
 
 class IdealMixer(BaseUnit):
     """Ideal n-inlet mixer — linear, analytical Jacobian."""
 
     is_linear = True
+    category = UnitCategory.DIDACTIC
 
     def __init__(
         self,

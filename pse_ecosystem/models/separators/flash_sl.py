@@ -146,3 +146,34 @@ class FlashSL(BaseUnit):
 
     def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
         return {}
+
+    def capex(self, x: Dict[str, float]) -> float:
+        """Dissolver vessel purchase cost [USD, CE500 basis].
+
+        v1.6 audit A.3: pre-audit the unit returned base-class 0.0 — silently
+        zero-rating dissolver capex in TEA. Sized from solvent volumetric
+        flow × τ = 300 s (5-minute dissolution residence time, conservative).
+        """
+        from pse_ecosystem.models.costing.sslw_costing import vessel_purchase_cost_USD
+
+        m_solvent = max(x.get(self._v_solvent(), 0.0), 0.0)
+        V_vol = m_solvent / max(self.params.rho_solvent_kg_m3, 1e-9)  # m³/s
+        tau_s = 300.0  # 5 min dissolution residence time (Perry's heuristic)
+        volume_m3 = max(V_vol * tau_s, 0.05)
+        return vessel_purchase_cost_USD(volume_m3)
+
+    def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
+        uid = self.unit_id
+        result: Dict[str, float] = {}
+        V_vol = max(x.get(self._v_V_vol(), 0.0), 1e-12)
+        for c in self.species:
+            m_in = max(x.get(self._v_solid(c), 0.0), 1e-12)  # kg/s
+            m_residual = max(x.get(self._v_solid_out(c), 0.0), 0.0)
+            result[f"{uid}.dissolution_{c}_pct"] = (
+                100.0 * max(m_in - m_residual, 0.0) / m_in
+            )
+            result[f"{uid}.c_{c}_mol_per_m3"] = (
+                x.get(self._v_c(c), 0.0) / V_vol if V_vol > 0 else 0.0
+            )
+        result[f"{uid}.V_sol_m3_per_s"] = x.get(self._v_V_vol(), 0.0)
+        return result

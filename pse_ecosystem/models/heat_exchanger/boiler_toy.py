@@ -26,7 +26,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 from pse_ecosystem.core.contracts import LinearizedModel, PrimalGuess
-from pse_ecosystem.models.base_unit import BaseUnit
+from pse_ecosystem.models.base_unit import BaseUnit, UnitCategory
 
 
 @dataclass
@@ -42,6 +42,7 @@ class BoilerToy(BaseUnit):
     """Linear toy steam boiler with analytical Jacobian."""
 
     is_linear = True
+    category = UnitCategory.DIDACTIC
 
     def __init__(self, unit_id: str = "boiler", params: BoilerToyParams | None = None):
         self.unit_id = unit_id

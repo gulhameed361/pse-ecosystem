@@ -61,6 +61,18 @@ class CompressorParams:
     gamma_fixed: Optional[float] = None  # if None, computed from species
     electricity_price_USD_per_kWh: float = 0.05   # for OPEX calculation
     operating_hours_per_year: float = 8_000.0
+    n_stages: int = 1
+    """Number of compression stages with ideal intercooling between them.
+    ``n_stages = 1`` (default) preserves the v1.5.3 single-stage model.
+    With N stages and equal pressure ratio per stage r_s = r_total^(1/N),
+    each stage operates from ``T_intercool_K`` (or T_in for the first stage
+    if ``T_intercool_K`` is None) to T_in × (1 + (r_s^θ − 1)/η). Total shaft
+    work is N × per-stage work; intercooler duty (N − 1) × W_per_stage is
+    exposed as a KPI for sizing the inter-stage HX train."""
+    T_intercool_K: Optional[float] = None
+    """Temperature [K] to which the gas is cooled between stages. When
+    ``None`` the intercooling target is T_in (so multi-stage with ideal
+    intercooling). Set to a higher value to model partial intercooling."""
 
 
 class Compressor(BaseUnit):
@@ -149,18 +161,32 @@ class Compressor(BaseUnit):
             res[i] = x.get(self._v_F_out(c), 0.0) - x.get(self._v_F_in(c), 0.0)
 
         # Isentropic temperature rise [1]
+        # Multi-stage with ideal intercooling: each stage has equal pressure
+        # ratio r_s = (P_out/P_in)^(1/N) and starts at T_intercool (or T_in
+        # for stage 1 if T_intercool_K is None). The unit reports the
+        # FINAL-stage outlet temperature; intermediate stages are not
+        # exposed as variables — they're integrated into the work / Q_int
+        # KPIs analytically.
         g = self._gamma(x)
         theta = (g - 1.0) / g
-        r_P = P_out / P_in
-        T_out_isen = T_in * (r_P ** theta)
+        N_stages = max(self.params.n_stages, 1)
+        r_total = P_out / P_in
+        r_stage = r_total ** (1.0 / N_stages)
         eta = self.params.eta_isentropic
-        T_out_actual = T_in + (T_out_isen - T_in) / eta
+        T_inter = self.params.T_intercool_K if self.params.T_intercool_K else T_in
+        # Each stage starts at T_inter, ends at T_after_stage:
+        T_after_stage = T_inter + (T_inter * r_stage ** theta - T_inter) / eta
+        # The final stage starts at T_inter and outputs T_out_actual:
+        T_out_actual = T_after_stage
         res[N] = T_out - T_out_actual
 
         # Shaft work [1]
         flows_in = {c: x.get(self._v_F_in(c), 0.0) for c in comps if c in _KNOWN}
-        Cp_mix = mixture_cp_J_mol_K(flows_in, 0.5 * (T_in + T_out), basis="molar_flow")
-        W_calc = max(F_in_total, 0.0) * Cp_mix * (T_out - T_in)
+        Cp_mix = mixture_cp_J_mol_K(flows_in, 0.5 * (T_inter + T_out), basis="molar_flow")
+        # Work per stage = F · Cp · (T_after_stage − T_inter); total = N × that.
+        # Equivalent to F · Cp · (T_out − T_in) for single-stage (N=1, T_inter=T_in).
+        W_per_stage = max(F_in_total, 0.0) * Cp_mix * (T_after_stage - T_inter)
+        W_calc = N_stages * W_per_stage
         res[N + 1] = W - W_calc
 
         # Pressure (P_out specified or free; if specified → bounds handle it, residual is 0)
@@ -187,11 +213,20 @@ class Compressor(BaseUnit):
         P_in  = max(x.get(self._v_P_in(), 101325.0), 1.0)
         P_out = max(x.get(self._v_P_out(), 500000.0), 1.0)
         from pse_ecosystem.models.costing.sslw_costing import compressor_purchase_cost_USD
+        N_stages = max(self.params.n_stages, 1)
+        # Intercooler total duty: with ideal intercooling between stages,
+        # each interstage cooler removes W_per_stage of heat (returning the
+        # gas to T_intercool). Total Q_intercool = (N − 1) × W_per_stage =
+        # (N − 1) × W_total / N. Zero for single-stage; non-zero only when
+        # the user has explicitly requested multi-stage compression.
+        Q_intercool_W = (N_stages - 1) * W / N_stages if N_stages > 1 else 0.0
         return {
             f"{uid}.W_shaft_W":               W,
             f"{uid}.W_shaft_kW":              W / 1000.0,
             f"{uid}.T_out_K":                 T_out,
             f"{uid}.compression_ratio":       P_out / P_in,
+            f"{uid}.n_stages":                float(N_stages),
+            f"{uid}.Q_intercool_W":           Q_intercool_W,
             f"{uid}.isentropic_efficiency_pct": self.params.eta_isentropic * 100.0,
             f"{uid}.capex_USD":               compressor_purchase_cost_USD(W),
             f"{uid}.opex_USD_per_yr":         self.opex_per_year(x),
@@ -200,3 +235,36 @@ class Compressor(BaseUnit):
     def capex(self, x: Dict[str, float]) -> float:
         from pse_ecosystem.models.costing.sslw_costing import compressor_purchase_cost_USD
         return compressor_purchase_cost_USD(x.get(self._v_W(), 0.0))
+
+    def design_sizing(self, x: Dict[str, float]) -> Dict[str, float]:
+        """Required shaft work, stage count from r_stage ≤ 4 heuristic, and
+        a *surge margin* estimate at the current compression ratio.
+
+        Surge limit: industrial centrifugal compressors hit surge around
+        50-60% of design flow. The margin we report is the polytropic head
+        margin: (T_after − T_in) / (T_choke − T_in), assuming the compressor
+        is sized for ~30 K margin to the choke point at the design flow.
+        """
+        P_in = max(x.get(self._v_P_in(), 1.0e5), 1.0)
+        P_out = max(x.get(self._v_P_out(), 5.0e5), 1.0)
+        r_total = P_out / P_in
+        T_in = x.get(self._v_T_in(), 300.0)
+        T_out = x.get(self._v_T_out(), 400.0)
+        # Stage-count recommendation: r_stage ≤ 4 keeps each stage's outlet
+        # T below the metallurgical limit on common alloys.
+        n_stages_rec = max(
+            int(math.ceil(math.log(r_total) / math.log(4.0))), 1
+        )
+        W = x.get(self._v_W(), 0.0)
+        # Discharge T margin: compare actual ΔT vs choke ΔT (≈ 180 K for
+        # typical industrial machines). Negative ⇒ too hot, oversized stages.
+        dT_actual = T_out - T_in
+        surge_margin_K = 180.0 - dT_actual
+        return {
+            "W_shaft_required_W": W,
+            "compression_ratio": r_total,
+            "n_stages_recommended": float(n_stages_rec),
+            "n_stages_specified": float(self.params.n_stages),
+            "discharge_T_K": T_out,
+            "surge_margin_K": surge_margin_K,
+        }

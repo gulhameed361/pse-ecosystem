@@ -46,16 +46,32 @@ _KNOWN = set(SHOMATE.keys())
 
 @dataclass
 class ShellTubeParams:
-    U_W_per_m2_K: float = 500.0   # overall heat-transfer coefficient [W/m²/K]
+    U_W_per_m2_K: float = 500.0   # CLEAN overall heat-transfer coefficient [W/m²/K]
     A_m2: float = 10.0             # heat-transfer area [m²]
     n_shell_passes: int = 1
     n_tube_passes: int = 2
+    R_f_tube_m2K_per_W: float = 0.0
+    """Tube-side fouling resistance [m²·K/W]. TEMA / Perry's typical values:
+    cooling water 0.0002–0.0006, process gas 0.0001, heavy hydrocarbons 0.0005.
+    Default 0 keeps v1.5.3 numerics; non-zero values degrade U_effective."""
+    R_f_shell_m2K_per_W: float = 0.0
+    """Shell-side fouling resistance [m²·K/W]. Same convention as
+    ``R_f_tube_m2K_per_W``. Pre-v1.6 the unit silently ignored fouling."""
     feed_max: float = 1e4
     T_min: float = 200.0
     T_max: float = 2000.0
     P_min: float = 1e3
     P_max: float = 1e7
     Q_max: float = 1e10
+
+    def U_effective_W_per_m2_K(self) -> float:
+        """Effective U after fouling: 1 / (1/U_clean + R_f_tube + R_f_shell)."""
+        denom = (
+            1.0 / max(self.U_W_per_m2_K, 1e-9)
+            + self.R_f_tube_m2K_per_W
+            + self.R_f_shell_m2K_per_W
+        )
+        return 1.0 / denom
 
 
 def _lmtd_cf(T_hi: float, T_ho: float, T_ci: float, T_co: float) -> float:
@@ -181,10 +197,12 @@ class ShellTubeHX(BaseUnit):
         lmtd = _lmtd_cf(T_hi, T_ho, T_ci, T_co)
         F    = _f_factor_1_2(T_hi, T_ho, T_ci, T_co)
 
+        U_eff = p.U_effective_W_per_m2_K()
+
         res = np.zeros(4, dtype=float)
         res[0] = Q - C_hot * (T_hi - T_ho)
         res[1] = Q - C_cold * (T_co - T_ci)
-        res[2] = Q - p.U_W_per_m2_K * p.A_m2 * F * lmtd
+        res[2] = Q - U_eff * p.A_m2 * F * lmtd
         res[3] = x.get(self._vP("hot_out"), 0.0) - x.get(self._vP("hot_in"), 0.0)
         return res
 
@@ -200,4 +218,31 @@ class ShellTubeHX(BaseUnit):
             "Q_W": x.get(self._v_Q(), 0.0),
             "capex_USD": self.capex(x),
             "opex_USD_per_yr": 0.0,
+        }
+
+    def design_sizing(self, x: Dict[str, float]) -> Dict[str, float]:
+        """Required heat-transfer area + minimum approach ΔT.
+
+        A_required = Q / (U_eff · F · LMTD_cf). Reports the area needed
+        with the configured fouling factor; the user can compare to the
+        actual A_m2 to size the exchanger.
+        """
+        T_hi = x.get(self._vT("hot_in"), 500.0)
+        T_ho = x.get(self._vT("hot_out"), 400.0)
+        T_ci = x.get(self._vT("cold_in"), 300.0)
+        T_co = x.get(self._vT("cold_out"), 380.0)
+        Q = max(x.get(self._v_Q(), 0.0), 1.0)
+
+        U_eff = self.params.U_effective_W_per_m2_K()
+        lmtd = _lmtd_cf(T_hi, T_ho, T_ci, T_co)
+        F = _f_factor_1_2(T_hi, T_ho, T_ci, T_co)
+        denom = max(U_eff * F * lmtd, 1e-6)
+        A_req = Q / denom
+        dT_min = min(T_hi - T_co, T_ho - T_ci)
+        return {
+            "A_required_m2": A_req,
+            "U_effective_W_per_m2_K": U_eff,
+            "LMTD_K": lmtd,
+            "F_factor": F,
+            "dT_min_K": dT_min,
         }

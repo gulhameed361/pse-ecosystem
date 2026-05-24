@@ -18,7 +18,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-from pse_ecosystem.models.base_unit import BaseUnit
+from pse_ecosystem.models.base_unit import BaseUnit, UnitCategory
 
 
 @dataclass
@@ -35,6 +35,7 @@ class PEMToy(BaseUnit):
     """Linear toy PEM electrolyser."""
 
     is_linear = True
+    category = UnitCategory.DIDACTIC
 
     def __init__(self, unit_id: str = "pem", params: PEMToyParams | None = None):
         self.unit_id = unit_id

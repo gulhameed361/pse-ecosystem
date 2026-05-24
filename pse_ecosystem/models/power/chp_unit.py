@@ -102,6 +102,13 @@ class CHPUnit(BaseUnit):
         P_fuel_min: float = 1e4,         # Pa (≈ 0.1 atm minimum)
         P_fuel_max: float = 5e6,         # Pa (≈ 50 atm max for gas turbine)
         W_max: float = 1e9,              # kW
+        # v1.6 A.5 — EPA AP-42 5.1 emission factors per MJ fuel LHV. Defaults
+        # are modern lean-burn gas-turbine values (~25 ppmvd NOx, 15 ppmvd
+        # CO). Uncontrolled natural-gas turbines: NOx 0.32 g/MJ.
+        # SCR-controlled: 0.04 g/MJ. Override per-project.
+        NOx_g_per_MJ: float = 0.10,
+        CO_g_per_MJ: float = 0.05,
+        operating_hours_per_year: float = 8000.0,
     ):
         self.unit_id = unit_id
         self.lambda_air = lambda_air
@@ -115,6 +122,11 @@ class CHPUnit(BaseUnit):
         eta_turb = eta_isentropic * eta_mechanical
         self._q_elec = eta_comb * eta_turb
         self._q_heat = eta_comb * (1.0 - eta_turb) * eta_hrec
+
+        # Emission factors and operating hours stored as attributes for KPIs.
+        self._NOx_g_per_MJ = NOx_g_per_MJ
+        self._CO_g_per_MJ = CO_g_per_MJ
+        self._operating_hours_per_year = operating_hours_per_year
 
         # Fuel port now accepts full syngas species (H2, CO, CH4 combustible;
         # N2, CO2, H2O inert pass-through).  species=frozenset() skips port
@@ -239,6 +251,19 @@ class CHPUnit(BaseUnit):
         F_CO  = x.get(self._v_CO, 0.0)
         F_CH4 = x.get(self._v_CH4, 0.0)
         Q_fuel = _LHV_H2 * F_H2 + _LHV_CO * F_CO + _LHV_CH4 * F_CH4
+        # v1.6 A.5 — flue-gas emission factors. Q_fuel is in kW (= kJ/s) so
+        # fuel energy per year in MJ = Q_fuel × hours × 3.6 (3600 s/h × 1e-3
+        # to convert kJ → MJ). Then × factor [g/MJ] / 1000 → kg/yr.
+        Q_fuel_MJ_per_yr = Q_fuel * self._operating_hours_per_year * 3.6
+        NOx_kg_per_yr = self._NOx_g_per_MJ * Q_fuel_MJ_per_yr / 1000.0
+        CO_kg_per_yr = self._CO_g_per_MJ * Q_fuel_MJ_per_yr / 1000.0
+        # CO2 from stoichiometry — complete combustion of C-bearing fuels:
+        # CO → CO2 (1 mol CO2/mol CO), CH4 → CO2 (1 mol CO2/mol CH4).
+        # H2 → no CO2. Mass: 44 g/mol × MJ_yr × mol_C / mol_fuel.
+        F_CO2_mol_per_s = F_CO + F_CH4
+        CO2_kg_per_yr = (
+            F_CO2_mol_per_s * 44.01e-3 * self._operating_hours_per_year * 3600.0
+        )
         return {
             f"{uid}.W_elec_kW":               W,
             f"{uid}.Q_process_kW":            Q,
@@ -248,6 +273,9 @@ class CHPUnit(BaseUnit):
             f"{uid}.heat_efficiency_pct":     self._q_heat * 100.0,
             f"{uid}.fuel_LHV_input_kW":       Q_fuel,
             f"{uid}.combined_efficiency_pct": total / max(Q_fuel, 1e-9) * 100.0,
+            f"{uid}.NOx_emission_kg_per_yr":  NOx_kg_per_yr,
+            f"{uid}.CO_emission_kg_per_yr":   CO_kg_per_yr,
+            f"{uid}.CO2_emission_kg_per_yr":  CO2_kg_per_yr,
         }
 
     def capex(self, x: Dict[str, float]) -> float:

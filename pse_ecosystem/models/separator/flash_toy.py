@@ -36,13 +36,14 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-from pse_ecosystem.models.base_unit import BaseUnit
+from pse_ecosystem.models.base_unit import BaseUnit, UnitCategory
 
 
 class FlashToy(BaseUnit):
     """Non-linear toy flash separator. Jacobian via FD (base-class default)."""
 
     is_linear = False
+    category = UnitCategory.DIDACTIC
 
     def __init__(self, unit_id: str = "flash", K_A_ref: float = 2.0):
         self.unit_id = unit_id

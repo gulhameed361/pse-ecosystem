@@ -40,6 +40,18 @@ class PumpParams:
     W_max: float = 1e9       # W
     electricity_price_USD_per_kWh: float = 0.05
     operating_hours_per_year: float = 8_000.0
+    Psat_inlet_Pa: float = 2_339.0
+    """Saturated vapour pressure of the liquid at the inlet temperature [Pa].
+    Default = 2339 Pa = water at 20 °C. Drives NPSHa = (P_in − Psat)/(ρ·g).
+    For tight industrial fidelity supply the actual value at the operating T
+    (from a property package or DIPPR / Perry's correlation)."""
+    NPSHr_m: float = 3.0
+    """Manufacturer-quoted Net Positive Suction Head Required [m of fluid].
+    Typical centrifugal pumps: 2–5 m. NPSHa must exceed this with margin
+    (usually NPSHa − NPSHr ≥ 0.5–1 m) or cavitation will occur."""
+    g_m_s2: float = 9.80665
+    """Gravitational acceleration [m/s²]. Exposed so users at extreme
+    latitudes or in centrifuge testbeds can override if desired."""
 
 
 class Pump(BaseUnit):
@@ -131,14 +143,51 @@ class Pump(BaseUnit):
         W = x.get(self._v_W(), 0.0)
         P_in  = max(x.get(self._v_P_in(), 101325.0), 1.0)
         P_out = max(x.get(self._v_P_out(), 500000.0), 1.0)
+        # Net Positive Suction Head Available [m of fluid]:
+        # NPSHa = (P_in − P_sat(T_in)) / (ρ · g). Cavitation occurs when
+        # NPSHa drops below NPSHr; the margin KPI exposes the safety buffer
+        # so the operator can flag at-risk operating points before they
+        # damage the impeller. v1.6 audit A.4.
+        p = self.params
+        NPSHa = max(P_in - p.Psat_inlet_Pa, 0.0) / (p.density_kg_m3 * p.g_m_s2)
+        NPSHr = p.NPSHr_m
         return {
             f"{uid}.W_shaft_W":           W,
             f"{uid}.W_shaft_kW":          W / 1000.0,
             f"{uid}.compression_ratio":   P_out / P_in,
-            f"{uid}.pump_efficiency_pct": self.params.eta_pump * 100.0,
+            f"{uid}.pump_efficiency_pct": p.eta_pump * 100.0,
+            f"{uid}.NPSHa_m":             NPSHa,
+            f"{uid}.NPSHr_m":             NPSHr,
+            f"{uid}.NPSH_margin_m":       NPSHa - NPSHr,
+            f"{uid}.cavitation_risk":     1.0 if NPSHa < NPSHr else 0.0,
             f"{uid}.opex_USD_per_yr":     self.opex_per_year(x),
         }
 
     def capex(self, x: Dict[str, float]) -> float:
         from pse_ecosystem.models.costing.sslw_costing import pump_purchase_cost_USD
         return pump_purchase_cost_USD(x.get(self._v_W(), 0.0))
+
+    def design_sizing(self, x: Dict[str, float]) -> Dict[str, float]:
+        """Required hydraulic head, shaft power, and NPSH margin.
+
+        H = (P_out − P_in) / (ρ · g) [m]; W_shaft = ρ · g · H · Q / η;
+        margin = NPSHa − NPSHr (positive ⇒ no cavitation).
+        """
+        p = self.params
+        P_in = max(x.get(self._v_P_in(), 101325.0), 1.0)
+        P_out = max(x.get(self._v_P_out(), 500000.0), 1.0)
+        F_total = sum(x.get(self._v_F_in(c), 0.0) for c in self.components)
+        V_vol = F_total * p.molar_mass_kg_mol / p.density_kg_m3  # m³/s
+        head_m = (P_out - P_in) / (p.density_kg_m3 * p.g_m_s2)
+        W_shaft_W = (
+            p.density_kg_m3 * p.g_m_s2 * head_m * V_vol / max(p.eta_pump, 0.01)
+        )
+        NPSHa = max(P_in - p.Psat_inlet_Pa, 0.0) / (p.density_kg_m3 * p.g_m_s2)
+        return {
+            "head_required_m": head_m,
+            "W_shaft_required_W": W_shaft_W,
+            "V_flow_m3_per_s": V_vol,
+            "NPSHa_m": NPSHa,
+            "NPSHr_m": p.NPSHr_m,
+            "NPSH_margin_m": NPSHa - p.NPSHr_m,
+        }

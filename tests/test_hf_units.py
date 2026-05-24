@@ -76,9 +76,12 @@ class TestStoichiometricReactor:
         x["sr.inlet.P"] = 101325.0; x["sr.outlet.P"] = 101325.0
         _check_linearize_shape(unit, x)
 
-    def test_capex_zero(self):
+    def test_capex_minimum_floor(self):
+        # v1.6 A.1 audit: StoichiometricReactor now reports a minimum-vessel
+        # CAPEX even with empty inputs (was 0.0 pre-audit, which silently
+        # zero-rated the unit in TEA reports).
         unit = self._make()
-        assert unit.capex({}) == 0.0
+        assert unit.capex({}) > 0.0
 
 
 # ── Mixer HF ──────────────────────────────────────────────────────────────────

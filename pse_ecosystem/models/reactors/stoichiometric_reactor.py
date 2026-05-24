@@ -32,11 +32,19 @@ from pse_ecosystem.core.contracts import LinearizedModel, PrimalGuess, StreamPor
 from pse_ecosystem.models.base_unit import BaseUnit
 
 
+_R_GAS = 8.314462  # J/mol/K — needed for the τ-based volume estimate.
+
+
 @dataclass
 class StoichiometricParams:
     stoichiometry: Dict[str, List[float]]
     xi_max: Optional[List[float]] = None
     feed_max: float = 1e6  # mol/s upper bound for flow variables
+    tau_s: float = 10.0
+    """Notional residence time [s] used to back-out a vessel volume for the
+    SSLW CAPEX correlation. Stoichiometric reactors carry no real volume in
+    Aspen, but a 10 s placeholder lets techno-economic comparisons across
+    reactor types stay meaningful."""
 
 
 class StoichiometricReactor(BaseUnit):
@@ -111,6 +119,54 @@ class StoichiometricReactor(BaseUnit):
 
     def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
         return {}
+
+    def capex(self, x: Dict[str, float]) -> float:
+        """Vessel purchase cost [USD, CE500 basis] from feed × τ vessel sizing."""
+        from pse_ecosystem.models.costing.sslw_costing import vessel_purchase_cost_USD
+
+        F_total = sum(
+            max(x.get(self._v_F_in(c), 0.0), 0.0) for c in self.components
+        )
+        T = max(x.get(self._v_T_in(), 500.0), 273.0)
+        P = max(x.get(self._v_P_in(), 101325.0), 1.0)
+        Q_vol = max(F_total, 0.01) * _R_GAS * T / P
+        volume_m3 = max(Q_vol * self.params.tau_s, 0.05)
+        return vessel_purchase_cost_USD(volume_m3)
+
+    def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
+        uid = self.unit_id
+        comps = self.components
+        F_in = {c: max(x.get(self._v_F_in(c), 0.0), 1e-12) for c in comps}
+        F_out = {c: max(x.get(self._v_F_out(c), 0.0), 0.0) for c in comps}
+        result: Dict[str, float] = {}
+        for r in range(self._n_rxn):
+            result[f"{uid}.xi_{r}_mol_per_s"] = x.get(self._v_xi(r), 0.0)
+        for c in comps:
+            result[f"{uid}.conversion_{c}_pct"] = (
+                100.0 * max(F_in[c] - F_out[c], 0.0) / F_in[c]
+            )
+        return result
+
+    def design_sizing(self, x: Dict[str, float]) -> Dict[str, float]:
+        """Required vessel volume + L/D from feed × τ at inlet state."""
+        import math as _math
+
+        F_total = sum(
+            max(x.get(self._v_F_in(c), 0.0), 0.0) for c in self.components
+        )
+        T = max(x.get(self._v_T_in(), 500.0), 273.0)
+        P = max(x.get(self._v_P_in(), 101325.0), 1.0)
+        tau_s = self.params.tau_s
+        Q_vol = max(F_total, 0.01) * _R_GAS * T / P
+        V_req = max(Q_vol * tau_s, 0.05)
+        D = (2.0 * V_req / _math.pi) ** (1.0 / 3.0)
+        return {
+            "V_required_m3": V_req,
+            "residence_time_s": tau_s,
+            "L_over_D": 2.0,
+            "diameter_m": D,
+            "length_m": 2.0 * D,
+        }
 
     def linearize(self, guess: PrimalGuess) -> LinearizedModel:
         """Exact analytical Jacobian — unit is truly linear."""

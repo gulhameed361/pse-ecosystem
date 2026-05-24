@@ -27,7 +27,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 from pse_ecosystem.core.contracts import LinearizedModel, PrimalGuess
-from pse_ecosystem.models.base_unit import BaseUnit
+from pse_ecosystem.models.base_unit import BaseUnit, UnitCategory
 
 
 @dataclass
@@ -48,6 +48,7 @@ class GasifierToy(BaseUnit):
 
     is_linear = False
     trust_region = 5_000.0  # kg/h — keep linearisations local
+    category = UnitCategory.DIDACTIC
 
     def __init__(self, unit_id: str = "gasifier", params: GasifierToyParams | None = None):
         self.unit_id = unit_id
