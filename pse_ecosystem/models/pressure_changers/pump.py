@@ -58,6 +58,8 @@ class Pump(BaseUnit):
     """Liquid pump with isentropic efficiency."""
 
     is_linear = False
+    # v1.6.1 P.5b — coefficient embeds ``electricity_price × hours``.
+    _OPEX_CONVENTION = "USD_per_year"
 
     def __init__(self, unit_id: str, components: List[str], params: Optional[PumpParams] = None):
         self.unit_id = unit_id

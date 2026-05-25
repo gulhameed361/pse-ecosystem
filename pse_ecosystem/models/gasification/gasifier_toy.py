@@ -49,6 +49,8 @@ class GasifierToy(BaseUnit):
     is_linear = False
     trust_region = 5_000.0  # kg/h — keep linearisations local
     category = UnitCategory.DIDACTIC
+    # v1.6.1 P.5b — coefficient embeds biomass cost × operating_hours.
+    _OPEX_CONVENTION = "USD_per_year"
 
     def __init__(self, unit_id: str = "gasifier", params: GasifierToyParams | None = None):
         self.unit_id = unit_id

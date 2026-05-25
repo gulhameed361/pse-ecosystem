@@ -69,6 +69,9 @@ class MultistageCompressorHF(BaseUnit):
     """N-stage compressor + intercoolers + per-stage knockout drums."""
 
     is_linear = False
+    # v1.6.1 P.5b — coefficient embeds ``electricity_price × hours`` for
+    # total shaft work across all stages.
+    _OPEX_CONVENTION = "USD_per_year"
 
     def __init__(
         self,

@@ -38,6 +38,7 @@ __all__ = [
     "LinearizedModel",
     "UnitResponse",
     "SolveResult",
+    "TechnologyChoice",
 ]
 
 
@@ -302,3 +303,44 @@ class SolveResult:
     @property
     def converged(self) -> bool:
         return self.status == SolverStatus.CONVERGED
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# MILP-mode technology choice
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class TechnologyChoice:
+    """One binary technology candidate for ``SolveMode.FLEXIBLE_MILP``.
+
+    Owned by the cross-layer contract module (v1.6.1 P.5a) so that Layer 3
+    flowsheet templates can declare technology candidates without importing
+    from Layer 2's ``solvers/milp_builder.py``. The MILP builder still
+    consumes these instances; the relocation only changes the import path.
+
+    Attributes
+    ----------
+    name :
+        Stable identifier; used as the Pyomo binary variable name.
+    unit_id :
+        ``BaseUnit.unit_id`` of the unit gated by this binary.
+    flow_variables :
+        Names of every variable that must be forced to zero when ``y = 0``.
+    big_M :
+        Coupling constant; must dominate any feasible flow magnitude on every
+        variable in ``flow_variables``. The default of 1e9 covers all
+        industrial-scale flowsheets we ship templates for (mass flows ≤ 1e3
+        kg/s, pressures ≤ 1e8 Pa, power ≤ 1e8 W). Lower it only when the
+        variable bounds are known and tight, or when the LP relaxation
+        becomes ill-conditioned at large M.
+    fixed_cost :
+        Linear cost added to the objective when ``y = 1`` (e.g. annualised
+        CAPEX).
+    """
+
+    name: str
+    unit_id: str
+    flow_variables: List[str]
+    big_M: float = 1e9
+    fixed_cost: float = 0.0

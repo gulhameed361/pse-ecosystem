@@ -20,7 +20,10 @@ from pse_ecosystem.models.gasification.gasifier_toy import (
     GasifierToy,
     GasifierToyParams,
 )
-from pse_ecosystem.solvers.milp_builder import TechnologyChoice
+# v1.6.1 P.5a — TechnologyChoice was relocated to ``core.contracts``
+# (the shared cross-layer module) to close the only top-level L3 → L2
+# import leak. The milp_builder still re-exports it for legacy callers.
+from pse_ecosystem.core.contracts import TechnologyChoice
 
 
 def make_electrolysis_only(

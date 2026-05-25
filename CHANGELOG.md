@@ -33,7 +33,20 @@ See `docs/PLAN_v1_6_1.md`.
   reference. 5 new tests validate parity at three operating points
   (typical, low-conversion, Shomate-derived ΔH) plus is_exact-flag and
   linear-row exactness checks. Parity helper `tests/_jacobian_parity.py`
-  is reusable for the remaining four units. (this commit)
+  is reusable for the remaining four units. (commit `8a594d2`)
+- **P.5a — `TechnologyChoice` relocated to `core/contracts.py`** to close
+  the only top-level L3 → L2 import leak. `flowsheets/hydrogen/
+  electrolysis_grid.py` now imports from the shared cross-layer module;
+  `solvers/milp_builder.py` re-exports the dataclass for legacy callers.
+  (this commit)
+- **P.5b — OPEX-convention `__init_subclass__` safeguard** added to
+  `BaseUnit`. Fires a ``DeprecationWarning`` when a unit overrides
+  `objective_contribution` but does not declare `_OPEX_CONVENTION`,
+  catching the 3.6e7 annualisation footgun at class-definition time.
+  Eight production units (PEMToy, GasifierToy, BoilerToy, FiredHeaterHF,
+  Compressor, ExpanderHF, MultistageCompressorHF, Pump) updated with
+  explicit `_OPEX_CONVENTION = "USD_per_year"` declarations.
+  3 new regression tests in `tests/test_opex_safeguard.py`. (this commit)
 
 ### Deferred from P.4 to a follow-on commit
 
@@ -45,7 +58,8 @@ See `docs/PLAN_v1_6_1.md`.
 
 ### Test suite
 
-- 1 003 passing (+5 from CSTRHF Jacobian parity), 1 skipped.
+- 1 006 passing (+5 CSTRHF Jacobian, +3 OPEX safeguard regression),
+  1 skipped.
 
 ---
 

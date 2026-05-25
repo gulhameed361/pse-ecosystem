@@ -79,6 +79,8 @@ class Compressor(BaseUnit):
     """Isentropic gas compressor with efficiency correction."""
 
     is_linear = False
+    # v1.6.1 P.5b — coefficient embeds ``electricity_price × hours``.
+    _OPEX_CONVENTION = "USD_per_year"
 
     def __init__(self, unit_id: str, components: List[str], params: Optional[CompressorParams] = None):
         self.unit_id = unit_id

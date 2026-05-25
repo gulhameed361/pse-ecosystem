@@ -54,6 +54,9 @@ class ExpanderHF(BaseUnit):
     """Isentropic expander / turbine with efficiency correction."""
 
     is_linear = False
+    # v1.6.1 P.5b — coefficient is a negative ``electricity_price × hours``
+    # credit for the recovered shaft work; already in USD/yr.
+    _OPEX_CONVENTION = "USD_per_year"
 
     def __init__(
         self,

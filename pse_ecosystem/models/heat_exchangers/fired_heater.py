@@ -82,6 +82,9 @@ class FiredHeaterHF(BaseUnit):
     """Fuel-fired process heater with explicit combustion stoichiometry."""
 
     is_linear = False
+    # v1.6.1 P.5b — coefficient embeds fuel price (USD/GJ) × LHV ×
+    # operating_hours; result is already in USD/yr.
+    _OPEX_CONVENTION = "USD_per_year"
 
     def __init__(
         self,

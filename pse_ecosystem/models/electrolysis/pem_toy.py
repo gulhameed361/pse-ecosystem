@@ -36,6 +36,10 @@ class PEMToy(BaseUnit):
 
     is_linear = True
     category = UnitCategory.DIDACTIC
+    # v1.6.1 P.5b — explicit OPEX convention. Coefficient embeds
+    # ``electricity_price × operating_hours`` so the LP objective term is
+    # already in USD/yr.
+    _OPEX_CONVENTION = "USD_per_year"
 
     def __init__(self, unit_id: str = "pem", params: PEMToyParams | None = None):
         self.unit_id = unit_id

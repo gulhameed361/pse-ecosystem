@@ -23,6 +23,7 @@ Layer 2 must never import this module — it talks to units exclusively through
 
 from __future__ import annotations
 
+import warnings
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Dict, List, Tuple
@@ -154,6 +155,64 @@ class BaseUnit(ABC):
     #: the unit report size-required-to-deliver-spec, or
     #: ``PERFORMANCE_CHECK`` to surface margin-vs-spec in KPIs.
     sizing_mode: SizingMode = SizingMode.RATING
+
+    # ── v1.6.1 P.5b — OPEX-convention footgun safeguard ──────────────────
+    def __init_subclass__(cls, **kwargs):
+        """Warn when a subclass overrides :meth:`objective_contribution`
+        but does NOT declare its own ``_OPEX_CONVENTION``.
+
+        The default ``OPEXConvention.USD_PER_YEAR`` means the coefficients
+        returned by ``objective_contribution`` are **already annualised**
+        (already include ``× operating_hours × electricity_price``). A unit
+        whose decision variable is a rate (mol/s, W, kg/s) and whose
+        coefficient is a per-unit price needs ``USD_PER_SECOND`` so that
+        ``opex_per_year`` multiplies by 3 600 × hours/yr.
+
+        Forgetting to set this on a per-second-coefficient unit silently
+        understates annual OPEX by a factor of 3.6 × 10⁷. The pre-v1.6.1
+        codebase had two units (now-fixed) that hit this footgun. The
+        warning lets reviewers catch it on every new unit.
+
+        Implementation note: ``warnings.warn`` here means importing the
+        new unit's module is enough to surface the issue — CI will fail
+        on any pytest run that touches it because pyproject.toml elevates
+        ``DeprecationWarning`` to an error in test mode.
+        """
+        super().__init_subclass__(**kwargs)
+        if (
+            "objective_contribution" in cls.__dict__
+            and "_OPEX_CONVENTION" not in cls.__dict__
+        ):
+            # Skip the warning for units whose objective_contribution
+            # source body is just ``return {}`` — those return no cost
+            # coefficients at all, so no annualisation bug is possible.
+            import inspect
+            try:
+                src = inspect.getsource(cls.__dict__["objective_contribution"])
+                body_lines = [
+                    ln.strip()
+                    for ln in src.splitlines()
+                    if ln.strip() and not ln.strip().startswith("#")
+                    and not ln.strip().startswith('"""')
+                    and not ln.strip().startswith("'''")
+                    and not ln.strip().startswith("def ")
+                ]
+                if body_lines == ["return {}"]:
+                    return
+            except (OSError, TypeError):
+                pass
+            warnings.warn(
+                f"{cls.__name__} overrides objective_contribution but does "
+                f"not declare _OPEX_CONVENTION. Defaulting to "
+                f"USD_PER_YEAR — if your coefficients are per-second (e.g. "
+                f"price × molar flow), this silently understates annual "
+                f"OPEX by 3.6e7. Set "
+                f"``_OPEX_CONVENTION = OPEXConvention.USD_PER_SECOND`` or "
+                f"``YIELD_COEFFICIENT`` to declare the convention "
+                f"explicitly.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
     # ── Abstract interface ────────────────────────────────────────────────
 

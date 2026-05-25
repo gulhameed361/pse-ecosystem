@@ -23,29 +23,15 @@ from typing import Dict, Iterable, List, Optional
 import numpy as np
 import pyomo.environ as pyo
 
-from pse_ecosystem.core.contracts import LinearizedModel
+from pse_ecosystem.core.contracts import LinearizedModel, TechnologyChoice  # noqa: F401
 from pse_ecosystem.flowsheets.base_flowsheet import BaseFlowsheet
 from pse_ecosystem.solvers.lp_builder import _bound_pair, _PYOMO_INF
 
-
-@dataclass
-class TechnologyChoice:
-    """One binary technology candidate.
-
-    ``big_M`` must dominate any feasible flow magnitude on every variable in
-    ``flow_variables``; otherwise the y=0 branch silently clips the binary
-    selection. The default of 1e9 covers all industrial-scale flowsheets we
-    ship templates for (mass flows ≤ 1e3 kg/s, pressures ≤ 1e8 Pa, power
-    ≤ 1e8 W). Lower it only when the variable bounds are known and tight,
-    or when the LP relaxation becomes ill-conditioned at large M.
-    """
-
-    name: str
-    unit_id: str
-    flow_variables: List[str]
-    big_M: float = 1e9
-    fixed_cost: float = 0.0
-    """Linear cost added to the objective when ``y = 1`` (e.g. annualised CAPEX)."""
+# v1.6.1 P.5a — TechnologyChoice was relocated to core.contracts to close
+# the only top-level L3 → L2 import leak (flowsheets/hydrogen/
+# electrolysis_grid.py used to reach down into solvers/milp_builder.py for
+# this dataclass). The re-export above preserves every existing import
+# site (``from pse_ecosystem.solvers.milp_builder import TechnologyChoice``).
 
 
 def build_milp(
