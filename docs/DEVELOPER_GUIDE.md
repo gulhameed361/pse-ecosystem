@@ -1,9 +1,130 @@
-# Developer Guide
+# Developer Guide (v1.6.1)
 
 > Companion to [`ARCHITECTURE.md`](ARCHITECTURE.md) (the high-level
 > blueprint), [`THEORY_REFERENCE.md`](THEORY_REFERENCE.md) (the maths) and
 > [`USER_MANUAL.md`](USER_MANUAL.md) (the operator's view). This document
 > is the code-first manual for anyone extending the platform.
+
+---
+
+## 0. v1.6.1 — Refactor patterns
+
+### 0.1 Adding a new UI page
+
+UI pages live under `pse_ecosystem/ui/pages/` — one file per page. To add
+a "Pinch Preview" page (v1.7 H):
+
+```python
+# pse_ecosystem/ui/pages/pinch.py
+"""Pinch Preview page — composite curves, grand composite, Q_h_min / Q_c_min."""
+from __future__ import annotations
+
+from pse_ecosystem.ui.shared.state import _init_state
+from pse_ecosystem.ui.shared.streamlit_loader import _require_streamlit
+
+
+def _page_pinch():
+    st = _require_streamlit()
+    _init_state(st)
+    st.title("Pinch Analysis")
+    # ... page body ...
+```
+
+Then wire it into `pse_ecosystem/ui/app_streamlit.py`:
+
+```python
+from pse_ecosystem.ui.pages.pinch import _page_pinch
+# ... inside main():
+pages.append(st.Page(_page_pinch, title="Pinch", icon="🔥"))
+```
+
+If your page needs a helper that another page also uses, put it in
+`pse_ecosystem/ui/shared/` (see `docs_loader.py` for the pattern).
+
+### 0.2 Adding a new property package (v1.7 PR-NRTL example)
+
+Create a subclass of `PropertyPackage` and register it:
+
+```python
+# pse_ecosystem/models/properties/pr_nrtl.py
+from pse_ecosystem.models.properties.property_package import (
+    PropertyPackage, register_package,
+)
+
+class PRNRTLPackage(PropertyPackage):
+    method_name = "pr_nrtl"
+
+    def K_values(self, T_K, P_Pa, z=None):
+        # PR for vapor fugacity, NRTL for liquid activity
+        ...
+
+    def enthalpy(self, T_K, z, phase, T_ref_K=298.15):
+        ...
+
+    # implement Cp, density, K_iteration as needed
+
+register_package("pr_nrtl", PRNRTLPackage)
+```
+
+Add an import in `pse_ecosystem/models/properties/__init__.py` to
+trigger the registration at module load. The factory then routes
+`get_property_package("pr_nrtl", species)` to your class.
+
+### 0.3 Adding a new unit with all v1.6 features
+
+```python
+class MyNewUnitHF(BaseUnit):
+    category = UnitCategory.INDUSTRIAL        # v1.6.A — UI filter
+    sizing_mode = SizingMode.RATING            # v1.6.D — default
+    _OPEX_CONVENTION = OPEXConvention.USD_PER_YEAR  # be explicit!
+
+    def variables(self) -> List[str]: ...
+    def bounds(self) -> Dict[str, Tuple[float, float]]: ...
+    def residual(self, x) -> np.ndarray: ...
+    def objective_contribution(self, x) -> Dict[str, float]: ...
+
+    # Optional — v1.6.D design sizing
+    def design_sizing(self, x) -> Dict[str, float]:
+        return {"V_required_m3": ..., "diameter_m": ...}
+
+    # Optional — v1.6.E dynamics
+    def dynamic_residuals(self, t, y, x_state) -> Dict[str, float]:
+        return {"my_holdup": -k * y["my_holdup"]}
+
+    # Optional — v1.6 KPIs / CAPEX
+    def kpis(self, x) -> Dict[str, float]: ...
+    def capex(self, x) -> float: ...
+```
+
+Then register in `pse_ecosystem/ui/catalogue.py`:
+
+```python
+AVAILABLE_UNITS["MyNewUnitHF"] = "Description for the UI dropdown"
+UNIT_CATEGORIES["My Category"] = ["MyNewUnitHF"]
+```
+
+And add a factory branch in `pse_ecosystem/ui/instantiate.py`:
+
+```python
+if utype == "MyNewUnitHF":
+    from pse_ecosystem.models.my_subpackage.my_new_unit_hf import (
+        MyNewUnitHF, MyNewUnitHFParams,
+    )
+    return MyNewUnitHF(uid, params.get("components", []), MyNewUnitHFParams())
+```
+
+And finally add the class-lookup entry in `_unit_class_for_label` (same
+file) so the persona filter can read `MyNewUnitHF.category`.
+
+### 0.4 Layer-boundary rule (unchanged from v1.5)
+
+- `pse_ecosystem.solvers.*` must NOT import from `pse_ecosystem.models.*`.
+- `pse_ecosystem.models.*` must NOT import from `pse_ecosystem.solvers.*`.
+- Both layers may import from `pse_ecosystem.core.contracts`.
+- The UI may import from anything below it.
+
+The audit (`docs/AUDIT_v1_6.md`) grep-verifies these invariants on every
+release.
 
 ---
 

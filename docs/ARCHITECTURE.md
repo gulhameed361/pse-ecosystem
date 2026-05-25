@@ -1,4 +1,4 @@
-# PSE Ecosystem — Architecture Blueprint (v1.5.2)
+# PSE Ecosystem — Architecture Blueprint (v1.6.1)
 
 > Status: load-bearing document. The Layer 2 ↔ Layer 3 contract described
 > here is the lever that lets us scale from toy LP flowsheets to MINLP /
@@ -7,7 +7,131 @@
 
 ---
 
-## 0. v1.5.2 highlights — Dual-Persona Stabilisation
+## 0. v1.6.1 highlights — Polish & Activation
+
+v1.6.1 is a polish release that closes the structural debt the post-v1.6
+audit (`docs/AUDIT_v1_6.md`) identified. **No new capability features**;
+all v1.7 workstreams (H–N) remain queued.
+
+### v1.6.1 P.1 — `flowsheet_service.py` split into 5 modules
+
+The 3 392-line monolith is now a 1 446-line thin facade re-exporting from:
+
+```
+pse_ecosystem/ui/
+  catalogue.py        (251 ln)  AVAILABLE_UNITS + UNIT_CATEGORIES + persona filter
+  instantiate.py      (509 ln)  _instantiate_unit + build_custom_flowsheet
+                                 + build_composite_unit
+  templates.py       (1056 ln)  TemplateSpec + _REGISTRY + every _load_* loader
+  port_resolver.py     (90 ln)  primary_inlet / primary_outlet + named tables
+  safety_bridge.py    (244 ln)  compute_safety_margins + ASME wall thickness
+```
+
+Every previously-exported public symbol is preserved via re-export so
+existing call sites continue to work unchanged.
+
+### v1.6.1 P.2 — `app_streamlit.py` split into pages/ + shared/
+
+The 2 714-line UI monolith is now an 81-line entry point. The seven
+Streamlit pages live under `pse_ecosystem/ui/pages/` (one file per page);
+cross-page helpers live under `pse_ecosystem/ui/shared/`
+(state / formatting / streamlit-loader / docs-loader).
+
+### Architectural rule: still no L3 → L2 imports
+
+The audit verified zero imports from `pse_ecosystem.models.*` into
+`pse_ecosystem.solvers.*`. The two known L3 → L2 references are:
+
+- `flowsheets/base_flowsheet.py:CompositeUnit.residual` — deferred import
+  of `SLPDriver` for hierarchical decomposition (documented as the sole
+  sanctioned exception).
+- `flowsheets/hydrogen/electrolysis_grid.py` — top-level import of
+  `TechnologyChoice` from `solvers/milp_builder.py`. v1.6.1 sub-track
+  P.5 will relocate this dataclass to `core/contracts.py` to close the
+  leak.
+
+---
+
+## 0a. v1.6 highlights — Industrial Release (tagged 2026-05-23)
+
+Comprehensive sprint across seven workstreams (A–G); 512 → 998 passing
+tests. The architectural additions:
+
+### v1.6.C — Property-package framework
+
+`PropertyPackage` ABC + factory under `pse_ecosystem/models/properties/`:
+
+```
+properties/
+  components.py             Component dataclass + 27-species registry
+  property_package.py       PropertyPackage ABC + IdealGasPackage + factory
+  cubic_eos.py              PR + SRK with analytical fugacity / enthalpy
+                            departure + Wilson K approximation
+  activity_models.py        NRTL + Wilson + UNIQUAC + binary parameter
+                            tables (DECHEMA)
+  flash.py                  Generic VLE flash_PT (Rachford-Rice +
+                            successive substitution)
+  ideal_gas.py              Shomate Cp / H polynomials (back-compat dict
+                            rebuilt from Component registry at import)
+  vle.py                    Antoine K-value (back-compat)
+```
+
+Factory entry point: `get_property_package(method, species)` where
+`method ∈ {"ideal_gas", "peng_robinson", "srk", "nrtl", "wilson",
+"uniquac"}` and (reserved for v1.7) `"pr_nrtl"`.
+
+### v1.6.D — Sizing modes
+
+```python
+class SizingMode(str, Enum):
+    RATING = "rating"            # default — v1.5.x behaviour
+    DESIGN = "design"            # report required size for current spec
+    PERFORMANCE_CHECK = "check"  # both supplied — report margin
+```
+
+Per-unit `design_sizing(x)` returns the size variables for the current
+state: `V_required_m3`, `A_required_m2`, `N_stages_required`, etc.
+
+### v1.6.E — Dynamics + safety subpackages
+
+```
+pse_ecosystem/dynamics/
+  dae_solver.py             DynamicSimulator wrapping scipy.solve_ivp +
+                            BaseUnit.dynamic_residuals hook (opt-in)
+  perturbation.py           Step / ramp / pulse / sinusoid generators
+
+pse_ecosystem/safety/
+  relief_sizing.py          API 520 orifice area + API 521 fire-case
+                            duty + ASME Sec VIII setpoints
+  depressuring.py           Choked + sub-critical orifice mass flux +
+                            isothermal blowdown schedule
+  hazop_nodes.py            Topology-walking HAZOP node generator
+```
+
+These are **post-solve** modules — they consume a converged flowsheet
+and never enter the LP residual.
+
+### v1.6.F — Validation layer
+
+```
+pse_ecosystem/validation/
+  parity.py                 MAPE / RMSE / R² + scatter data
+  csv_io.py                 Aspen-compatible stream-table I/O
+  aspen_importer.py         Best-effort .bkp ASCII section parser
+  kinetic_tuner.py          scipy.optimize.least_squares wrapper
+  case_studies/             SMR, MEA absorber, propane splitter,
+                            ammonia loop reference CSVs
+```
+
+### v1.6.A / G — UnitCategory + persona-aware UI filter
+
+`BaseUnit.category ∈ {INDUSTRIAL, SCREENING, DIDACTIC, LEGACY}`. The
+UI's Custom Builder dropdown filters via `available_units_for_persona`
+(helper exists; UI wire-up is P.6 of v1.6.1).
+
+---
+
+## 0b. v1.5.2 highlights — Dual-Persona Stabilisation
 
 ### Port Coherence — Zero-Fill Padder
 

@@ -5,7 +5,135 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html) with `.devN` for
 pre-release iterations on a single minor version.
 
-## [Unreleased]
+## [Unreleased] — v1.6.1 polish & activation
+
+In progress. Activating v1.6 features (dynamics, sizing, validation, relief
+sizing) that ship without UI surfaces, plus a structural cleanup of the
+two 3 000-line monoliths. **No new capability features** — v1.7 workstreams
+H–N (pinch, UQ, multi-objective, PR-NRTL, control) all remain queued.
+See `docs/PLAN_v1_6_1.md`.
+
+### Refactor
+
+- **P.1 — Split `flowsheet_service.py`** from 3 392 → 1 446 lines (−57 %).
+  Five new modules under `pse_ecosystem/ui/`: `port_resolver.py`,
+  `catalogue.py`, `instantiate.py`, `templates.py`, `safety_bridge.py`.
+  Every public symbol re-exported from the original module for
+  back-compat. (commit `66d0112`)
+- **P.2 — Split `app_streamlit.py`** from 2 714 → 81 lines (−97 %). New
+  `pse_ecosystem/ui/pages/` subpackage (one file per page) +
+  `pse_ecosystem/ui/shared/` (state, formatting, streamlit-loader,
+  docs-loader). (commit `170171b`)
+- **P.3 — Doc refresh** to v1.6.1 across `ARCHITECTURE.md`,
+  `SYSTEM_STATE.md`, `DEVELOPER_GUIDE.md`, `USER_MANUAL.md`,
+  `THEORY_REFERENCE.md`. CHANGELOG.md retro-filled with v1.6 entries.
+  (this commit)
+
+### Test suite
+
+- 998 passing, 1 skipped (unchanged from v1.6).
+
+---
+
+## [1.6.0] — 2026-05-23 — Industrial Release
+
+Comprehensive sprint across seven workstreams (A–G). Test suite
+512 → 998 passing (+486, zero regressions). Default
+`property_method=ideal_gas` and `sizing_mode=rating` preserve
+byte-identical numerics on every existing v1.5.3 flowsheet JSON.
+(commit `0404aca`, tag `v1.6`)
+
+### Added — Workstream C (Thermo + Component DB, +191 tests)
+
+- Unified frozen `Component` registry: 27 species with Tc/Pc/ω/Shomate/
+  Antoine/UNIQUAC r,q in `pse_ecosystem/models/properties/components.py`.
+- `PropertyPackage` ABC + factory + `IdealGasPackage` back-compat
+  wrapper.
+- Peng-Robinson + SRK cubic EOS with analytical fugacity and enthalpy
+  departure (`cubic_eos.py`).
+- NRTL / Wilson / UNIQUAC activity-model packages + DECHEMA binary
+  parameter tables (`activity_models.py`).
+- Generic VLE `flash_PT` (Rachford-Rice + successive substitution)
+  in `flash.py`.
+- `FlashVLHF` refactored to use the property-package callback with
+  back-compat path when no package is supplied.
+
+### Added — Workstream A (35-unit audit, +142 tests)
+
+- `UnitCategory` enum (INDUSTRIAL / SCREENING / DIDACTIC / LEGACY)
+  on `BaseUnit`; persona-aware UI filter via
+  `available_units_for_persona`.
+- Closed CAPEX / KPI contract gaps on `GibbsReactor`,
+  `StoichiometricReactor`, `FlashVLHF`, `FlashSL`, `BiomassStorageHF`,
+  `HeatExchanger1D`, `Valve`, `MixerHF`.
+- HX fouling resistance fields (`R_f_tube_m2K_per_W`,
+  `R_f_shell_m2K_per_W`) on every HX unit; `Pump` NPSHa / NPSHr /
+  margin / cavitation flag; `Compressor` multi-stage + intercooler
+  duty KPI; `CHPUnit` NOx / CO / CO₂ emission factors; `SeparatorHF`
+  split-fraction validation at construction time.
+
+### Added — Workstream B (10 new industrial units, +52 tests)
+
+| Unit | File | Highlights |
+|---|---|---|
+| `ExpanderHF` | `pressure_changers/expander.py` | Power-recovery turbine; negative-OPEX credit |
+| `MultistageCompressorHF` | `pressure_changers/multistage_compressor.py` | N stages + intercoolers + knockout drums |
+| `DecanterHF` | `separators/decanter.py` | Liquid-liquid partition-coefficient split |
+| `SteamDrumHF` | `utilities/steam_drum.py` | Saturated steam drum (NIST Antoine for water) |
+| `FiredHeaterHF` | `heat_exchangers/fired_heater.py` | Combustion + flue gas + NOx |
+| `PackedColumnHF` | `separators/packed_column.py` | Colburn NTU·HTU absorber / stripper |
+| `MembraneModuleHF` | `separators/membrane_module.py` | Multi-component cross-flow permeation |
+| `BatchReactorHF` | `reactors/batch_reactor.py` | Arrhenius kinetics over cycle time |
+| `TrayColumnHF` | `separators/tray_column.py` | Rigorous MESH column with property-package K |
+| `CrystallizerHF` | `separators/crystallizer.py` | Van't Hoff solubility |
+
+### Added — Workstream D (Sizing modes, +16 tests)
+
+- `SizingMode` enum (RATING / DESIGN / PERFORMANCE_CHECK) on
+  `BaseUnit`.
+- `BaseUnit.design_sizing(x)` hook returning the size required to
+  deliver the current operating state. Implemented on CSTR, Flash,
+  Equilibrium, Gibbs, Stoichiometric, HX-NTU, Shell-Tube, HX-1D, Pump,
+  Compressor, Tray & Packed columns.
+
+### Added — Workstream E (Dynamics + Safety, +36 tests)
+
+- `pse_ecosystem/safety/relief_sizing.py` — API 520 orifice area for
+  vapour / liquid, API 521 fire-case heat input, ASME Sec VIII set /
+  full-lift pressures, all-in-one `size_psv_for_vessel`.
+- `pse_ecosystem/safety/depressuring.py` — critical / sub-critical
+  orifice mass flux + isothermal blowdown schedule.
+- `pse_ecosystem/safety/hazop_nodes.py` — topology-walking HAZOP node
+  generator with shape-specific guideword × parameter matrix.
+- `pse_ecosystem/dynamics/dae_solver.py` — `DynamicSimulator` wrapping
+  `scipy.solve_ivp` + `BaseUnit.dynamic_residuals` hook (opt-in;
+  empty default preserves steady-state behaviour).
+- `pse_ecosystem/dynamics/perturbation.py` — step / ramp / pulse /
+  sinusoid generators composable via `+`.
+
+### Added — Workstream F (Parity + Aspen interop, +22 tests)
+
+- `pse_ecosystem/validation/parity.py` — MAPE / RMSE / R² with
+  per-variable breakdown and Plotly-ready scatter data.
+- `pse_ecosystem/validation/csv_io.py` — Aspen-compatible stream-table
+  I/O (Aspen V12 "Streams Report" column convention).
+- `pse_ecosystem/validation/aspen_importer.py` — best-effort `.bkp`
+  ASCII section parser (streams + block list).
+- `pse_ecosystem/validation/kinetic_tuner.py` —
+  `scipy.optimize.least_squares` wrapper with log-scale Arrhenius support.
+- Four bundled reference case studies: SMR, MEA absorber, propane-
+  propylene splitter, ammonia synthesis loop.
+
+### Added — Workstream G (UI Industrial Mode + cross-cutting, +32 tests)
+
+- `available_units_for_persona` / `unit_categories_for_persona`
+  helpers — runtime filter of the Custom Builder catalogue by
+  `BaseUnit.category`.
+- All 10 Workstream B units registered in `AVAILABLE_UNITS` +
+  `UNIT_CATEGORIES` (new "Utilities" group for `SteamDrumHF`).
+- `_instantiate_unit` factory cases for all 10 new units.
+
+---
 
 ## [1.5.3] — 2026-05-21
 

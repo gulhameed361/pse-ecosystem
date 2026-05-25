@@ -1,12 +1,108 @@
 # PSE Ecosystem — User Manual
 
-**Version:** 1.5.3 | **Date:** 2026-05-21 | **Status:** Comprehensive Bug-Fix & Quality Release
+**Version:** 1.6.1 | **Date:** 2026-05-25 | **Status:** Polish & activation release (v1.6 tagged)
 
-> Single source of truth for PSE Ecosystem users. Replaces `UI_GUIDE.md` (merged here in Phase 6)
-> and `SHOWCASE_WALKTHROUGH.md` (merged in Phase 5). For architecture details see `ARCHITECTURE.md`;
-> for equation derivations see `THEORY_REFERENCE.md`; for code extensions see `DEVELOPER_GUIDE.md`.
-> For a step-by-step build of the 7-unit biomass → H₂ workshop with full answer key,
-> see [`WORKSHOP_7UNIT.md`](WORKSHOP_7UNIT.md).
+> Single source of truth for PSE Ecosystem users. For architecture details see
+> [`ARCHITECTURE.md`](ARCHITECTURE.md); for equation derivations see
+> [`THEORY_REFERENCE.md`](THEORY_REFERENCE.md); for code extensions see
+> [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md). For a step-by-step build of the
+> 7-unit biomass → H₂ workshop with full answer key, see
+> [`WORKSHOP_7UNIT.md`](WORKSHOP_7UNIT.md).
+
+---
+
+## What's new in v1.6 / v1.6.1
+
+v1.6 (tagged 2026-05-23) shipped **45 unit models** (up from 35), a full
+thermo ladder (ideal-gas → PR / SRK → NRTL / Wilson / UNIQUAC), a sizing-
+mode workflow, dynamics + safety + validation frameworks, and a parity
+dashboard with Aspen interop. 998 tests pass.
+
+v1.6.1 (in progress) is a polish release that activates v1.6 features
+that didn't yet have UI surfaces, plus a structural split of the two
+3 000-line monoliths. **No new capability features.**
+
+### Industrial Mode persona toggle
+
+The Streamlit sidebar has a **View Mode** radio:
+
+- **Academic** — every unit visible in the Custom Builder; Jacobian
+  diagnostics, residual plots, derivative tables surfaced in the Solver
+  Monitor.
+- **Industrial** — toy and legacy units hidden; CapEx / ASME / NPV /
+  IRR tables surfaced; relief-sizing and dynamics pages enabled.
+
+Persona is session-state and persists across page navigation. Under the
+hood, the Custom Builder calls `available_units_for_persona(persona)`
+from `pse_ecosystem/ui/catalogue.py` (v1.6.1 P.6 wires this into the
+dropdown — currently the underlying API exists but the picker still
+shows everything; this is being fixed in the polish sprint).
+
+### Property-method selector
+
+For VLE-aware units (FlashVLHF, TrayColumnHF, PackedColumnHF, etc.) the
+Flowsheet Builder exposes a **Property method** dropdown:
+
+| Method | Class | When to use |
+|---|---|---|
+| `ideal_gas` (default) | `IdealGasPackage` | Light gases at low P; back-compat with v1.5.3 |
+| `peng_robinson` | `PengRobinsonPackage` | Hydrocarbons, sour gas, natural gas |
+| `srk` | `SRKPackage` | Similar accuracy to PR for most hydrocarbons |
+| `nrtl` | `NRTLPackage` | Polar / hydrogen-bonded mixtures (alcohols, water, MEA) |
+| `wilson` | `WilsonPackage` | Compact 2-parameter VLE for hydrocarbon-alcohol mixtures |
+| `uniquac` | `UNIQUACPackage` | When NRTL binary parameters aren't available; uses r, q |
+| `pr_nrtl` | (reserved) | v1.7 — vapor PR + liquid NRTL hybrid |
+
+### Sizing-mode workflow
+
+Each unit's parameters expander now has a **Sizing mode** dropdown
+(RATING / DESIGN / PERFORMANCE_CHECK). In Design mode the unit reports
+the volume / area / stage count required to deliver the current
+operating spec via `design_sizing(x)` — read these in the Solver Monitor
+KPI table.
+
+### Relief sizing (v1.6.E, P.7d in progress)
+
+A new module `pse_ecosystem.safety.relief_sizing` exposes API 520 / 521
+orifice-area calculations for vapour and liquid PSV scenarios (fire,
+blocked-outlet, thermal expansion). A dedicated UI page is being added
+in v1.6.1 P.7; until then, call the API directly from Python:
+
+```python
+from pse_ecosystem.safety.relief_sizing import (
+    size_psv_for_vessel, ReliefScenario,
+)
+
+result = size_psv_for_vessel(
+    P_design_Pa=20.0e5, T_relief_K=350.0,
+    A_wetted_m2=50.0, MW_kg_per_mol=0.044,
+    gamma=1.3, H_vap_J_per_kg=350_000.0,
+    scenario=ReliefScenario.FIRE,
+)
+print(f"Required orifice area: {result.orifice_area_m2*1e4:.2f} cm²")
+print(f"Set pressure: {result.setpoints.P_set_Pa/1e5:.2f} bar")
+print(f"Full-lift pressure: {result.setpoints.P_full_lift_Pa/1e5:.2f} bar")
+```
+
+### Validation / parity dashboard (v1.6.F, P.7a in progress)
+
+After a solve, you can compare the predicted stream table against a
+reference CSV (Aspen export, plant measurements, etc.):
+
+```python
+from pse_ecosystem.validation import (
+    read_stream_table_csv, compute_metrics,
+)
+
+measured = read_stream_table_csv("aspen_export.csv")
+predicted = {...}  # extract from solve_result.x in same column convention
+result = compute_metrics(measured, predicted)
+print(f"Overall MAPE: {result.overall_mape_pct:.2f}%")
+print(f"Worst variable: {result.worst_variable}")
+```
+
+A Streamlit Validation page that wraps this in a file-upload + scatter
+plot is part of v1.6.1 P.7.
 
 ---
 

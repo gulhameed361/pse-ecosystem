@@ -1,6 +1,6 @@
 # Theory Reference
 
-> **v1.5.2** — The mathematical and process-systems-engineering
+> **v1.6.1** — The mathematical and process-systems-engineering
 > underpinnings of the PSE Ecosystem. For the high-level architecture see
 > [`ARCHITECTURE.md`](ARCHITECTURE.md); for code-level details see
 > [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md); for end-user usage see
@@ -8,7 +8,142 @@
 
 ---
 
-## 0. v1.4.0 — Numerical foundations relevant to the UMS
+## 0. v1.6 — Thermo, safety, and dynamics math
+
+### 0.1 Peng-Robinson + SRK cubic EOS
+
+Both EOSs share the unified form:
+
+    P = RT/(v − b) − a(T) / (v² + u b v + w b²)
+
+with (u, w) = (2, −1) for PR and (1, 0) for SRK. Pure-component
+parameters from the critical triple (Tc, Pc, ω):
+
+    PR:  a_c = 0.45724 (R Tc)² / Pc,    b = 0.07780 R Tc / Pc
+    SRK: a_c = 0.42748 (R Tc)² / Pc,    b = 0.08664 R Tc / Pc
+
+Temperature dependence via Soave's α-function:
+
+    α(T) = [1 + κ (1 − √(T/Tc))]²
+    PR:   κ = 0.37464 + 1.54226 ω − 0.26992 ω²
+    SRK:  κ = 0.48000 + 1.57400 ω − 0.17600 ω²
+
+Mixing rules (van der Waals one-fluid):
+
+    a_mix = Σ_i Σ_j y_i y_j (1 − k_ij) √(a_i a_j)
+    b_mix = Σ_i y_i b_i
+
+In compressibility-factor form (A = a_mix P / (R T)², B = b_mix P / (R T)):
+
+    PR:   Z³ − (1 − B) Z² + (A − 3B² − 2B) Z − (AB − B² − B³) = 0
+    SRK:  Z³ − Z² + (A − B − B²) Z − A B = 0
+
+Implementation: `pse_ecosystem/models/properties/cubic_eos.py`, real-root
+selection via `np.roots` filtered by `Z > B`. Vapour phase → largest
+root; liquid phase → smallest.
+
+### 0.2 NRTL / Wilson / UNIQUAC activity models
+
+**NRTL** (Renon & Prausnitz 1968):
+
+    ln γ_i = (Σ_j x_j G_ji τ_ji) / (Σ_k x_k G_ki)
+             + Σ_j [x_j G_ij / (Σ_k x_k G_kj)]
+               × [τ_ij − (Σ_m x_m τ_mj G_mj) / (Σ_k x_k G_kj)]
+
+with τ_ij = A_ij / T and G_ij = exp(−α_ij τ_ij), G_ii = 1, τ_ii = 0,
+α_ji = α_ij (symmetric).
+
+**Wilson** (Wilson 1964):
+
+    ln γ_i = 1 − ln(Σ_j x_j Λ_ij) − Σ_k [x_k Λ_ki / Σ_j x_j Λ_kj]
+
+with Λ_ii = 1. v1.6 stores Λ as ln Λ_ij = a_ij + b_ij/T (absorbs the
+volume-ratio term).
+
+**UNIQUAC** (Abrams & Prausnitz 1975): split into combinatorial +
+residual using r_i (van der Waals volume), q_i (surface area), and a
+single binary parameter A_ij per pair via τ_ij = exp(−A_ij / T).
+r and q come from the component registry.
+
+For all three: K-values follow modified Raoult,
+`K_i = γ_i(T, x) × P_sat_i(T) / P`. Implementation:
+`pse_ecosystem/models/properties/activity_models.py`. DECHEMA binary
+parameters bundled for ethanol-water, methanol-water, benzene-toluene
+(NRTL and UNIQUAC), ethanol-water (Wilson). Users supply additional
+pairs via `register_nrtl_pair` / `register_wilson_pair` /
+`register_uniquac_pair`.
+
+### 0.3 Generic VLE flash
+
+`pse_ecosystem.models.properties.flash.flash_PT(package, z, T, P)`:
+
+1. Initial K-values from `package.K_values(T, P, z)`.
+2. Solve Rachford-Rice for V ∈ (0, 1):
+   `Σ_i z_i (K_i − 1) / (1 + V(K_i − 1)) = 0`.
+3. Compute x_i = z_i / (1 + V(K_i − 1)), y_i = K_i x_i.
+4. Update K via `package.K_iteration(T, P, x, y)` — Wilson approximation
+   for ideal-gas / cubic-EOS, modified Raoult re-evaluation for
+   activity models.
+5. Repeat until ‖ΔK / K‖∞ < tol.
+
+Single-phase shortcuts at step 1 (Σ z K ≤ 1 → all-liquid; Σ z/K ≤ 1
+→ all-vapour) avoid the inner loop when bracketing fails.
+
+### 0.4 API 520 / 521 relief sizing
+
+**Vapour orifice area** (API 520 Eq.3.4):
+
+    A = W × √(T Z / M) / (C K_d K_b K_c P_1)
+
+with C = √(γ × (2/(γ+1))^((γ+1)/(γ-1))) — the dimensionless coefficient
+(0.685 for γ=1.4, 0.668 for γ=1.3). Implementation in
+`pse_ecosystem/safety/relief_sizing.py`.
+
+**Liquid orifice area** (API 520 Eq.3.7):
+
+    A = W / (K_d K_w K_v K_c × √(2 ρ ΔP))
+
+K_d_liquid = 0.65 by default (vs 0.975 for vapour — a 33 % gap industrial
+users routinely miss).
+
+**Fire-case heat input** (API 521 Eq.5b, SI units):
+
+    Q_fire [W] = 21 000 × F × A_wetted^0.82 × 1000
+
+with F = 1.0 (bare vessel) down to 0.3 (drainage + water spray +
+insulation).
+
+**ASME setpoints** (Sec VIII UG-125):
+
+- Non-fire: P_set ≤ P_design; full lift at 1.10 P_set (10 % accumulation).
+- Fire: full lift allowed at 1.21 P_design (21 % accumulation,
+  UG-125(c)).
+
+### 0.5 Depressuring (choked / sub-critical orifice flow)
+
+**Critical pressure ratio** for ideal gas:
+
+    P_crit / P_1 = (2 / (γ+1))^(γ/(γ-1))  ≈ 0.528 for γ=1.4
+
+**Choked mass flux** (P_back ≤ P_crit · P_1):
+
+    G_choked = C_d × P_1 × √(γ M / (R T_1) × (2/(γ+1))^((γ+1)/(γ-1)))
+
+**Sub-critical mass flux** (P_back > P_crit · P_1):
+
+    r = P_back / P_1
+    G_sub = C_d × P_1 × √(2 γ M / ((γ-1) R T_1) × (r^(2/γ) − r^((γ+1)/γ)))
+
+Implementation: `pse_ecosystem/safety/depressuring.py`. The
+`depressuring_schedule` function does a forward-Euler isothermal
+integration of `dM/dt = −G(P, T) × A_orifice` until P falls below the
+target. Note: real blowdown features Joule-Thomson cooling that this
+isothermal screening-grade model ignores — for brittle-fracture studies
+use a dedicated tool.
+
+---
+
+## 0a. v1.4.0 — Numerical foundations relevant to the UMS
 
 The Unit Management System (v1.4.0) lives at Layer 1 and is invisible to
 the solver. Every equation in this document is stated in SI units (K, Pa,

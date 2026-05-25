@@ -1,8 +1,107 @@
 # PSE Ecosystem — System State Ledger
 
-**Version:** 1.5.2
-**Date:** 2026-05-20
-**Status:** v1.5.2 — Dual-Persona Stabilisation + Scenario Analysis Enhancement. 434 pytest + 20 UI audit = 454 total checks.
+**Version:** 1.6.1 (in-progress; v1.6 tagged)
+**Date:** 2026-05-25
+**Status:** v1.6.1 polish & activation — refactor of `flowsheet_service.py`
+and `app_streamlit.py` complete (P.1 + P.2); doc refresh in progress (P.3).
+**Test count:** 998 passing, 1 skipped (`pytest -q`).
+
+---
+
+## What's New in v1.6.1 — Polish & Activation
+
+Activates v1.6 features that ship without UI surfaces (dynamics, sizing
+modes, validation, relief sizing) and breaks the two 3 000-line monoliths
+into focused per-concern modules. **No new capability features** — v1.7
+workstreams H–N (pinch, UQ, multi-objective, PR-NRTL, control) all remain
+queued.
+
+### Refactor (P.1 + P.2)
+
+- **`pse_ecosystem/ui/flowsheet_service.py`**: 3 392 → 1 446 lines (−57 %).
+  Catalogue, factory, templates, port resolver, safety bridge each live in
+  their own module now; the original module re-exports every public symbol
+  for back-compat.
+- **`pse_ecosystem/ui/app_streamlit.py`**: 2 714 → 81 lines (−97 %). Each
+  of the 7 Streamlit pages lives under `pse_ecosystem/ui/pages/`, with
+  shared helpers (`_init_state`, `_infer_si_unit`, `_require_streamlit`,
+  `_docs_dir` / `_load_doc`) under `pse_ecosystem/ui/shared/`.
+- The `pse_ecosystem/ui/` layout is now:
+  ```
+  pse_ecosystem/ui/
+    app_streamlit.py       (81 ln)   main() + persona toggle + page list
+    flowsheet_service.py   (1446 ln) bridge between UI and lower layers
+    catalogue.py           (251 ln)  AVAILABLE_UNITS + persona filter
+    instantiate.py         (509 ln)  _instantiate_unit + build_custom_flowsheet
+    templates.py           (1056 ln) TemplateSpec + _REGISTRY + loaders
+    port_resolver.py       (90 ln)   primary_inlet / primary_outlet
+    safety_bridge.py       (244 ln)  compute_safety_margins + ASME
+    shared/                          state, formatting, streamlit, docs
+    pages/                           dashboard, flowsheet_builder,
+                                     gps_weather, solver_monitor,
+                                     scenario_manager, solve_history,
+                                     help_center, case_study
+  ```
+
+### Doc refresh (P.3, this commit)
+
+- All load-bearing markdown files updated from v1.5.2 → v1.6.1.
+- `CHANGELOG.md` retro-filled with v1.6 release entries and v1.6.1
+  in-progress entries.
+- `docs/AUDIT_v1_6.md` — comprehensive post-release audit committed in
+  `0850b11` covering inventory, layer-boundary verification, solver suite,
+  unit catalogue, costing, dynamics / safety / validation, tests, docs,
+  and 10 top action items.
+- `docs/PLAN_v1_7.md` — v1.7 capability sprint plan (seven workstreams
+  H–N: heat-integration pinch, mass pinch, UQ, multi-objective
+  optimisation, PR-NRTL hybrid + VLLE flash, process control,
+  cross-cutting).
+- `docs/PLAN_v1_6_1.md` — this release's polish plan (eight sub-tracks).
+
+### Remaining v1.6.1 sub-tracks
+
+| Sub-track | Status | Notes |
+|---|---|---|
+| P.1 — Split `flowsheet_service.py` | ✅ done | commit `66d0112` |
+| P.2 — Split `app_streamlit.py` | ✅ done | commit `170171b` |
+| P.3 — Doc refresh | 🔄 in progress | this commit |
+| P.4 — Analytical Jacobians (5 units) | ⏳ pending | CSTR, Flash, HX-NTU, Shell-Tube, Compressor |
+| P.5 — `TechnologyChoice` to core + OPEX guard | ⏳ pending | |
+| P.6 — Wire persona filter into Custom Builder | ⏳ pending | helper exists; UI doesn't call it yet |
+| P.7 — UI pages: Validation, Pinch placeholder, Dynamics, Relief | ⏳ pending | |
+| P.8 — End-to-end case-study templates | ⏳ pending | SMR, MEA, C3 splitter, NH3 loop |
+
+---
+
+## What's New in v1.6 — Industrial Release (tagged 2026-05-23)
+
+512 → 998 passing tests (+486, zero regressions). Default
+`property_method=ideal_gas` and `sizing_mode=rating` preserve byte-
+identical numerics on every existing v1.5.3 flowsheet JSON.
+
+Headline additions:
+
+- **Thermo ladder**: ideal-gas → Peng-Robinson → SRK → NRTL → Wilson →
+  UNIQUAC, all behind a single `PropertyPackage` ABC + factory.
+- **35-unit audit**: every existing unit tagged with a `UnitCategory`
+  (INDUSTRIAL / SCREENING / DIDACTIC / LEGACY); CAPEX / KPI contract
+  gaps closed; HX fouling resistance, Pump NPSHa, Compressor multi-stage,
+  CHP NOx emissions.
+- **10 new units**: ExpanderHF, MultistageCompressorHF, DecanterHF,
+  SteamDrumHF, FiredHeaterHF, PackedColumnHF, MembraneModuleHF,
+  BatchReactorHF, TrayColumnHF, CrystallizerHF.
+- **Sizing modes**: RATING / DESIGN / PERFORMANCE_CHECK with
+  per-unit `design_sizing` hook.
+- **Dynamics framework**: `DynamicSimulator` wrapping scipy.solve_ivp +
+  `Perturbation` step / ramp / pulse / sinusoid + `BaseUnit.dynamic_residuals`
+  hook (opt-in).
+- **Safety**: API 520 / 521 relief sizing, depressuring schedule, HAZOP
+  node generator.
+- **Validation**: parity dashboards (MAPE / RMSE / R²), Aspen `.bkp`
+  ASCII parser, kinetic tuner, 4 bundled case studies.
+
+See `CHANGELOG.md` for the full list and `docs/AUDIT_v1_6.md` for a
+post-release deep audit.
 
 ---
 
