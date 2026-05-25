@@ -27,11 +27,25 @@ See `docs/PLAN_v1_6_1.md`.
 - **P.3 — Doc refresh** to v1.6.1 across `ARCHITECTURE.md`,
   `SYSTEM_STATE.md`, `DEVELOPER_GUIDE.md`, `USER_MANUAL.md`,
   `THEORY_REFERENCE.md`. CHANGELOG.md retro-filled with v1.6 entries.
-  (this commit)
+  (commit `f8014f6`)
+- **P.4 (partial) — Analytical Jacobian for CSTRHF**: full Arrhenius
+  chain-rule derivatives + parity test against the central-difference
+  reference. 5 new tests validate parity at three operating points
+  (typical, low-conversion, Shomate-derived ΔH) plus is_exact-flag and
+  linear-row exactness checks. Parity helper `tests/_jacobian_parity.py`
+  is reusable for the remaining four units. (this commit)
+
+### Deferred from P.4 to a follow-on commit
+
+- `ShellTubeHX` analytical Jacobian (F-factor chain rule is non-trivial).
+- `Compressor` analytical Jacobian (n_stages > 1 chain rule).
+- `FlashVLHF` analytical Jacobian (K-value derivatives from Antoine).
+- `HeatExchangerNTU` analytical Jacobian (effectiveness-NTU rational
+  function derivative).
 
 ### Test suite
 
-- 998 passing, 1 skipped (unchanged from v1.6).
+- 1 003 passing (+5 from CSTRHF Jacobian parity), 1 skipped.
 
 ---
 

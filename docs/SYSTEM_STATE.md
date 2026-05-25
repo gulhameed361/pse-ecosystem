@@ -64,8 +64,8 @@ queued.
 |---|---|---|
 | P.1 — Split `flowsheet_service.py` | ✅ done | commit `66d0112` |
 | P.2 — Split `app_streamlit.py` | ✅ done | commit `170171b` |
-| P.3 — Doc refresh | 🔄 in progress | this commit |
-| P.4 — Analytical Jacobians (5 units) | ⏳ pending | CSTR, Flash, HX-NTU, Shell-Tube, Compressor |
+| P.3 — Doc refresh | ✅ done | commit `f8014f6` |
+| P.4 — Analytical Jacobians (CSTRHF done; 4 deferred) | 🔄 partial | CSTRHF this commit; Flash / HX-NTU / Shell-Tube / Compressor deferred |
 | P.5 — `TechnologyChoice` to core + OPEX guard | ⏳ pending | |
 | P.6 — Wire persona filter into Custom Builder | ⏳ pending | helper exists; UI doesn't call it yet |
 | P.7 — UI pages: Validation, Pinch placeholder, Dynamics, Relief | ⏳ pending | |

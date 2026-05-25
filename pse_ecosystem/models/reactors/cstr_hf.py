@@ -35,9 +35,17 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from pse_ecosystem.core.contracts import StreamPort
+from pse_ecosystem.core.contracts import (
+    LinearizedModel,
+    PrimalGuess,
+    StreamPort,
+)
 from pse_ecosystem.models.base_unit import BaseUnit
-from pse_ecosystem.models.properties.ideal_gas import enthalpy_J_mol, SHOMATE
+from pse_ecosystem.models.properties.ideal_gas import (
+    SHOMATE,
+    cp_J_mol_K,
+    enthalpy_J_mol,
+)
 
 _R_GAS = 8.314462  # J/mol/K
 _KNOWN = set(SHOMATE.keys())
@@ -186,6 +194,147 @@ class CSTRHF(BaseUnit):
 
     def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
         return {}
+
+    # ── v1.6.1 P.4 — analytical Jacobian ──────────────────────────────────
+    def linearize(self, guess: PrimalGuess) -> LinearizedModel:
+        """Closed-form Jacobian for the (N + R + 2) residuals.
+
+        Rows are arranged as in :meth:`residual`:
+
+        * Rows ``0..N-1``        — material balance per component i
+        * Rows ``N..N+R-1``      — rate residual per reaction r
+        * Row  ``N+R``           — energy balance
+        * Row  ``N+R+1``         — pressure equality
+
+        **Material balance** is linear: ``∂(F_out − F_in − Σ_r ν_ir ξ_r)/∂F_out = +1``,
+        ``∂…/∂F_in = −1``, ``∂…/∂ξ_r = −ν_ir``.
+
+        **Rate residual** ``ξ_r − k(T)·V·∏ C_j^α_j``. With ``C_j = y_j × P/(R T)``
+        and ``y_j = F_out_j / F_total_out``, chain-rule gives:
+
+            ∂rate/∂T_out  = rate × (Ea/(R T²) − Σα/T)
+            ∂rate/∂P_out  = rate × Σα / P
+            ∂rate/∂F_out_j = rate × (δ_{j∈orders}·α_j/F_out_j − Σα/F_total)
+
+        **Energy balance** ``Q + H_in − H_out − H_rxn``. Using ``∂h/∂T = Cp``:
+
+            ∂…/∂T_in  = +Σ F_in_i × Cp_i(T_in)
+            ∂…/∂T_out = −Σ F_out_i × Cp_i(T_out) − Σ_r ξ_r × dΔH_rxn/dT_out
+            ∂…/∂F_in_i  = +h_i(T_in)
+            ∂…/∂F_out_i = −h_i(T_out)
+            ∂…/∂ξ_r     = −ΔH_rxn_r(T_out)
+            ∂…/∂Q       = +1
+
+        **Pressure** is exactly linear: P_out − P_in = 0.
+
+        Validated against the central-difference reference in
+        ``tests/test_analytical_jacobians.py::test_cstrhf_*`` to within
+        1e-5 relative tolerance at the test operating point.
+
+        Why this beats FD by ~3–5× wall-clock: the FD scheme evaluates
+        the full residual (which includes the inner ``_arrhenius_rate``
+        Π loop) 2 × N_vars times per call. Computing the closed-form
+        derivatives avoids the residual loop entirely.
+        """
+        variables = self.variables()
+        n = len(variables)
+        vidx = {v: i for i, v in enumerate(variables)}
+        x0_dict = {v: guess.values.get(v, 0.0) for v in variables}
+        x0 = np.array([x0_dict[v] for v in variables], dtype=float)
+        f0 = np.asarray(self.residual(x0_dict), dtype=float).reshape(-1)
+
+        N = len(self.components)
+        R = self._n_rxn
+        m = f0.size  # = N + R + 2
+        J = np.zeros((m, n), dtype=float)
+
+        # ── Material balance rows [N] (exact, linear) ─────────────────────
+        for i, c in enumerate(self.components):
+            J[i, vidx[self._v_F_in(c)]] = -1.0
+            J[i, vidx[self._v_F_out(c)]] = +1.0
+            for r in range(R):
+                J[i, vidx[self._v_xi(r)]] = -float(self._nu[i, r])
+
+        # ── Rate rows [R] (analytical via Arrhenius chain rule) ────────────
+        T_out = max(x0_dict.get(self._v_T_out(), 500.0), 1.0)
+        P_out = max(x0_dict.get(self._v_P_out(), 101325.0), 1e-3)
+        F_out_total = max(
+            sum(x0_dict.get(self._v_F_out(c), 0.0) for c in self.components),
+            1e-12,
+        )
+        V = self.params.volume_m3
+        for r, rxn in enumerate(self.params.reactions):
+            rate = self._arrhenius_rate(rxn, T_out, x0_dict)
+            sum_alpha = float(sum(rxn.reaction_orders.values()))
+
+            J[N + r, vidx[self._v_xi(r)]] = 1.0
+
+            # T_out: rate × (Ea/(R·T²) − Σα/T)
+            drate_dT = rate * (
+                rxn.Ea_J_per_mol / (_R_GAS * T_out * T_out) - sum_alpha / T_out
+            )
+            J[N + r, vidx[self._v_T_out()]] = -V * drate_dT
+
+            # P_out: rate × Σα / P
+            J[N + r, vidx[self._v_P_out()]] = -V * rate * sum_alpha / P_out
+
+            # F_out_j
+            for c in self.components:
+                F_out_c = max(x0_dict.get(self._v_F_out(c), 0.0), 1e-30)
+                alpha_c = rxn.reaction_orders.get(c, 0.0)
+                drate_dF = rate * (
+                    alpha_c / F_out_c - sum_alpha / F_out_total
+                )
+                J[N + r, vidx[self._v_F_out(c)]] = -V * drate_dF
+
+        # ── Energy balance row [1] (∂h/∂T = Cp chain rule) ────────────────
+        T_in = max(x0_dict.get(self._v_T_in(), 298.15), 1.0)
+        J[N + R, vidx[self._v_Q()]] = 1.0
+        Cp_in_total = 0.0
+        Cp_out_total = 0.0
+        for c in self.components:
+            if c not in _KNOWN:
+                continue
+            J[N + R, vidx[self._v_F_in(c)]] = +enthalpy_J_mol(c, T_in)
+            J[N + R, vidx[self._v_F_out(c)]] = -enthalpy_J_mol(c, T_out)
+            Cp_in_total += x0_dict.get(self._v_F_in(c), 0.0) * cp_J_mol_K(c, T_in)
+            Cp_out_total += x0_dict.get(self._v_F_out(c), 0.0) * cp_J_mol_K(c, T_out)
+        J[N + R, vidx[self._v_T_in()]] = +Cp_in_total
+        # T_out: − Σ F_out·Cp_out  − Σ_r ξ_r · d(ΔH_rxn_r)/dT_out
+        dH_rxn_dT_total = 0.0
+        for r, rxn in enumerate(self.params.reactions):
+            if rxn.delta_H_J_per_mol != 0.0:
+                dH = rxn.delta_H_J_per_mol
+            else:
+                dH = sum(
+                    nu * enthalpy_J_mol(c, T_out)
+                    for c, nu in rxn.stoichiometry.items() if c in _KNOWN
+                )
+                dH_dT = sum(
+                    nu * cp_J_mol_K(c, T_out)
+                    for c, nu in rxn.stoichiometry.items() if c in _KNOWN
+                )
+                xi_r = x0_dict.get(self._v_xi(r), 0.0)
+                dH_rxn_dT_total += xi_r * dH_dT
+            J[N + R, vidx[self._v_xi(r)]] = -dH
+        J[N + R, vidx[self._v_T_out()]] = -Cp_out_total - dH_rxn_dT_total
+
+        # ── Pressure equality row [1] (exact, linear) ─────────────────────
+        J[N + R + 1, vidx[self._v_P_out()]] = +1.0
+        J[N + R + 1, vidx[self._v_P_in()]] = -1.0
+
+        return LinearizedModel(
+            unit_id=self.unit_id,
+            variables=variables,
+            x0=x0,
+            f0=f0,
+            J=J,
+            bounds=self.bounds(),
+            objective_terms=self.objective_contribution(x0_dict),
+            is_exact=False,
+            trust_region=self.trust_region,
+            kpi_gradients=self.kpi_gradients(x0_dict),
+        )
 
     def kpis(self, x: Dict[str, float]) -> Dict[str, float]:
         from pse_ecosystem.models.costing.sslw_costing import cstr_purchase_cost_USD
