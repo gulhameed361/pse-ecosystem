@@ -66,8 +66,8 @@ queued.
 | P.2 — Split `app_streamlit.py` | ✅ done | commit `170171b` |
 | P.3 — Doc refresh | ✅ done | commit `f8014f6` |
 | P.4 — Analytical Jacobians (CSTRHF done; 4 deferred) | 🔄 partial | CSTRHF commit `8a594d2`; Flash / HX-NTU / Shell-Tube / Compressor deferred |
-| P.5 — `TechnologyChoice` to core + OPEX guard | ✅ done | this commit |
-| P.6 — Wire persona filter into Custom Builder | ⏳ pending | helper exists; UI doesn't call it yet |
+| P.5 — `TechnologyChoice` to core + OPEX guard | ✅ done | commit `120a882` |
+| P.6 — Wire persona filter into Custom Builder | ✅ done | this commit |
 | P.7 — UI pages: Validation, Pinch placeholder, Dynamics, Relief | ⏳ pending | |
 | P.8 — End-to-end case-study templates | ⏳ pending | SMR, MEA, C3 splitter, NH3 loop |
 

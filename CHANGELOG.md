@@ -46,7 +46,18 @@ See `docs/PLAN_v1_6_1.md`.
   Eight production units (PEMToy, GasifierToy, BoilerToy, FiredHeaterHF,
   Compressor, ExpanderHF, MultistageCompressorHF, Pump) updated with
   explicit `_OPEX_CONVENTION = "USD_per_year"` declarations.
-  3 new regression tests in `tests/test_opex_safeguard.py`. (this commit)
+  3 new regression tests in `tests/test_opex_safeguard.py`.
+  (commit `120a882`)
+- **P.6 — Wire `available_units_for_persona` into the Custom Builder**.
+  `pse_ecosystem/ui/pages/flowsheet_builder.py` now calls the v1.6 G.1
+  persona helper (instead of `AVAILABLE_UNITS.keys()` directly) so the
+  sidebar Industrial-mode persona radio actually hides DIDACTIC + LEGACY
+  units from the unit-type dropdown in real time. The category dropdown
+  is similarly persona-filtered via `unit_categories_for_persona`. Each
+  unit type now carries a small badge (🏭 INDUSTRIAL / 🟡 SCREENING /
+  🎓 DIDACTIC / 🪦 LEGACY) so users can see why a unit is visible.
+  4 new regression tests in `tests/test_ui_assembly_logic.py`.
+  (this commit)
 
 ### Deferred from P.4 to a follow-on commit
 
@@ -58,8 +69,8 @@ See `docs/PLAN_v1_6_1.md`.
 
 ### Test suite
 
-- 1 006 passing (+5 CSTRHF Jacobian, +3 OPEX safeguard regression),
-  1 skipped.
+- 1 010 passing (+5 CSTRHF Jacobian, +3 OPEX safeguard regression,
+  +4 persona-filter regression), 1 skipped.
 
 ---
 

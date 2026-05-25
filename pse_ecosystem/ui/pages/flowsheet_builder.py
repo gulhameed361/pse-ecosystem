@@ -813,8 +813,27 @@ def _section_pareto_sweep(st, chosen_key: str, spec) -> None:
 # ── Custom flowsheet assembler ────────────────────────────────────────────────
 
 def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) -> None:
-    """Render the unit-picker + port-wiring UI for the custom template."""
-    from pse_ecosystem.ui.flowsheet_service import AVAILABLE_UNITS, build_custom_flowsheet
+    """Render the unit-picker + port-wiring UI for the custom template.
+
+    v1.6.1 P.6 — the unit dropdown filters by ``st.session_state['user_persona']``
+    via :func:`available_units_for_persona`. Industrial persona hides
+    DIDACTIC + LEGACY units; Academic persona shows everything. Each unit
+    type carries a category badge so the user can see why a unit is or
+    isn't in the picker.
+    """
+    from pse_ecosystem.ui.flowsheet_service import (
+        AVAILABLE_UNITS, available_units_for_persona, build_custom_flowsheet,
+    )
+
+    _persona = st.session_state.get("user_persona", "Academic")
+    _visible_units = available_units_for_persona(_persona)
+    if _persona == "Industrial" and len(_visible_units) < len(AVAILABLE_UNITS):
+        _hidden = len(AVAILABLE_UNITS) - len(_visible_units)
+        st.caption(
+            f"🏭 Industrial mode — {_hidden} didactic / legacy unit(s) "
+            "hidden from the picker. Switch to Academic in the sidebar to "
+            "see them all."
+        )
 
     st.info(
         "Pick any number of units, set their parameters, declare connections, "
@@ -838,30 +857,58 @@ def _render_custom_assembler(st, current_params: dict, chosen_key: str, spec) ->
         )
 
     from pse_ecosystem.ui.flowsheet_service import (
-        get_unit_param_specs, UNIT_CATEGORIES, TYPE_ID_SUGGESTIONS,
+        get_unit_param_specs, TYPE_ID_SUGGESTIONS,
         supported_display_units, to_native, from_native,
+        unit_categories_for_persona,
     )
 
-    # Dynamic category filter — narrows the unit type dropdown
-    _all_cats = ["All"] + list(UNIT_CATEGORIES.keys())
+    # v1.6.1 P.6 — Dynamic category filter, persona-aware. The category
+    # dropdown only shows groups that have at least one visible unit in
+    # the current persona, and the per-group unit list is similarly
+    # filtered. Industrial mode therefore never shows an empty "Feed/
+    # Product" section just because PEMToy / GasifierToy are hidden.
+    _visible_categories = unit_categories_for_persona(_persona)
+    _all_cats = ["All"] + list(_visible_categories.keys())
     _cat_sel = st.selectbox(
         "Filter unit types by category", _all_cats,
         index=0, key="custom_cat_filter",
-        help="Narrows the Type dropdown in each unit expander.",
+        help="Narrows the Type dropdown in each unit expander. Persona-"
+             "filtered: Industrial mode hides DIDACTIC + LEGACY units.",
     )
     if _cat_sel == "All":
-        unit_types = list(AVAILABLE_UNITS.keys())
+        unit_types = list(_visible_units.keys())
     else:
-        unit_types = UNIT_CATEGORIES.get(_cat_sel, list(AVAILABLE_UNITS.keys()))
+        unit_types = _visible_categories.get(_cat_sel, list(_visible_units.keys()))
+
+    # v1.6.1 P.6 — small badge per category for the unit-type help text.
+    _CATEGORY_BADGE = {
+        "industrial": "🏭 INDUSTRIAL",
+        "screening":  "🟡 SCREENING",
+        "didactic":   "🎓 DIDACTIC",
+        "legacy":     "🪦 LEGACY",
+    }
+
+    def _unit_help(label: str) -> str:
+        from pse_ecosystem.ui.flowsheet_service import _unit_class_for_label
+        cls = _unit_class_for_label(label)
+        cat = getattr(getattr(cls, "category", None), "value", "industrial")
+        badge = _CATEGORY_BADGE.get(cat, "")
+        desc = _visible_units.get(label, AVAILABLE_UNITS.get(label, ""))
+        return f"{badge}  {desc}" if badge else desc
 
     unit_configs = []
     for i in range(int(n_units)):
         with st.expander(f"Unit {i + 1}", expanded=True):
+            _safe_idx = min(i, len(unit_types) - 1) if unit_types else 0
             utype = st.selectbox(
                 "Type", unit_types,
-                index=min(i, len(unit_types) - 1),
+                index=_safe_idx,
                 key=f"custom_unit_type_{i}",
-                help=AVAILABLE_UNITS.get(unit_types[min(i, len(unit_types)-1)], ""),
+                help=_unit_help(unit_types[_safe_idx]) if unit_types else "",
+                format_func=lambda label: (
+                    f"{label}  ·  {_unit_help(label).split('  ')[0]}"
+                    if unit_types else label
+                ),
             )
 
             # Smart-select: type-specific ID suggestions + free-form fallback

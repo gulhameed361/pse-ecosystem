@@ -5,9 +5,15 @@ Validates that build_custom_flowsheet() correctly:
   WGSReactorHF, CoolerHF) registered in AVAILABLE_UNITS.
 - Applies the flow-only fallback when T/P port variable counts differ.
 - Produces >= 6 connections for the 7-unit biomass workshop chain.
+- v1.6.1 P.6: the Custom Builder page module calls
+  ``available_units_for_persona`` rather than ``AVAILABLE_UNITS`` directly,
+  so the unit picker filters by persona.
 """
 
 from __future__ import annotations
+
+import re
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -15,6 +21,45 @@ import pytest
 from pse_ecosystem.core.contracts import PrimalGuess
 from pse_ecosystem.models.heat_exchangers.cooler_hf import CoolerHF, CoolerHFParams
 from pse_ecosystem.ui.flowsheet_service import AVAILABLE_UNITS, build_custom_flowsheet
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v1.6.1 P.6 — persona filter wired into the Custom Builder
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+_FLOWSHEET_BUILDER_SRC = (
+    Path(__file__).resolve().parent.parent
+    / "pse_ecosystem" / "ui" / "pages" / "flowsheet_builder.py"
+).read_text(encoding="utf-8")
+
+
+class TestPersonaFilterWired:
+    def test_available_units_for_persona_imported(self):
+        """The page module must import the persona-aware helper, not
+        just AVAILABLE_UNITS, so the picker filters by persona."""
+        assert "available_units_for_persona" in _FLOWSHEET_BUILDER_SRC
+
+    def test_unit_categories_for_persona_imported(self):
+        """The category dropdown is also persona-filtered (empty groups
+        like Feed/Product in Industrial mode are pruned)."""
+        assert "unit_categories_for_persona" in _FLOWSHEET_BUILDER_SRC
+
+    def test_persona_session_state_consulted(self):
+        """The picker reads ``st.session_state['user_persona']`` to pick
+        the active filter."""
+        assert re.search(
+            r"st\.session_state\.get\(\s*['\"]user_persona['\"]",
+            _FLOWSHEET_BUILDER_SRC,
+        ), "Custom Builder doesn't consult user_persona session-state."
+
+    def test_category_badge_table_present(self):
+        """A category badge is shown next to each unit type so users
+        understand why DIDACTIC / LEGACY units are hidden."""
+        for badge in ("INDUSTRIAL", "SCREENING", "DIDACTIC", "LEGACY"):
+            assert badge in _FLOWSHEET_BUILDER_SRC, (
+                f"Category badge {badge!r} missing from Custom Builder."
+            )
 
 SYNGAS_6 = ["H2", "CO", "CO2", "H2O", "CH4", "N2"]
 
