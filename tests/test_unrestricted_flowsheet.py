@@ -252,11 +252,24 @@ def test_custom_path_is_deterministic_on_seven_unit_chain():
 # ── Tests: source-level guards on UI widgets ──────────────────────────────────
 
 
+def _ui_sources_concat() -> str:
+    """Concatenate every Python source file under pse_ecosystem/ui/ so v1.6.1
+    page-module splits don't break content-grep tests."""
+    ui_root = REPO_ROOT / "pse_ecosystem" / "ui"
+    return "\n".join(
+        p.read_text(encoding="utf-8") for p in ui_root.rglob("*.py")
+    )
+
+
 def test_iteration_slider_bounds_in_source():
-    """The Solver Monitor slider must read min=1, max=1500 (v1.4.0 lift)."""
-    src = (REPO_ROOT / "pse_ecosystem" / "ui" / "app_streamlit.py").read_text(encoding="utf-8")
+    """The Solver Monitor slider must read min=1, max=1500 (v1.4.0 lift).
+
+    Searches across the entire ``pse_ecosystem/ui/`` tree since v1.6.1
+    moved page bodies into ``pages/``.
+    """
+    src = _ui_sources_concat()
     m = re.search(r'st\.slider\(\s*"Max iterations",\s*(\d+)\s*,\s*(\d+)\s*,\s*\d+\s*\)', src)
-    assert m, "Could not locate the 'Max iterations' slider in app_streamlit.py"
+    assert m, "Could not locate the 'Max iterations' slider in pse_ecosystem/ui/."
     lo, hi = int(m.group(1)), int(m.group(2))
     assert lo == 1,    f"Expected slider min_value=1, got {lo}"
     assert hi == 1500, f"Expected slider max_value=1500, got {hi}"
@@ -264,9 +277,9 @@ def test_iteration_slider_bounds_in_source():
 
 def test_custom_builder_has_no_unit_count_cap():
     """The number_input for unit count must not declare a max_value."""
-    src = (REPO_ROOT / "pse_ecosystem" / "ui" / "app_streamlit.py").read_text(encoding="utf-8")
+    src = _ui_sources_concat()
     m = re.search(r'st\.number_input\(\s*"Number of units"[^)]*\)', src)
-    assert m, "Could not locate the 'Number of units' input in app_streamlit.py"
+    assert m, "Could not locate the 'Number of units' input in pse_ecosystem/ui/."
     assert "max_value" not in m.group(0), (
         f"Unit count input still declares max_value (v1.4.0 must be uncapped). "
         f"Found: {m.group(0)}"
@@ -275,8 +288,7 @@ def test_custom_builder_has_no_unit_count_cap():
 
 def test_progressive_tightening_default_on():
     """v1.4.0 ships progressive tightening checkbox defaulted to True."""
-    src = (REPO_ROOT / "pse_ecosystem" / "ui" / "app_streamlit.py").read_text(encoding="utf-8")
-    # match the checkbox declaration up to its value=... clause
+    src = _ui_sources_concat()
     m = re.search(
         r'st\.checkbox\(\s*"Progressive tightening"[^)]*?value=(True|False)',
         src,
@@ -303,14 +315,18 @@ def test_pyproject_version_matches_package():
 
 
 def test_app_streamlit_caption_uses_imported_version():
-    """The Dashboard caption must derive from pse_ecosystem.__version__, not a literal."""
-    src = (REPO_ROOT / "pse_ecosystem" / "ui" / "app_streamlit.py").read_text(encoding="utf-8")
+    """The Dashboard caption must derive from pse_ecosystem.__version__, not a literal.
+
+    v1.6.1: searches across the whole ``pse_ecosystem/ui/`` tree since the
+    Dashboard moved into ``pages/dashboard.py``.
+    """
+    src = _ui_sources_concat()
     assert "from pse_ecosystem import __version__" in src, (
-        "app_streamlit.py must import __version__ from the package (single source of truth)."
+        "pse_ecosystem/ui must import __version__ from the package "
+        "(single source of truth)."
     )
-    # And the literal v1.3.2 caption must be gone.
     assert 'st.caption("v1.3.2' not in src, (
-        "Stale 'v1.3.2' literal still present in app_streamlit.py caption."
+        "Stale 'v1.3.2' literal still present in pse_ecosystem/ui."
     )
 
 
