@@ -20,6 +20,15 @@ import pytest
 from pse_ecosystem.models.heat_exchangers.heat_exchanger_ntu import (
     HeatExchangerNTU, HeatExchangerNTUParams,
 )
+from pse_ecosystem.models.heat_exchangers.shell_tube import (
+    ShellTubeHX, ShellTubeParams,
+)
+from pse_ecosystem.models.pressure_changers.compressor import (
+    Compressor, CompressorParams,
+)
+from pse_ecosystem.models.separators.flash_vl_hf import (
+    FlashVLHF, FlashVLHFParams,
+)
 from pse_ecosystem.models.reactors.cstr_hf import (
     CSTRHF,
     CSTRHFParams,
@@ -158,4 +167,148 @@ class TestHXNTUAnalyticalJacobian:
         from pse_ecosystem.core.contracts import PrimalGuess
         unit = _make_hx_ntu()
         lin = unit.linearize(PrimalGuess(values=_hx_ntu_state(), iteration=0))
+        assert not lin.is_exact
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Compressor — single- and multi-stage isentropic
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _make_compressor(n_stages: int = 1, T_intercool_K=None) -> Compressor:
+    return Compressor(
+        "K",
+        ["N2", "H2"],
+        CompressorParams(
+            eta_isentropic=0.78,
+            gamma_fixed=1.40,
+            n_stages=n_stages,
+            T_intercool_K=T_intercool_K,
+            P_out_Pa=None,
+        ),
+    )
+
+
+def _compressor_state(P_in=1.0e5, P_out=5.0e5, T_in=298.15, T_out=460.0):
+    return {
+        "K.inlet.F_N2": 8.0, "K.inlet.F_H2": 2.0,
+        "K.inlet.T": T_in, "K.inlet.P": P_in,
+        "K.outlet.F_N2": 8.0, "K.outlet.F_H2": 2.0,
+        "K.outlet.T": T_out, "K.outlet.P": P_out,
+        "K.W_shaft": 8.0e4,
+    }
+
+
+class TestCompressorAnalyticalJacobian:
+    def test_jacobian_matches_fd_single_stage(self):
+        unit = _make_compressor(n_stages=1)
+        assert_jacobian_matches_fd(unit, _compressor_state(), rtol=1e-4, atol=1e-3)
+
+    def test_jacobian_matches_fd_three_stages_intercooled(self):
+        unit = _make_compressor(n_stages=3, T_intercool_K=313.15)
+        x = _compressor_state(P_out=20.0e5, T_out=520.0)
+        assert_jacobian_matches_fd(unit, x, rtol=1e-4, atol=1e-3)
+
+    def test_is_exact_flag_false(self):
+        from pse_ecosystem.core.contracts import PrimalGuess
+        unit = _make_compressor(n_stages=1)
+        lin = unit.linearize(PrimalGuess(values=_compressor_state(), iteration=0))
+        assert not lin.is_exact
+
+    def test_falls_back_to_fd_when_gamma_not_fixed(self):
+        """gamma_fixed=None → use FD; the fallback path returns is_exact=False
+        and J that matches FD exactly (trivially, since it IS FD)."""
+        unit = Compressor(
+            "K", ["N2", "H2"],
+            CompressorParams(eta_isentropic=0.78, gamma_fixed=None, P_out_Pa=None),
+        )
+        assert_jacobian_matches_fd(unit, _compressor_state(), rtol=1e-8, atol=1e-10)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ShellTubeHX — LMTD + F-factor with closed-form rows 0/1/3 + numeric F/LMTD
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _make_shell_tube() -> ShellTubeHX:
+    return ShellTubeHX(
+        "ST",
+        hot_components=["N2"],
+        cold_components=["H2O"],
+        params=ShellTubeParams(U_W_per_m2_K=500.0, A_m2=12.0),
+    )
+
+
+def _shell_tube_state():
+    return {
+        "ST.hot_in.F_N2": 8.0,  "ST.hot_in.T": 700.0, "ST.hot_in.P": 2.0e5,
+        "ST.hot_out.F_N2": 8.0, "ST.hot_out.T": 480.0, "ST.hot_out.P": 2.0e5,
+        "ST.cold_in.F_H2O": 6.0, "ST.cold_in.T": 350.0, "ST.cold_in.P": 1.5e5,
+        "ST.cold_out.F_H2O": 6.0, "ST.cold_out.T": 470.0, "ST.cold_out.P": 1.5e5,
+        "ST.Q": 7.5e4,
+    }
+
+
+class TestShellTubeAnalyticalJacobian:
+    def test_jacobian_matches_fd_at_typical_point(self):
+        unit = _make_shell_tube()
+        assert_jacobian_matches_fd(unit, _shell_tube_state(), rtol=1e-4, atol=1e-3)
+
+    def test_jacobian_matches_fd_at_low_approach(self):
+        unit = _make_shell_tube()
+        x = _shell_tube_state()
+        x["ST.hot_out.T"] = 510.0  # tighten the approach
+        x["ST.cold_out.T"] = 490.0
+        assert_jacobian_matches_fd(unit, x, rtol=1e-4, atol=1e-3)
+
+    def test_is_exact_flag_false(self):
+        from pse_ecosystem.core.contracts import PrimalGuess
+        unit = _make_shell_tube()
+        lin = unit.linearize(PrimalGuess(values=_shell_tube_state(), iteration=0))
+        assert not lin.is_exact
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FlashVLHF — Antoine/Raoult K-values + energy balance
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _make_flash_vl() -> FlashVLHF:
+    return FlashVLHF(
+        "FL", ["H2O", "ethanol"],
+        FlashVLHFParams(species_vle=["H2O", "ethanol"]),
+    )
+
+
+def _flash_state():
+    return {
+        "FL.inlet.F_H2O": 5.0, "FL.inlet.F_ethanol": 5.0,
+        "FL.inlet.T": 360.0, "FL.inlet.P": 1.013e5,
+        "FL.vapor.F_H2O": 1.5, "FL.vapor.F_ethanol": 3.5,
+        "FL.vapor.T": 360.0, "FL.vapor.P": 1.013e5,
+        "FL.liquid.F_H2O": 3.5, "FL.liquid.F_ethanol": 1.5,
+        "FL.liquid.T": 360.0, "FL.liquid.P": 1.013e5,
+        "FL.V_frac": 0.5, "FL.Q": 0.0,
+    }
+
+
+class TestFlashVLAnalyticalJacobian:
+    def test_jacobian_matches_fd_ideal_gas(self):
+        unit = _make_flash_vl()
+        assert_jacobian_matches_fd(unit, _flash_state(), rtol=1e-4, atol=1e-3)
+
+    def test_jacobian_matches_fd_high_vapour_fraction(self):
+        unit = _make_flash_vl()
+        x = _flash_state()
+        x.update({
+            "FL.vapor.F_H2O": 4.0, "FL.vapor.F_ethanol": 4.5,
+            "FL.liquid.F_H2O": 1.0, "FL.liquid.F_ethanol": 0.5,
+            "FL.V_frac": 0.85, "FL.vapor.T": 370.0, "FL.liquid.T": 370.0,
+        })
+        assert_jacobian_matches_fd(unit, x, rtol=1e-4, atol=1e-3)
+
+    def test_is_exact_flag_false(self):
+        from pse_ecosystem.core.contracts import PrimalGuess
+        unit = _make_flash_vl()
+        lin = unit.linearize(PrimalGuess(values=_flash_state(), iteration=0))
         assert not lin.is_exact

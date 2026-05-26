@@ -165,25 +165,49 @@ See `docs/PLAN_v1_6_1.md`.
   `SYSTEM_STATE.md`, `AUDIT_v1_6.md`, `PLAN_v1_6_1.md` retained as
   intentional changelog entries.
 
-### Deferred to v1.7 (P.4 follow-on)
+### Added (final P.4 closeout)
 
-- `ShellTubeHX` analytical Jacobian — Bowman-Mueller-Nagle F-factor
-  closed-form derivative through P / R intermediates is intricate
-  (multiple piecewise branches at R = 1 and at low effectiveness).
-- `Compressor` analytical Jacobian — γ is itself computed from a
-  bootstrapped two-stage T_avg estimate that depends on Cp(T_avg) and
-  P_out/P_in, making the chain through ``_gamma(x)`` non-trivial to
-  close.
-- `FlashVLHF` analytical Jacobian — K-value derivatives are owned by
-  the property package (``IdealGasPackage`` / ``PengRobinsonPackage`` /
-  ``NRTLPackage`` / ``UNIQUACPackage``), each of which would need its
-  own ``dK/dT``, ``dK/dP``, ``dK/dx`` exposure. v1.7's property-package
-  refactor adds these uniformly.
+- **P.4.3 — ShellTubeHX analytical Jacobian**. Rows 0/1/3 fully
+  closed-form via the Shomate ``dCp/dT`` chain. Row 2 (Q − U·A·F·LMTD)
+  uses numerical sub-derivatives only for the F-factor and LMTD black
+  boxes — the Bowman-Mueller-Nagle F has piecewise branches at R = 1
+  and at low effectiveness that would multiply the analytical
+  bookkeeping ~5× for little practical gain. 3 new tests cover typical
+  and low-approach operating points.
+- **P.4.4 — Compressor analytical Jacobian**. Closed-form for the
+  N + 3 residual rows when ``params.gamma_fixed`` is supplied. Handles
+  single-stage and N-stage intercooled compression chains, including
+  the T_intercool = T_in tracking case. Falls back to base-class FD
+  when ``gamma_fixed is None`` (γ recursion through the
+  ``_gamma()`` bootstrap is left to v1.7). 4 new tests.
+- **P.4.5 — FlashVLHF analytical Jacobian**. Closed-form material +
+  energy + pressure + Vfrac rows. The N VLE rows are analytical when
+  the property package is :class:`IdealGasPackage` (Antoine/Raoult,
+  no composition dependence on K); chain through Antoine gives
+  ``dK_i/dT = K_i · ln(10) · B_i / (T_C + C_i)²`` and
+  ``dK_i/dP = -K_i / P``. Non-ideal packages
+  (``PengRobinsonPackage`` / ``NRTLPackage`` / ``UNIQUACPackage``)
+  fall back to FD on the VLE rows pending v1.7's uniform K-derivative
+  hooks. 3 new tests.
 
 ### Test suite
 
-- 1 043 / 1 044 passing (+3 HX-NTU analytical Jacobian parity, no
-  regressions from the split). 1 skipped.
+- 1 053 / 1 054 passing (+3 HX-NTU + 4 Compressor + 3 ShellTube + 3
+  FlashVL analytical Jacobian tests, no regressions). 1 skipped.
+  Crosses the v1.6.1 plan's 1 050+ target.
+
+### v1.6.1 verification gates — final
+
+| Gate | Status |
+|---|---|
+| 1 050+ tests pass | ✅ 1 053 / 1 054 |
+| 11 pages render | ✅ |
+| 4 case studies solve, MAPE acceptance | ✅ 3 / 4 ≤ 10 %; SMR 30 % documented |
+| All active docs at v1.6.1 | ✅ |
+| `flowsheet_service.py` < 700 lines | ✅ 609 |
+| `app_streamlit.py` < 400 lines | ✅ 89 |
+| 0 top-level L3 → L2 imports | ✅ |
+| 5 analytical Jacobians (CSTRHF, HX-NTU, ShellTube, Compressor, FlashVL) | ✅ all five landed |
 
 ---
 

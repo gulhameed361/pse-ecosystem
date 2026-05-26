@@ -43,9 +43,13 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from pse_ecosystem.core.contracts import StreamPort
+import math as _math
+
+from pse_ecosystem.core.contracts import LinearizedModel, PrimalGuess, StreamPort
 from pse_ecosystem.models.base_unit import BaseUnit
-from pse_ecosystem.models.properties.ideal_gas import enthalpy_J_mol, SHOMATE
+from pse_ecosystem.models.properties.ideal_gas import (
+    cp_J_mol_K, enthalpy_J_mol, SHOMATE,
+)
 from pse_ecosystem.models.properties.property_package import (
     IdealGasPackage,
     PropertyPackage,
@@ -234,6 +238,140 @@ class FlashVLHF(BaseUnit):
         res[2 * N + 3] = V_frac - F_vap_total / F_feed_total
 
         return res
+
+    def linearize(self, guess: PrimalGuess) -> LinearizedModel:
+        """Closed-form Jacobian for the (2N + 4) residuals.
+
+        Analytical path is exercised when the property package is
+        :class:`IdealGasPackage` (the default — Antoine/Raoult, no
+        composition dependence on ``K``). For non-ideal packages
+        (``PengRobinsonPackage``, ``NRTLPackage``, ``UNIQUACPackage``)
+        the VLE rows fall back to FD because ``K_i`` depends on the
+        liquid mole fractions via fugacity / activity coefficients —
+        these K-derivatives are owned by the package and not yet
+        exposed uniformly. v1.7's property-package refactor adds
+        ``dK_dT``, ``dK_dP``, ``dK_dx`` hooks that this routine will
+        then chain through.
+
+        Rows::
+
+            i in 0..N-1: F_feed_i − F_vap_i − F_liq_i        (linear)
+            N..2N-1:     y_i − K_i(T_vap, P_vap) · x_i
+            2N:          Q + H_feed − H_vap − H_liq
+            2N+1:        P_vap − P_feed
+            2N+2:        P_liq − P_feed
+            2N+3:        V_frac − F_vap_total / F_feed_total
+
+        Validated in ``tests/test_analytical_jacobians.py::TestFlashVLAnalyticalJacobian``
+        at 1e-4 rel / 1e-3 abs.
+        """
+        variables = self.variables()
+        n = len(variables)
+        vidx = {v: i for i, v in enumerate(variables)}
+        x0_dict = {v: guess.values.get(v, 0.0) for v in variables}
+        x0 = np.array([x0_dict[v] for v in variables], dtype=float)
+        f0 = np.asarray(self.residual(x0_dict), dtype=float).reshape(-1)
+        N = len(self.components)
+        m = f0.size  # = 2N + 4
+        J = np.zeros((m, n), dtype=float)
+
+        # ── Material rows: trivial ─────────────────────────────────────────
+        for i, c in enumerate(self.components):
+            J[i, vidx[self._v_F("inlet", c)]] = +1.0
+            J[i, vidx[self._v_F("vapor", c)]] = -1.0
+            J[i, vidx[self._v_F("liquid", c)]] = -1.0
+
+        # ── Pressure rows: trivial ─────────────────────────────────────────
+        J[2 * N + 1, vidx[self._v_P("vapor")]] = +1.0
+        J[2 * N + 1, vidx[self._v_P("inlet")]] = -1.0
+        J[2 * N + 2, vidx[self._v_P("liquid")]] = +1.0
+        J[2 * N + 2, vidx[self._v_P("inlet")]] = -1.0
+
+        # ── Vfrac row ──────────────────────────────────────────────────────
+        F_vap_total = sum(x0_dict.get(self._v_F("vapor", c), 0.0) for c in self.components)
+        F_feed_total = sum(x0_dict.get(self._v_F("inlet", c), 0.0) for c in self.components)
+        _PHASE_FLOOR = max(_SMALL, 1.0e-6)
+        F_vap_safe = max(F_vap_total, _PHASE_FLOOR)
+        F_feed_safe = max(F_feed_total, _SMALL)
+        F_liq_safe = max(
+            sum(x0_dict.get(self._v_F("liquid", c), 0.0) for c in self.components),
+            _PHASE_FLOOR,
+        )
+        J[2 * N + 3, vidx[self._v_Vfrac()]] = 1.0
+        for c in self.components:
+            J[2 * N + 3, vidx[self._v_F("vapor", c)]] = -1.0 / F_feed_safe
+            J[2 * N + 3, vidx[self._v_F("inlet", c)]] = F_vap_total / (F_feed_safe ** 2)
+
+        # ── Energy row ─────────────────────────────────────────────────────
+        T_feed = x0_dict.get(self._v_T("inlet"), 350.0)
+        T_vap = x0_dict.get(self._v_T("vapor"), 350.0)
+        T_liq = x0_dict.get(self._v_T("liquid"), 350.0)
+        J[2 * N, vidx[self._v_Q()]] = 1.0
+        Cp_feed_total = 0.0
+        Cp_vap_total = 0.0
+        Cp_liq_total = 0.0
+        for c in self.components:
+            if c not in _KNOWN:
+                continue
+            J[2 * N, vidx[self._v_F("inlet", c)]] = +enthalpy_J_mol(c, T_feed)
+            J[2 * N, vidx[self._v_F("vapor", c)]] = -enthalpy_J_mol(c, T_vap)
+            J[2 * N, vidx[self._v_F("liquid", c)]] = -enthalpy_J_mol(c, T_liq)
+            Cp_feed_total += x0_dict.get(self._v_F("inlet", c), 0.0) * cp_J_mol_K(c, T_feed)
+            Cp_vap_total += x0_dict.get(self._v_F("vapor", c), 0.0) * cp_J_mol_K(c, T_vap)
+            Cp_liq_total += x0_dict.get(self._v_F("liquid", c), 0.0) * cp_J_mol_K(c, T_liq)
+        J[2 * N, vidx[self._v_T("inlet")]] = +Cp_feed_total
+        J[2 * N, vidx[self._v_T("vapor")]] = -Cp_vap_total
+        J[2 * N, vidx[self._v_T("liquid")]] = -Cp_liq_total
+
+        # ── VLE rows (analytical only for IdealGasPackage; else FD) ────────
+        use_analytical_vle = isinstance(self._package, IdealGasPackage) or self._package is None
+        P_vap = max(x0_dict.get(self._v_P("vapor"), 101325.0), 1e-3)
+
+        if use_analytical_vle:
+            # K_i = P_sat_i(T_vap) / P_vap if Antoine known, else 1.
+            # dK_i/dT_vap = K_i * ln(10) * B_i / (T_C + C_i)²
+            # dK_i/dP_vap = -K_i / P_vap
+            T_C = T_vap - 273.15
+            K_vec = np.ones(N, dtype=float)
+            dK_dT = np.zeros(N, dtype=float)
+            dK_dP = np.zeros(N, dtype=float)
+            for i, c in enumerate(self.components):
+                if c in ANTOINE:
+                    K_i = K_value(c, T_vap, P_vap)
+                    K_vec[i] = K_i
+                    p = ANTOINE[c]
+                    dK_dT[i] = K_i * _math.log(10.0) * p["B"] / ((T_C + p["C"]) ** 2)
+                    dK_dP[i] = -K_i / P_vap
+                # else K_i = 1, dK_dT = dK_dP = 0
+            for i, c in enumerate(self.components):
+                F_vap_i = x0_dict.get(self._v_F("vapor", c), 0.0)
+                F_liq_i = x0_dict.get(self._v_F("liquid", c), 0.0)
+                y_i = F_vap_i / F_vap_safe
+                x_i = F_liq_i / F_liq_safe
+                # ∂(y_i)/∂F_vap_j = (δ_ij − y_i)/F_vap_total
+                for j, c2 in enumerate(self.components):
+                    y_j_factor = (1.0 if i == j else 0.0) - y_i
+                    J[N + i, vidx[self._v_F("vapor", c2)]] = y_j_factor / F_vap_safe
+                    x_j_factor = (1.0 if i == j else 0.0) - x_i
+                    J[N + i, vidx[self._v_F("liquid", c2)]] = -K_vec[i] * x_j_factor / F_liq_safe
+                J[N + i, vidx[self._v_T("vapor")]] = -dK_dT[i] * x_i
+                J[N + i, vidx[self._v_P("vapor")]] = -dK_dP[i] * x_i
+        else:
+            J_fd = self._finite_difference_jacobian(x0_dict, variables, f0)
+            J[N : 2 * N, :] = J_fd[N : 2 * N, :]
+
+        return LinearizedModel(
+            unit_id=self.unit_id,
+            variables=variables,
+            x0=x0,
+            f0=f0,
+            J=J,
+            bounds=self.bounds(),
+            objective_terms=self.objective_contribution(x0_dict),
+            is_exact=False,
+            trust_region=self.trust_region,
+            kpi_gradients=self.kpi_gradients(x0_dict),
+        )
 
     def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
         return {}

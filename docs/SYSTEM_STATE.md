@@ -65,7 +65,7 @@ queued.
 | P.1 — Split `flowsheet_service.py` | ✅ done | commit `66d0112` |
 | P.2 — Split `app_streamlit.py` | ✅ done | commit `170171b` |
 | P.3 — Doc refresh | ✅ done | commit `f8014f6` |
-| P.4 — Analytical Jacobians (CSTRHF + HX-NTU; 3 deferred) | 🔄 partial | CSTRHF + HX-NTU done; Flash / Shell-Tube / Compressor explicitly deferred to v1.7 with rationale |
+| P.4 — Analytical Jacobians (5 units) | ✅ done | All five landed: CSTRHF, HX-NTU, ShellTube, Compressor, FlashVL |
 | P.9 — Split `flowsheet_service.py` further | ✅ done | 1 696 → 609 lines; 4 new sibling modules under `pse_ecosystem/ui/` |
 | P.10 — Sweep residual `v1.5.2` doc tags | ✅ done | Active docs cleaned; historical refs retained |
 | P.5 — `TechnologyChoice` to core + OPEX guard | ✅ done | commit `120a882` |

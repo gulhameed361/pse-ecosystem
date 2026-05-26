@@ -40,9 +40,11 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from pse_ecosystem.core.contracts import StreamPort
+from pse_ecosystem.core.contracts import LinearizedModel, PrimalGuess, StreamPort
 from pse_ecosystem.models.base_unit import BaseUnit
-from pse_ecosystem.models.properties.ideal_gas import mixture_cp_J_mol_K, gamma, SHOMATE
+from pse_ecosystem.models.properties.ideal_gas import (
+    cp_J_mol_K, dcp_dT_J_mol_K2, mixture_cp_J_mol_K, gamma, SHOMATE,
+)
 
 _R_GAS = 8.314462
 _KNOWN = set(SHOMATE.keys())
@@ -198,6 +200,156 @@ class Compressor(BaseUnit):
             res[N + 2] = 0.0  # P_out is a free variable; no additional residual
 
         return res
+
+    def linearize(self, guess: PrimalGuess) -> LinearizedModel:
+        """Closed-form Jacobian for the (N + 3) residuals.
+
+        Implemented when ``params.gamma_fixed`` is set (the recommended
+        path for parametric studies — γ is a slow function of T and
+        composition, ~1.30–1.40 across the operating envelope). When
+        ``gamma_fixed is None`` we fall back to the base-class FD scheme,
+        because differentiating through ``_gamma()``'s bootstrap step
+        (T_avg ← T_in*(P_out/P_in)^0.4/1.4 → Cp_mix(T_avg) → γ) is
+        intricate and gives only a few-percent γ swing per iter.
+
+        Rows::
+
+            i in 0..N-1: r_i = F_out_i − F_in_i           (linear)
+            N:           r = T_out − T_after_stage
+            N+1:         r = W − N · F_total · Cp_mix · (T_after − T_inter)
+            N+2:         r = P_out − P_out_spec (or 0)
+
+        Validated against the central-difference reference in
+        ``tests/test_analytical_jacobians.py::TestCompressorAnalyticalJacobian``
+        at 1e-4 rel / 1e-3 abs (relaxed by an order of magnitude vs
+        CSTRHF because the work residual involves three chained Cp(T)
+        evaluations at ~500 K and accumulated roundoff is larger).
+        """
+        variables = self.variables()
+        n = len(variables)
+        vidx = {v: i for i, v in enumerate(variables)}
+        x0_dict = {v: guess.values.get(v, 0.0) for v in variables}
+        x0 = np.array([x0_dict[v] for v in variables], dtype=float)
+        f0 = np.asarray(self.residual(x0_dict), dtype=float).reshape(-1)
+
+        N = len(self.components)
+        m = f0.size  # = N + 3
+        J = np.zeros((m, n), dtype=float)
+
+        # ── Material rows: trivial ─────────────────────────────────────────
+        for i, c in enumerate(self.components):
+            J[i, vidx[self._v_F_in(c)]] = -1.0
+            J[i, vidx[self._v_F_out(c)]] = +1.0
+
+        # Pressure-spec row: trivial
+        if self.params.P_out_Pa is not None:
+            J[N + 2, vidx[self._v_P_out()]] = 1.0
+
+        if self.params.gamma_fixed is None:
+            # Fall back to FD for the two non-linear rows (T row, W row).
+            # We still get analytical entries for the linear rows; the FD
+            # cost dominates either way, so this is a no-op for speed but
+            # makes the linearize() override unambiguous in scope.
+            J_fd = self._finite_difference_jacobian(x0_dict, variables, f0)
+            J[N, :] = J_fd[N, :]
+            J[N + 1, :] = J_fd[N + 1, :]
+            return LinearizedModel(
+                unit_id=self.unit_id,
+                variables=variables,
+                x0=x0,
+                f0=f0,
+                J=J,
+                bounds=self.bounds(),
+                objective_terms=self.objective_contribution(x0_dict),
+                is_exact=False,
+                trust_region=self.trust_region,
+                kpi_gradients=self.kpi_gradients(x0_dict),
+            )
+
+        # ── Analytical path (gamma_fixed available) ────────────────────────
+        g = self.params.gamma_fixed
+        theta = (g - 1.0) / g
+        eta = self.params.eta_isentropic
+        N_st = max(self.params.n_stages, 1)
+
+        T_in = x0_dict.get(self._v_T_in(), 298.15)
+        T_out = x0_dict.get(self._v_T_out(), 400.0)
+        P_in = max(x0_dict.get(self._v_P_in(), 101325.0), 1e-3)
+        P_out = max(x0_dict.get(self._v_P_out(), 3.0e5), 1e-3)
+        T_inter_const = self.params.T_intercool_K
+        T_inter = T_inter_const if T_inter_const is not None else T_in
+        T_inter_tracks_T_in = T_inter_const is None
+
+        r_total = P_out / P_in
+        r_stage = r_total ** (1.0 / N_st)
+        r_stage_theta = r_stage ** theta
+        T_after = T_inter + (T_inter * r_stage_theta - T_inter) / eta
+        # = T_inter * (1 + (r_stage^θ − 1)/η)
+
+        flows_in_total = sum(x0_dict.get(self._v_F_in(c), 0.0) for c in self.components)
+        flows_in = {c: x0_dict.get(self._v_F_in(c), 0.0) for c in self.components if c in _KNOWN}
+        T_avg = 0.5 * (T_inter + T_out)
+        Cp_per_species = {c: cp_J_mol_K(c, T_avg) for c in flows_in}
+        dCp_per_species = {c: dcp_dT_J_mol_K2(c, T_avg) for c in flows_in}
+        # F_total*Cp_mix = Σ F_i * Cp_i — convenient since flows_in only
+        # uses species with SHOMATE coefficients.
+        F_Cp = sum(flows_in[c] * Cp_per_species[c] for c in flows_in)
+        F_dCp = sum(flows_in[c] * dCp_per_species[c] for c in flows_in)
+
+        # ── Row N: T row r = T_out − T_after_stage ─────────────────────────
+        J[N, vidx[self._v_T_out()]] = 1.0
+        # ∂T_after/∂P_in = T_inter * θ * r_stage^θ / r_stage * ∂r_stage/∂P_in / η ...
+        # Simpler: T_after − T_inter = T_inter*(r_stage^θ − 1)/η.
+        # And r_stage^θ = r_total^(θ/N_st) = (P_out/P_in)^(θ/N_st).
+        # Let φ = θ/N_st. r_stage^θ = (P_out/P_in)^φ.
+        phi = theta / N_st
+        # d/dP_in[(P_out/P_in)^φ] = φ * (P_out/P_in)^φ * (-1/P_in) = -φ * r_stage^θ / P_in
+        dT_after_dPin = T_inter * (-phi * r_stage_theta / P_in) / eta
+        dT_after_dPout = T_inter * (+phi * r_stage_theta / P_out) / eta
+        J[N, vidx[self._v_P_in()]]  = -dT_after_dPin
+        J[N, vidx[self._v_P_out()]] = -dT_after_dPout
+        if T_inter_tracks_T_in:
+            # T_inter = T_in, so T_after = T_in * (1 + (r_stage^θ − 1)/η)
+            # dT_after/dT_in = 1 + (r_stage^θ − 1)/η
+            dT_after_dTin = 1.0 + (r_stage_theta - 1.0) / eta
+            J[N, vidx[self._v_T_in()]] = -dT_after_dTin
+
+        # ── Row N+1: W row r = W − N · F_Cp · (T_after − T_inter) ──────────
+        dT_kick = T_after - T_inter  # = T_inter*(r_stage^θ − 1)/η
+        J[N + 1, vidx[self._v_W()]] = 1.0
+        # ∂(F_Cp)/∂F_in_c = Cp_c(T_avg)
+        for c in flows_in:
+            J[N + 1, vidx[self._v_F_in(c)]] = -N_st * Cp_per_species[c] * dT_kick
+        # ∂(F_Cp)/∂T_in (via T_avg if T_inter tracks T_in): T_avg = 0.5(T_inter + T_out).
+        # If T_inter = T_in, dT_avg/dT_in = 0.5. dF_Cp/dT_avg = F_dCp.
+        # ∂T_after/∂T_in done above.
+        # ∂(T_after - T_inter)/∂T_in (T_inter=T_in): d(T_after)/dT_in − 1
+        #   = (1 + (r_stage^θ − 1)/η) − 1 = (r_stage^θ − 1)/η
+        if T_inter_tracks_T_in:
+            d_dT_kick_dTin = (r_stage_theta - 1.0) / eta
+            d_F_Cp_dTin = 0.5 * F_dCp  # via T_avg
+            J[N + 1, vidx[self._v_T_in()]] = -N_st * (
+                d_F_Cp_dTin * dT_kick + F_Cp * d_dT_kick_dTin
+            )
+        # ∂T_avg/∂T_out = 0.5 → ∂F_Cp/∂T_out = 0.5 * F_dCp
+        d_F_Cp_dTout = 0.5 * F_dCp
+        J[N + 1, vidx[self._v_T_out()]] = -N_st * d_F_Cp_dTout * dT_kick
+        # ∂dT_kick/∂P_in, ∂P_out via dT_after as above
+        J[N + 1, vidx[self._v_P_in()]]  = -N_st * F_Cp * dT_after_dPin
+        J[N + 1, vidx[self._v_P_out()]] = -N_st * F_Cp * dT_after_dPout
+
+        return LinearizedModel(
+            unit_id=self.unit_id,
+            variables=variables,
+            x0=x0,
+            f0=f0,
+            J=J,
+            bounds=self.bounds(),
+            objective_terms=self.objective_contribution(x0_dict),
+            is_exact=False,
+            trust_region=self.trust_region,
+            kpi_gradients=self.kpi_gradients(x0_dict),
+        )
 
     def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
         """Electricity cost contribution [USD/yr] for the shaft work draw."""

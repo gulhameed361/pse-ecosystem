@@ -37,9 +37,11 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from pse_ecosystem.core.contracts import StreamPort
+from pse_ecosystem.core.contracts import LinearizedModel, PrimalGuess, StreamPort
 from pse_ecosystem.models.base_unit import BaseUnit
-from pse_ecosystem.models.properties.ideal_gas import mixture_cp_J_mol_K, SHOMATE
+from pse_ecosystem.models.properties.ideal_gas import (
+    cp_J_mol_K, dcp_dT_J_mol_K2, mixture_cp_J_mol_K, SHOMATE,
+)
 
 _KNOWN = set(SHOMATE.keys())
 
@@ -205,6 +207,118 @@ class ShellTubeHX(BaseUnit):
         res[2] = Q - U_eff * p.A_m2 * F * lmtd
         res[3] = x.get(self._vP("hot_out"), 0.0) - x.get(self._vP("hot_in"), 0.0)
         return res
+
+    def linearize(self, guess: PrimalGuess) -> LinearizedModel:
+        """Closed-form Jacobian for the (4) residuals.
+
+        Rows::
+
+            0: r = Q − C_hot · (T_hi − T_ho)
+            1: r = Q − C_cold · (T_co − T_ci)
+            2: r = Q − U_eff · A · F(P,R) · LMTD_cf(T_hi,T_ho,T_ci,T_co)
+            3: r = P_hot_out − P_hot_in
+
+        Rows 0/1 use the same Shomate ``dCp/dT`` chain as
+        :class:`HeatExchangerNTU`. Row 2's ``F`` and ``LMTD_cf`` terms
+        have piecewise closed forms (R = 1 and ΔT₁ ≈ ΔT₂ degenerate
+        branches) so the partials w.r.t. the four T's are computed via
+        a small numerical sub-derivative on the F-factor / LMTD black
+        boxes at the same step size as the base FD scheme. Everything
+        else is closed-form.
+
+        Validated in ``tests/test_analytical_jacobians.py::TestShellTubeAnalyticalJacobian``
+        at 1e-4 rel / 1e-3 abs.
+        """
+        variables = self.variables()
+        n = len(variables)
+        vidx = {v: i for i, v in enumerate(variables)}
+        x0_dict = {v: guess.values.get(v, 0.0) for v in variables}
+        x0 = np.array([x0_dict[v] for v in variables], dtype=float)
+        f0 = np.asarray(self.residual(x0_dict), dtype=float).reshape(-1)
+        m = f0.size  # = 4
+        J = np.zeros((m, n), dtype=float)
+
+        T_hi = x0_dict.get(self._vT("hot_in"),  500.0)
+        T_ho = x0_dict.get(self._vT("hot_out"), 400.0)
+        T_ci = x0_dict.get(self._vT("cold_in"), 300.0)
+        T_co = x0_dict.get(self._vT("cold_out"), 380.0)
+        T_avg_h = 0.5 * (T_hi + T_ho)
+        T_avg_c = 0.5 * (T_ci + T_co)
+
+        cp_hot = {c: cp_J_mol_K(c, T_avg_h) for c in self.hot_components if c in _KNOWN}
+        cp_cold = {c: cp_J_mol_K(c, T_avg_c) for c in self.cold_components if c in _KNOWN}
+        dcp_hot = {c: dcp_dT_J_mol_K2(c, T_avg_h) for c in self.hot_components if c in _KNOWN}
+        dcp_cold = {c: dcp_dT_J_mol_K2(c, T_avg_c) for c in self.cold_components if c in _KNOWN}
+        flows_h = {c: x0_dict.get(self._v("hot_in", c), 0.0) for c in self.hot_components if c in _KNOWN}
+        flows_c = {c: x0_dict.get(self._v("cold_in", c), 0.0) for c in self.cold_components if c in _KNOWN}
+
+        C_hot = sum(flows_h[c] * cp_hot[c] for c in flows_h)
+        C_cold = sum(flows_c[c] * cp_cold[c] for c in flows_c)
+        dC_hot_dT_either = 0.5 * sum(flows_h[c] * dcp_hot[c] for c in flows_h)
+        dC_cold_dT_either = 0.5 * sum(flows_c[c] * dcp_cold[c] for c in flows_c)
+
+        # ── Row 0: r = Q − C_hot · (T_hi − T_ho) ───────────────────────────
+        dT_h = T_hi - T_ho
+        J[0, vidx[self._v_Q()]] = 1.0
+        for c in flows_h:
+            J[0, vidx[self._v("hot_in", c)]] = -cp_hot[c] * dT_h
+        J[0, vidx[self._vT("hot_in")]]  = -dC_hot_dT_either * dT_h - C_hot
+        J[0, vidx[self._vT("hot_out")]] = -dC_hot_dT_either * dT_h + C_hot
+
+        # ── Row 1: r = Q − C_cold · (T_co − T_ci) ──────────────────────────
+        dT_c = T_co - T_ci
+        J[1, vidx[self._v_Q()]] = 1.0
+        for c in flows_c:
+            J[1, vidx[self._v("cold_in", c)]] = -cp_cold[c] * dT_c
+        J[1, vidx[self._vT("cold_in")]]  = -dC_cold_dT_either * dT_c + C_cold
+        J[1, vidx[self._vT("cold_out")]] = -dC_cold_dT_either * dT_c - C_cold
+
+        # ── Row 2: r = Q − U_eff · A · F · LMTD ────────────────────────────
+        U_eff = self.params.U_effective_W_per_m2_K()
+        A = self.params.A_m2
+        F0 = _f_factor_1_2(T_hi, T_ho, T_ci, T_co)
+        L0 = _lmtd_cf(T_hi, T_ho, T_ci, T_co)
+        J[2, vidx[self._v_Q()]] = 1.0
+        # Numerical sub-derivatives of F and LMTD w.r.t. the four T's.
+        def _dT_step(T_val: float) -> float:
+            step = max(1e-6 * max(1.0, abs(T_val)), 1e-9)
+            if abs(T_val) > 1.0:
+                step = min(step, 0.1 * abs(T_val))
+            return step
+        for T_var_tag, T_val in (
+            ("hot_in", T_hi), ("hot_out", T_ho),
+            ("cold_in", T_ci), ("cold_out", T_co),
+        ):
+            step = _dT_step(T_val)
+            Tp = {"hot_in": T_hi, "hot_out": T_ho, "cold_in": T_ci, "cold_out": T_co}
+            Tp[T_var_tag] = T_val + step
+            F_plus = _f_factor_1_2(Tp["hot_in"], Tp["hot_out"], Tp["cold_in"], Tp["cold_out"])
+            L_plus = _lmtd_cf(Tp["hot_in"], Tp["hot_out"], Tp["cold_in"], Tp["cold_out"])
+            Tm = {"hot_in": T_hi, "hot_out": T_ho, "cold_in": T_ci, "cold_out": T_co}
+            Tm[T_var_tag] = T_val - step
+            F_minus = _f_factor_1_2(Tm["hot_in"], Tm["hot_out"], Tm["cold_in"], Tm["cold_out"])
+            L_minus = _lmtd_cf(Tm["hot_in"], Tm["hot_out"], Tm["cold_in"], Tm["cold_out"])
+            dF_dT = (F_plus - F_minus) / (2.0 * step)
+            dL_dT = (L_plus - L_minus) / (2.0 * step)
+            d_FL_dT = dF_dT * L0 + F0 * dL_dT
+            J[2, vidx[self._vT(T_var_tag)]] = -U_eff * A * d_FL_dT
+
+        # ── Row 3: P_hot_out − P_hot_in (linear) ───────────────────────────
+        J[3, vidx[self._vP("hot_out")]] = 1.0
+        J[3, vidx[self._vP("hot_in")]] = -1.0
+
+        return LinearizedModel(
+            unit_id=self.unit_id,
+            variables=variables,
+            x0=x0,
+            f0=f0,
+            J=J,
+            bounds=self.bounds(),
+            objective_terms=self.objective_contribution(x0_dict),
+            is_exact=False,
+            trust_region=self.trust_region,
+            kpi_gradients=self.kpi_gradients(x0_dict),
+        )
 
     def objective_contribution(self, x: Dict[str, float]) -> Dict[str, float]:
         return {}
