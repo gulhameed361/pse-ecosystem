@@ -57,7 +57,41 @@ See `docs/PLAN_v1_6_1.md`.
   unit type now carries a small badge (🏭 INDUSTRIAL / 🟡 SCREENING /
   🎓 DIDACTIC / 🪦 LEGACY) so users can see why a unit is visible.
   4 new regression tests in `tests/test_ui_assembly_logic.py`.
-  (this commit)
+
+### Added (UI surfaces — P.7)
+
+- **P.7a — Validation page** (`pse_ecosystem/ui/pages/validation.py`).
+  Streamlit parity dashboard: upload a stream-table CSV (Aspen-compatible)
+  or pick one of the bundled v1.6 F.5 case studies, then render overall
+  MAPE / RMSE / R² metrics, a per-variable error table, and a parity
+  scatter (Plotly) with `y = x` reference line and hover labels.
+  Surfaces `pse_ecosystem.validation.parity.compute_metrics` +
+  `scatter_data` + `csv_io.read_stream_table_csv`.
+- **P.7b — Pinch Preview page** (`pse_ecosystem/ui/pages/pinch_preview.py`).
+  Minimum viable composite-curve generator: extracts hot / cold streams
+  from the last solve by tagging every unit whose variable list contains
+  both a `T_in` / `T_out` pair AND a `Q` variable, runs the Linnhoff
+  problem-table algorithm with user-chosen ΔT_min, and renders the
+  hot / cold composite curves, the pinch temperature, and the minimum
+  hot / cold utility duties. Was on the v1.6 stretch-goal list (Workstream
+  G, pinch / HEN synthesis); full HEN synthesis remains v1.7 scope.
+- **P.7c — Dynamics Studio page** (`pse_ecosystem/ui/pages/dynamics_studio.py`).
+  Surfaces `pse_ecosystem.dynamics.dae_solver.DynamicSimulator` +
+  `Perturbation` (step / ramp / pulse / sinusoid) through a transient
+  simulation form. Detects empty-state flowsheets (no unit overrides
+  `dynamic_residuals`) and displays guidance rather than running a no-op
+  simulation — first-class dynamic CSTR / Flash holdup is a v1.7 M.2 task.
+- **P.7d — Relief Sizing page** (`pse_ecosystem/ui/pages/relief_sizing.py`).
+  Surfaces `pse_ecosystem.safety.relief_sizing.size_psv_for_vessel`
+  (API 520 / 521 + ASME UG-125) through a form: vessel + fluid inputs,
+  three relief scenarios (fire-case, gas-blocked-outlet, thermal
+  expansion), results table with orifice area in cm² and set / full-lift /
+  back-pressures in bar, plus a CSV download button.
+- **P.7e — Wired into navigation** (`app_streamlit.py`). All four new
+  pages registered in `st.navigation` between Scenario Manager and Solve
+  History. 14 new smoke tests in `tests/test_ui_new_pages.py` verify
+  import + callable + nav-registration for each page, plus a minimal
+  two-stream pinch sanity check.
 
 ### Deferred from P.4 to a follow-on commit
 
@@ -69,8 +103,8 @@ See `docs/PLAN_v1_6_1.md`.
 
 ### Test suite
 
-- 1 010 passing (+5 CSTRHF Jacobian, +3 OPEX safeguard regression,
-  +4 persona-filter regression), 1 skipped.
+- 1 024 passing (+5 CSTRHF Jacobian, +3 OPEX safeguard regression,
+  +4 persona-filter regression, +14 new-page smoke tests), 1 skipped.
 
 ---
 

@@ -41,12 +41,16 @@ from pse_ecosystem.ui.shared.streamlit_loader import _require_streamlit
 
 # Page functions — one import per page.
 from pse_ecosystem.ui.pages.dashboard import _page_dashboard
+from pse_ecosystem.ui.pages.dynamics_studio import _page_dynamics_studio
 from pse_ecosystem.ui.pages.flowsheet_builder import _page_flowsheet_builder
 from pse_ecosystem.ui.pages.gps_weather import _page_gps_weather
 from pse_ecosystem.ui.pages.help_center import _page_help_center
+from pse_ecosystem.ui.pages.pinch_preview import _page_pinch_preview
+from pse_ecosystem.ui.pages.relief_sizing import _page_relief_sizing
 from pse_ecosystem.ui.pages.scenario_manager import _page_scenario_manager
 from pse_ecosystem.ui.pages.solve_history import _page_solve_history
 from pse_ecosystem.ui.pages.solver_monitor import _page_solver_monitor
+from pse_ecosystem.ui.pages.validation import _page_validation
 
 
 def main() -> None:
@@ -89,6 +93,10 @@ def main() -> None:
         st.Page(_page_gps_weather,       title="Site Weather",                 icon="🌍"),
         st.Page(_page_solver_monitor,    title="Solver Monitor",               icon="📊"),
         st.Page(_page_scenario_manager,  title="Scenario Manager & Analysis", icon="📋"),
+        st.Page(_page_validation,        title="Validation",                   icon="✅"),
+        st.Page(_page_pinch_preview,     title="Pinch Preview",                icon="🔥"),
+        st.Page(_page_dynamics_studio,   title="Dynamics Studio",              icon="⏱"),
+        st.Page(_page_relief_sizing,     title="Relief Sizing",                icon="🛡"),
         st.Page(_page_solve_history,     title="Solve History",                icon="📜"),
         st.Page(_page_help_center,       title="Help Center",                  icon="📖"),
     ]
