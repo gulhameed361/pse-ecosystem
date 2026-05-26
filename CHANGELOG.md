@@ -5,13 +5,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html) with `.devN` for
 pre-release iterations on a single minor version.
 
-## [Unreleased] — v1.6.1 polish & activation
+## [1.6.1] — 2026-05-26 — Polish & Activation
 
-In progress. Activating v1.6 features (dynamics, sizing, validation, relief
-sizing) that ship without UI surfaces, plus a structural cleanup of the
-two 3 000-line monoliths. **No new capability features** — v1.7 workstreams
-H–N (pinch, UQ, multi-objective, PR-NRTL, control) all remain queued.
-See `docs/PLAN_v1_6_1.md`.
+Tagged release. Activated v1.6 features (dynamics, sizing, validation,
+relief sizing) that previously shipped without UI surfaces, plus a
+structural cleanup of the two 3 000-line UI monoliths and the closing
+of every loose end on `docs/PLAN_v1_6_1.md` (P.1 — P.11). **No new
+capability features** — v1.7 workstreams H–N (pinch / HEN synthesis,
+UQ, multi-objective, PR-NRTL, control) all remain queued.
 
 ### Refactor
 
