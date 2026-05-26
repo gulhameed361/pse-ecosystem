@@ -99,25 +99,51 @@ def _page_validation():
     st.divider()
     st.subheader("2 — Predicted values")
 
-    if not has_solve:
+    # v1.6.1 P.8 — when the user picks a bundled case study, we run the
+    # matching template flowsheet and use its predicted stream table.
+    # Otherwise we fall back to self-round-trip (still useful as a smoke
+    # test for CSV uploads).
+    predicted = dict(measured)
+    if src == "Bundled case study" and choice:
+        from pse_ecosystem.flowsheets.case_studies import CASE_STUDIES
+        if choice in CASE_STUDIES:
+            try:
+                from pse_ecosystem.core.contracts import SolveMode
+                from pse_ecosystem.solvers.orchestrator import Orchestrator
+                fs, predict_fn = CASE_STUDIES[choice]()
+                res = Orchestrator(fs, SolveMode.FIXED_LP).solve()
+                pred_streams = predict_fn(fs, dict(res.x))
+                # Reshape to column-wise like ``measured``.
+                meas_streams = load_case_study(choice)
+                predicted = {
+                    col: [
+                        pred_streams.get(s, {}).get(col, 0.0)
+                        for s in meas_streams
+                        if isinstance(meas_streams[s].get(col), (int, float))
+                    ]
+                    for col in measured
+                }
+                st.success(
+                    f"Solved `{choice}` template ({res.status.value}, "
+                    f"{res.iterations} iter)."
+                )
+            except Exception as e:
+                st.warning(
+                    f"Template solve failed ({e!s}); falling back to "
+                    "self-round-trip parity."
+                )
+    elif not has_solve:
         st.warning(
             "No solve in session state yet. Run a flowsheet on the **Flowsheet "
             "Builder** page first; this page will then offer a self-round-"
             "trip parity check against the same case-study data."
         )
-        # Fall back to self-round-trip so the page renders something useful.
-        predicted = dict(measured)
         st.caption("Showing self-round-trip parity (predicted = measured).")
     else:
-        # For v1.6.1 we expose self-round-trip only; matching last_result.x
-        # to the case-study column layout is a v1.7 case-study-template
-        # task (P.8 / Workstream F kinetic tuner). Leaving the predicted
-        # = measured here keeps the page useful as a smoke test.
-        predicted = dict(measured)
         st.caption(
-            "v1.6.1 limitation: predicted = measured (self-round-trip). "
-            "Full last-solve → reference comparison requires the v1.7 P.8 "
-            "case-study templates."
+            "CSV upload mode — predicted defaults to self-round-trip until "
+            "the flowsheet's stream layout is mapped onto the CSV column "
+            "convention. v1.7 F kinetic tuner adds this mapping."
         )
 
     st.divider()

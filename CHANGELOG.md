@@ -93,6 +93,31 @@ See `docs/PLAN_v1_6_1.md`.
   import + callable + nav-registration for each page, plus a minimal
   two-stream pinch sanity check.
 
+### Added (case-study templates — P.8)
+
+- **`pse_ecosystem.flowsheets.case_studies`** — new subpackage with
+  four end-to-end template factories matched to the v1.6 reference
+  CSVs:
+  * `make_smr()` — SMR reactor → WGS reactor → PSA split
+    (StoichiometricReactor + SeparatorHF). Composition MAPE ~30 %;
+    structurally limited by mass-balance inconsistency in the CSV
+    reference. Full GibbsReactor + thermodynamic equilibrium is
+    queued for v1.7 (Workstream F kinetic tuner).
+  * `make_mea_absorber()` — 90 % CO₂ absorber as a calibrated
+    SeparatorHF. Overall MAPE 4.7 %.
+  * `make_propane_splitter()` — Binary C3 splitter as a 99.5 / 99.5 %
+    SeparatorHF. Overall MAPE 7.9 %.
+  * `make_ammonia_loop()` — Single-pass N₂ + 3 H₂ → 2 NH₃
+    StoichiometricReactor with calibrated extent. Overall MAPE 3.9 %.
+    Operates at 100 bar (StoichiometricReactor cap); v1.7 raises to
+    industrial 200 bar.
+- **Validation page wired to templates** — picking a bundled case
+  study now solves the matching template flowsheet and reports real
+  predicted-vs-measured parity instead of self-round-trip.
+- **16 new e2e tests** in `tests/test_case_studies_e2e.py` —
+  instantiation, convergence, predicted-streams shape, and per-template
+  MAPE ceiling for all four case studies.
+
 ### Deferred from P.4 to a follow-on commit
 
 - `ShellTubeHX` analytical Jacobian (F-factor chain rule is non-trivial).
@@ -103,8 +128,9 @@ See `docs/PLAN_v1_6_1.md`.
 
 ### Test suite
 
-- 1 024 passing (+5 CSTRHF Jacobian, +3 OPEX safeguard regression,
-  +4 persona-filter regression, +14 new-page smoke tests), 1 skipped.
+- 1 040 passing (+5 CSTRHF Jacobian, +3 OPEX safeguard regression,
+  +4 persona-filter regression, +14 new-page smoke tests,
+  +16 case-study e2e), 1 skipped.
 
 ---
 

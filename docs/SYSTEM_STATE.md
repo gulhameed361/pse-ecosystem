@@ -68,8 +68,8 @@ queued.
 | P.4 — Analytical Jacobians (CSTRHF done; 4 deferred) | 🔄 partial | CSTRHF commit `8a594d2`; Flash / HX-NTU / Shell-Tube / Compressor deferred |
 | P.5 — `TechnologyChoice` to core + OPEX guard | ✅ done | commit `120a882` |
 | P.6 — Wire persona filter into Custom Builder | ✅ done | |
-| P.7 — UI pages: Validation, Pinch, Dynamics, Relief | ✅ done | this commit; +14 smoke tests |
-| P.8 — End-to-end case-study templates | ⏳ pending | SMR, MEA, C3 splitter, NH3 loop |
+| P.7 — UI pages: Validation, Pinch, Dynamics, Relief | ✅ done | +14 smoke tests |
+| P.8 — End-to-end case-study templates | ✅ done | this commit; 16 e2e tests; SMR ~30% MAPE (CSV inconsistent), MEA/C3/NH3 < 10% |
 
 ---
 
