@@ -1783,7 +1783,7 @@ The `test_no_pse_models_import_in_app_streamlit` AST check in
 
 ---
 
-## §17. UI API Conventions — Pandas Styler & Plotly Template (v1.5.2)
+## §17. UI API Conventions — Pandas Styler & Plotly Template
 
 ### §17.1 DataFrame Styling — use `.map()`, not `.applymap()`
 
@@ -1791,7 +1791,7 @@ Pandas 2.0 removed `DataFrame.style.applymap()`. All cell-level styling in
 `app_streamlit.py` **must** use `.map()` instead:
 
 ```python
-# v1.5.2 correct (Pandas 2.0+)
+# correct (Pandas 2.0+)
 df.style.map(_color_fn, subset=["Status"])
 
 # WRONG — raises AttributeError on Pandas >= 2.0

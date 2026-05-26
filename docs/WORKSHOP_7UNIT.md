@@ -1,6 +1,6 @@
 # 7-Unit Aspen-Style Workshop — Biomass → H₂
 
-**Version:** 1.5.2 | **Date:** 2026-05-20 | **Status:** Canonical Workshop (synchronized with v1.5.2)
+**Version:** 1.6.1 | **Date:** 2026-05-26 | **Status:** Canonical Workshop (synchronized with v1.6.1)
 
 > Step-by-step build of the validated 7-unit biomass-to-hydrogen chain using the
 > Custom Flowsheet builder. Use this file as the answer key: the input matrices
@@ -73,7 +73,7 @@ The connection `storage → gasifier` is a 1-to-1 exact match because
 *internally* converts the 1-component Biomass feed into a 6-component syngas outlet.
 No translation layer is needed for the standard chain.
 
-**Zero-fill padder (v1.5.2)** — if you build a *non-standard* path that directly
+**Zero-fill padder** — if you build a *non-standard* path that directly
 connects a 1-species storage outlet to a 6-species inlet (e.g. `storage → cyclone`
 without the gasifier), the assembler now applies an automatic zero-fill padder instead
 of skipping the connection:

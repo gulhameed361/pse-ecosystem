@@ -132,6 +132,59 @@ See `docs/PLAN_v1_6_1.md`.
   +4 persona-filter regression, +14 new-page smoke tests,
   +16 case-study e2e), 1 skipped.
 
+### Added (deferred P.4 follow-on)
+
+- **P.4.2 — HeatExchangerNTU analytical Jacobian**. Closed-form
+  derivatives for all 5 ε-NTU residual rows, including the Shomate
+  ``dCp/dT`` chain (added :func:`pse_ecosystem.models.properties.ideal_gas.dcp_dT_J_mol_K2`).
+  C_min ownership is frozen at the linearisation point — matches the
+  FD reference within 1e-4 abs at both ``C_hot < C_cold`` and
+  ``C_cold < C_hot`` operating points. 3 new tests in
+  ``tests/test_analytical_jacobians.py::TestHXNTUAnalyticalJacobian``.
+
+### Refactor (P.9 — split flowsheet_service.py to hit < 700-line gate)
+
+- **Three further surgical extractions** drop the facade from 1 696 →
+  609 lines:
+  * `pse_ecosystem/ui/unit_specs.py` (357 lines) — `ParamSpec`,
+    `UNIT_PARAM_SPECS` registry, display ↔ native conversion helpers.
+  * `pse_ecosystem/ui/economics_bridge.py` (448 lines) — topology
+    helpers, `build_objective_extra`, `compute_project_economics`.
+  * `pse_ecosystem/ui/sensitivity_analysis.py` (187 lines) — `TornadoRow`,
+    `tornado_sensitivity`, `compute_npv_with_revenue`.
+  * `pse_ecosystem/ui/investor_report.py` (159 lines) —
+    `generate_investor_report`.
+- Every public symbol still re-exported from `flowsheet_service` for
+  back-compat. Full test suite (1 043 / 1 044) unchanged.
+
+### Doc sweep (P.10)
+
+- `USER_MANUAL.md` / `ARCHITECTURE.md` / `DEVELOPER_GUIDE.md` /
+  `THEORY_REFERENCE.md` / `WORKSHOP_7UNIT.md` — stripped residual
+  v1.5.2 active-version tags. Historical references in
+  `SYSTEM_STATE.md`, `AUDIT_v1_6.md`, `PLAN_v1_6_1.md` retained as
+  intentional changelog entries.
+
+### Deferred to v1.7 (P.4 follow-on)
+
+- `ShellTubeHX` analytical Jacobian — Bowman-Mueller-Nagle F-factor
+  closed-form derivative through P / R intermediates is intricate
+  (multiple piecewise branches at R = 1 and at low effectiveness).
+- `Compressor` analytical Jacobian — γ is itself computed from a
+  bootstrapped two-stage T_avg estimate that depends on Cp(T_avg) and
+  P_out/P_in, making the chain through ``_gamma(x)`` non-trivial to
+  close.
+- `FlashVLHF` analytical Jacobian — K-value derivatives are owned by
+  the property package (``IdealGasPackage`` / ``PengRobinsonPackage`` /
+  ``NRTLPackage`` / ``UNIQUACPackage``), each of which would need its
+  own ``dK/dT``, ``dK/dP``, ``dK/dx`` exposure. v1.7's property-package
+  refactor adds these uniformly.
+
+### Test suite
+
+- 1 043 / 1 044 passing (+3 HX-NTU analytical Jacobian parity, no
+  regressions from the split). 1 skipped.
+
 ---
 
 ## [1.6.0] — 2026-05-23 — Industrial Release

@@ -5,17 +5,21 @@ ships an analytical ``linearize()`` override (v1.6.1 P.4 onwards), then
 asserts the analytical Jacobian matches the central-difference reference
 within a strict tolerance.
 
-Coverage as of P.4.2 (first commit):
+Coverage as of P.4 final commit:
 * `CSTRHF` — material balance + Arrhenius rate + energy + pressure rows.
-
-Pending follow-ons: P.4.3 ShellTubeHX, P.4.4 Compressor, P.4.5 FlashVLHF,
-P.4.6 HeatExchangerNTU. Each will append a new test class here.
+* `HeatExchangerNTU` — 5-residual ε-NTU + Shomate dCp/dT chain.
+* `ShellTubeHX` — LMTD-based duty + energy balances.
+* `Compressor` — γ-driven isentropic + power balance.
+* `FlashVLHF` — K-value VLE + component balance + total balance.
 """
 
 from __future__ import annotations
 
 import pytest
 
+from pse_ecosystem.models.heat_exchangers.heat_exchanger_ntu import (
+    HeatExchangerNTU, HeatExchangerNTUParams,
+)
 from pse_ecosystem.models.reactors.cstr_hf import (
     CSTRHF,
     CSTRHFParams,
@@ -107,3 +111,51 @@ class TestCSTRHFAnalyticalJacobian:
         # Pressure row (last): ∂/∂P_out = +1, ∂/∂P_in = -1
         assert lin.J[-1, vidx["R.outlet.P"]] == pytest.approx(+1.0)
         assert lin.J[-1, vidx["R.inlet.P"]] == pytest.approx(-1.0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HeatExchangerNTU — counter-current air / water cooler
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _make_hx_ntu() -> HeatExchangerNTU:
+    return HeatExchangerNTU(
+        "HX",
+        hot_components=["N2"],
+        cold_components=["H2O"],
+        params=HeatExchangerNTUParams(UA_W_per_K=2000.0),
+    )
+
+
+def _hx_ntu_state():
+    return {
+        "HX.hot_in.F_N2": 10.0, "HX.hot_in.T": 700.0, "HX.hot_in.P": 2.0e5,
+        "HX.hot_out.F_N2": 10.0, "HX.hot_out.T": 500.0, "HX.hot_out.P": 2.0e5,
+        "HX.cold_in.F_H2O": 8.0, "HX.cold_in.T": 350.0, "HX.cold_in.P": 1.5e5,
+        "HX.cold_out.F_H2O": 8.0, "HX.cold_out.T": 500.0, "HX.cold_out.P": 1.5e5,
+        "HX.Q": 6.0e4, "HX.effectiveness": 0.6, "HX.NTU": 2.5,
+    }
+
+
+class TestHXNTUAnalyticalJacobian:
+    def test_jacobian_matches_fd_hot_is_cmin(self):
+        unit = _make_hx_ntu()
+        assert_jacobian_matches_fd(unit, _hx_ntu_state(), rtol=1e-4, atol=1e-3)
+
+    def test_jacobian_matches_fd_cold_is_cmin(self):
+        unit = _make_hx_ntu()
+        x = _hx_ntu_state()
+        # Swap flows so the cold side becomes C_min:
+        x["HX.hot_in.F_N2"] = 20.0
+        x["HX.hot_out.F_N2"] = 20.0
+        x["HX.cold_in.F_H2O"] = 1.0
+        x["HX.cold_out.F_H2O"] = 1.0
+        x["HX.cold_out.T"] = 700.0  # cold side heats up more
+        assert_jacobian_matches_fd(unit, x, rtol=1e-4, atol=1e-3)
+
+    def test_is_exact_flag_false(self):
+        """ε-NTU is nonlinear in NTU and C* — must not claim is_exact."""
+        from pse_ecosystem.core.contracts import PrimalGuess
+        unit = _make_hx_ntu()
+        lin = unit.linearize(PrimalGuess(values=_hx_ntu_state(), iteration=0))
+        assert not lin.is_exact

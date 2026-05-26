@@ -131,7 +131,7 @@ UI's Custom Builder dropdown filters via `available_units_for_persona`
 
 ---
 
-## 0b. v1.5.2 highlights — Dual-Persona Stabilisation
+## 0b. Earlier stabilisation work — Dual-Persona
 
 ### Port Coherence — Zero-Fill Padder
 

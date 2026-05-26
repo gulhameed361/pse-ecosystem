@@ -1631,7 +1631,7 @@ for final design and a certified ASME engineer for vessel design.*
 
 ---
 
-## §20. Scenario Manager & Analysis (v1.5.2)
+## §20. Scenario Manager & Analysis
 
 The page was renamed from "Scenario Manager" to **Scenario Manager & Analysis** and
 gains a **Sensitivity Analysis** section below the comparison table.
@@ -1668,7 +1668,7 @@ gains a **Sensitivity Analysis** section below the comparison table.
 
 ---
 
-## §21. Custom Flowsheet — Save / Load (v1.5.2 fix)
+## §21. Custom Flowsheet — Save / Load
 
 When you build a custom flowsheet and then use **Save Configuration (JSON)**, the
 exported file captures the unit list and connection spec as JSON.  On **Load**,
@@ -1676,7 +1676,7 @@ the spec is restored (under `custom_flowsheet_cfg`) but the `BaseFlowsheet` obje
 is not reconstructed automatically.  Click **Build & Select** in the Custom Assembler
 to rebuild the live flowsheet from the loaded spec before running a solve.
 
-## §22. Custom Flowsheet — Component-Mismatch Zero-Fill (v1.5.2)
+## §22. Custom Flowsheet — Component-Mismatch Zero-Fill
 
 When you connect two units in the Custom Assembler and the outlet port has a
 **different number of species** from the inlet port (e.g. a 1-species solid
@@ -1701,4 +1701,4 @@ chain has identical species sets, so the padder is never triggered.
 
 ---
 
-*User Manual v1.5.2 — PSE Ecosystem | Private — University of Surrey*
+*User Manual v1.6.1 — PSE Ecosystem | Private — University of Surrey*

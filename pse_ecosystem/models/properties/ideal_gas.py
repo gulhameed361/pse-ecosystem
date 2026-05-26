@@ -59,6 +59,19 @@ def cp_J_mol_K(species: str, T_K: float) -> float:
     return p["A"] + p["B"] * t + p["C"] * t ** 2 + p["D"] * t ** 3 + p["E"] / t ** 2
 
 
+def dcp_dT_J_mol_K2(species: str, T_K: float) -> float:
+    """Closed-form ``dCp/dT`` [J/mol/K²] at T_K.
+
+    Used by analytical Jacobians of energy-balance residuals (v1.6.1 P.4).
+    Differentiating ``Cp(T) = A + B·t + C·t² + D·t³ + E/t²`` with ``t = T/1000``
+    gives ``dCp/dt = B + 2C·t + 3D·t² − 2E/t³``, then ``dCp/dT = (1/1000)·dCp/dt``.
+    """
+    p = SHOMATE[species]
+    t = T_K / 1000.0
+    dCp_dt = p["B"] + 2.0 * p["C"] * t + 3.0 * p["D"] * t * t - 2.0 * p["E"] / (t ** 3)
+    return dCp_dt / 1000.0
+
+
 def _shomate_h_kJ_mol(p: Dict[str, float], T_K: float) -> float:
     """Shomate H - H_ref(298) [kJ/mol] at T_K."""
     t = T_K / 1000.0

@@ -1269,7 +1269,7 @@ port does (or vice versa). The `build_custom_flowsheet()` fallback in
 `flowsheet_service.py` detects the `ValueError` from `BaseFlowsheet.connect()` and links
 only the 6 `F_` variables.
 
-### §11.9 Component-Mismatch Zero-Fill Padder (v1.5.2)
+### §11.9 Component-Mismatch Zero-Fill Padder
 
 When a Custom Builder connection links two ports with **different component counts**
 (e.g. a 1-species solid `storage.dry_out` connected directly to a 6-species gas
