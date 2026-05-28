@@ -974,13 +974,14 @@ class TestStepNormStop:
 # Version consistency
 # ══════════════════════════════════════════════════════════════════════════════
 
-def test_version_is_v153():
+def test_version_is_v161():
     from pse_ecosystem import __version__
-    assert __version__ == "1.5.3"
+    assert __version__ == "1.6.1"
 
 
-def test_pyproject_version_matches_v153():
+def test_pyproject_version_matches_package():
     import pathlib, re
+    from pse_ecosystem import __version__
     toml = (pathlib.Path(__file__).parent.parent / "pyproject.toml").read_text()
     m = re.search(r'^\s*version\s*=\s*"([^"]+)"', toml, flags=re.MULTILINE)
-    assert m and m.group(1) == "1.5.3", f"pyproject.toml version mismatch: {m}"
+    assert m and m.group(1) == __version__, f"pyproject.toml version mismatch: {m}"
