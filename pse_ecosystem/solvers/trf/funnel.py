@@ -27,7 +27,7 @@
 #
 # The class stores only two scalars (phi, f_best) and imposes the
 # three Kiessling tests:
-#   • switching   f_k - f⁺ ≥ μ_s (θ_k - θ⁺)
+#   • switching   f_k - f⁺ ≥ μ_s · θ_kᵅ        (α = switching exponent)
 #   • Armijo      f_k - f⁺ ≥ η₁ Δ⁽ᵏ⁾          (Δ supplied by caller)
 #   • θ‑shrink    θ⁺ ≤ β φᵏ
 # --------------------------------------------------------
@@ -45,7 +45,7 @@ class Funnel:
     phi_min      : hard floor on φ           (>0)
     kappa_f      : shrink factor after theta‑step (0<κ_f<1)
     kappa_r      : relax factor for theta (>1)
-    alpha        : curvature exponent        (0<α<1)
+    alpha        : switching exponent on θ_k  (≥1 typical; default 2)
     beta         : θ‑type shrink factor      (0<β<1)
     mu_s         : switching parameter δ     (small, e.g.1e‑2)
     eta          : Armijo parameter          (0<η<1)
@@ -82,7 +82,9 @@ class Funnel:
         return theta_new <= self.phi
 
     def _switching(self, f_old: float, f_new: float, theta_old: float) -> bool:
-        return (f_old - f_new) >= self.mu_s * ((theta_old) ** 2)
+        # Wächter–Biegler style switching: an f-type step is admissible when the
+        # objective reduction dominates a power of the current infeasibility θ_k.
+        return (f_old - f_new) >= self.mu_s * (theta_old ** self.alpha)
 
     def _armijo(self, f_old: float, f_new: float, delta: float) -> bool:
         # actual reduction ≥ η₁ Δ (trust‑region radius used as scale)

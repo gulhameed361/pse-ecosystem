@@ -35,6 +35,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import warnings
+
 import numpy as np
 
 from pse_ecosystem.models.base_unit import BaseUnit
@@ -103,7 +105,13 @@ class DynamicSimulator:
         for u in self.units:
             try:
                 derivs = u.dynamic_residuals(0.0, {}, self.x_state)
-            except Exception:  # noqa: BLE001
+            except (ValueError, ArithmeticError, KeyError, TypeError, IndexError) as exc:
+                warnings.warn(
+                    f"dynamic_residuals failed during state discovery for unit "
+                    f"{getattr(u, 'unit_id', u)!r}; treating it as non-dynamic: {exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
                 derivs = {}
             for k in derivs:
                 if k not in seen:
@@ -161,7 +169,13 @@ class DynamicSimulator:
         for u in self.units:
             try:
                 contribs = u.dynamic_residuals(t, y_dict, self.x_state)
-            except Exception:  # noqa: BLE001
+            except (ValueError, ArithmeticError, KeyError, TypeError, IndexError) as exc:
+                warnings.warn(
+                    f"dynamic_residuals failed for unit "
+                    f"{getattr(u, 'unit_id', u)!r} at t={t:.4g}; skipping: {exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
                 continue
             for k, v in contribs.items():
                 if k in self._state_vars:
