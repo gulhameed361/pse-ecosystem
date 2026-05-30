@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 authors = [
     { name = "PSE Ecosystem Team" },
 ]
-license = { text = "Proprietary" }
+license = { text = "MIT" }
 keywords = ["process-systems-engineering", "hydrogen", "optimisation", "pyomo", "slp"]
 
 dependencies = [
