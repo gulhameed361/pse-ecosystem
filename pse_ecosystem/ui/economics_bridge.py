@@ -8,6 +8,7 @@ facade for back-compat: every existing import keeps working.
 from __future__ import annotations
 
 import math
+import warnings
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -243,8 +244,15 @@ def _aggregate_capex_purchase_USD(flowsheet: "BaseFlowsheet",
     for unit in flowsheet.units:
         try:
             total += float(unit.capex(solution_x))
-        except Exception:
-            # A broken unit-level capex() must not bring down the whole report.
+        except (ValueError, ArithmeticError, KeyError, TypeError, IndexError) as exc:
+            # A broken unit-level capex() must not bring down the whole report,
+            # but it must not be silently dropped from the total either.
+            warnings.warn(
+                f"capex() failed for unit {getattr(unit, 'unit_id', unit)!r}; "
+                f"counting it as 0 in the project total: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
             continue
     return total
 
@@ -266,7 +274,13 @@ def _aggregate_opex_annual_USD(flowsheet: "BaseFlowsheet",
     for unit in flowsheet.units:
         try:
             total += float(unit.opex_per_year(solution_x, operating_hours))
-        except Exception:
+        except (ValueError, ArithmeticError, KeyError, TypeError, IndexError) as exc:
+            warnings.warn(
+                f"opex_per_year() failed for unit {getattr(unit, 'unit_id', unit)!r}; "
+                f"counting it as 0 in the project total: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
             continue
     return total
 

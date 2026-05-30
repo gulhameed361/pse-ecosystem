@@ -127,7 +127,31 @@ pse_ecosystem/validation/
 
 `BaseUnit.category ∈ {INDUSTRIAL, SCREENING, DIDACTIC, LEGACY}`. The
 UI's Custom Builder dropdown filters via `available_units_for_persona`
-(helper exists; UI wire-up is P.6 of v1.6.1).
+(wired into the picker in v1.6.1 P.6: the Industrial persona hides
+DIDACTIC + LEGACY units, the Academic persona shows everything).
+
+### Toy vs high-fidelity unit packages
+
+The **plural** model packages (`models/reactors/`, `models/separators/`,
+`models/heat_exchangers/`, `models/mixers/`) hold the production,
+high-fidelity units used by the UI and `flowsheets/`. The **singular**
+packages (`models/reactor/`, `models/mixer/`, `models/separator/`,
+`models/heat_exchanger/`) hold the original *toy* / teaching units
+(`cstr_toy`, `ideal_mixer`, `flash_toy`, `heat_exchanger_toy`,
+`boiler_toy`, plus the HDA teaching models) and are imported **only** by
+`tests/` and `examples/` — production code never references them. Add new
+production units to the plural packages; treat the singular packages as
+frozen legacy/teaching fixtures. (`pem_toy` and `gasifier_toy` are the
+exception: they live in `models/electrolysis/` and `models/gasification/`
+and **are** production units despite the `_toy` suffix.)
+
+### Dynamics layer boundary
+
+`pse_ecosystem/dynamics/` is a post-solve orchestration package: it
+consumes an already-converged flowsheet and may reference the Layer-3
+`BaseUnit.dynamic_residuals` hook directly. This is an intentional,
+documented exception to the "Layer 2 never imports Layer 3" rule, which
+governs the steady-state `solvers/` package only.
 
 ---
 

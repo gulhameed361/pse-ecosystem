@@ -34,9 +34,9 @@ The Streamlit sidebar has a **View Mode** radio:
 
 Persona is session-state and persists across page navigation. Under the
 hood, the Custom Builder calls `available_units_for_persona(persona)`
-from `pse_ecosystem/ui/catalogue.py` (v1.6.1 P.6 wires this into the
-dropdown — currently the underlying API exists but the picker still
-shows everything; this is being fixed in the polish sprint).
+from `pse_ecosystem/ui/catalogue.py`, which (since v1.6.1 P.6) filters the
+unit dropdown: the Industrial persona hides DIDACTIC + LEGACY units, while
+the Academic persona shows every unit.
 
 ### Property-method selector
 

@@ -74,7 +74,7 @@ class TRFConfig:
     funnel_beta: float = 0.8
     funnel_kappa_f: float = 0.5
     funnel_kappa_r: float = 1.1
-    funnel_alpha: float = 0.9
+    funnel_alpha: float = 2.0   # switching exponent on θ_k (Wächter–Biegler)
     funnel_mu_s: float = 1e-2
     funnel_eta: float = 1e-4
 
@@ -132,7 +132,7 @@ class TrustRegionDriver:
             guess = PrimalGuess(values=x_k, iteration=k)
             linearizations = [u.linearize(guess) for u in self.flowsheet.units]
 
-            tr_mult = delta if self.slp_config.use_trust_region else delta
+            tr_mult = delta if self.slp_config.use_trust_region else 0.0
             model = build_lp(
                 linearizations,
                 self.flowsheet,
@@ -178,13 +178,14 @@ class TrustRegionDriver:
                 delta=delta,
             )
 
-            # Trust-region update via rho
-            if last_lp_obj is not None:
-                predicted = last_lp_obj - lp_obj
-                actual = obj0 - obj_trial
-                rho = actual / predicted if abs(predicted) > 1e-12 else 1.0
-            else:
-                rho = 1.0
+            # Trust-region update via rho — predicted vs actual reduction measured
+            # against the SAME linearised model m_k.  Predicted reduction is
+            # m_k(x_k) - m_k(x_trial) = obj0 - lp_obj (the LP objective is the
+            # linearisation about x_k, so it equals obj0 at the anchor to first
+            # order); actual reduction is the true-objective decrease obj0 - obj_trial.
+            predicted = obj0 - lp_obj
+            actual = obj0 - obj_trial
+            rho = actual / predicted if abs(predicted) > 1e-12 else 1.0
 
             # Capture step magnitude BEFORE assigning x_k = x_trial below; the
             # convergence guard at the end of the loop depends on it.

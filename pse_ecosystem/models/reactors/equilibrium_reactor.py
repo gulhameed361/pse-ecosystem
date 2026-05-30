@@ -131,6 +131,7 @@ class EquilibriumReactor(BaseUnit):
             x_mole = F_out / F_total
 
             g = np.zeros(R)
+            prod_baseline = np.ones(R)  # Π x_i^ν per reaction at the current iterate
             for r in range(R):
                 Keq_r = self._Keq(r, T)
                 prod = 1.0
@@ -138,6 +139,7 @@ class EquilibriumReactor(BaseUnit):
                     nu_ir = self._nu[i, r]
                     if nu_ir != 0.0:
                         prod *= max(float(x_mole[i]), 1e-30) ** nu_ir
+                prod_baseline[r] = prod
                 g[r] = prod - Keq_r
 
             if np.max(np.abs(g)) < p.inner_tol:
@@ -157,7 +159,9 @@ class EquilibriumReactor(BaseUnit):
                         nu_ir = self._nu[i, r]
                         if nu_ir != 0.0:
                             prod_p *= max(float(x_p[i]), 1e-30) ** nu_ir
-                    Jac[r, j] = (prod_p - (sum(max(float(x_mole[i]), 1e-30) ** self._nu[i, r] for i in range(len(self.components)) if self._nu[i, r] != 0) if R > 0 else 0)) / eps
+                    # Forward difference of g[r] = Π x_i^ν − Keq_r (Keq_r is constant
+                    # in xi), so dg[r]/dxi_j = (prod_p − prod_baseline[r]) / eps.
+                    Jac[r, j] = (prod_p - prod_baseline[r]) / eps
 
             try:
                 dxi = np.linalg.solve(Jac + 1e-10 * np.eye(R), -g)
@@ -202,9 +206,8 @@ class EquilibriumReactor(BaseUnit):
         )
         T = max(x.get(self._v_T_in(), 500.0), 273.0)
         P = max(x.get(self._v_P_in(), 101325.0), 1.0)
-        R = 8.314
         tau_s = 10.0   # 10 s residence time
-        Q_vol = max(F_total, 0.01) * R * T / P
+        Q_vol = max(F_total, 0.01) * _R_GAS * T / P
         volume_m3 = max(Q_vol * tau_s, 0.05)
         return vessel_purchase_cost_USD(volume_m3)
 
@@ -216,7 +219,7 @@ class EquilibriumReactor(BaseUnit):
         T = max(x.get(self._v_T_in(), 500.0), 273.0)
         P = max(x.get(self._v_P_in(), 101325.0), 1.0)
         tau_s = 10.0
-        Q_vol = max(F_total, 0.01) * 8.314462 * T / P
+        Q_vol = max(F_total, 0.01) * _R_GAS * T / P
         V_req = max(Q_vol * tau_s, 0.05)
         D = (2.0 * V_req / math.pi) ** (1.0 / 3.0)
         return {
